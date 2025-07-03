@@ -1,0 +1,28 @@
+# Test Filter List - Minimal set for testing
+# Just a handful of common words that should be filtered
+
+# Common noise
+lol
+omg
+wtf
+fml
+smh
+
+# Common abbreviations
+u
+ur
+btw
+imo
+idk
+
+# Social media noise
+retweet
+rt
+like
+follow
+spam
+
+# Test profanity (just a few)
+fuck
+shit
+damn 

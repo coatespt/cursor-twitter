@@ -1,0 +1,10 @@
+# Sample configuration for the Twitter subject detection pipeline
+mode: mq
+input: ./data
+mq_host: localhost
+mq_port: 5672
+mq_queue: tweet_in
+window: 2000
+batch: 200
+throttle: 500
+verbose: true 

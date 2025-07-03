@@ -1,0 +1,288 @@
+# Twitter Anomaly Detection Pipeline Configuration
+
+# Pipeline Processing
+pipeline:
+  # Number of tweets to process before computing Z-scores for counter arrays
+  window_size: 5000
+  
+  # Maximum tweets to process per second (rate limiting)
+  # THIS IS ONLY USEFUL FOR A DEMO VERSION RUNNING FROM STORED DATA. YOU CAN'T HAVE IT LIVE
+  max_tweets_per_second: 100
+  
+  # Number of worker goroutines for processing
+  # WHAT IS THIS FOR
+  worker_goroutines: 4
+
+# Counter Arrays
+counters:
+  # Size of each 3pk bit-counter array. There are three such array in each
+  # frequency class processing pipeline. A range of about 1000 works well. It gives
+  # 1K*1K*1k space size for 3pk's. 
+  array_size: 1000
+
+  # Number of frequency classes (seven worked well in practice)
+  num_frequency_classes: 7
+  
+  # Data type for counters (uint8, uint16, uint32, uint64)
+  # SEE WHERE THIS IS USED! It's OK for the frequency pipelines but not
+  #    for the counter data structures. Sixteen bits only 65k
+  #  
+  counter_type: "uint16"
+
+# Frequency Analysis
+frequency:
+  # Rolling window size for frequency calculation (in minutes)
+  # THIS SHOULD PROBABLY BE 15 MINUTES, AND IN TWEET TIME, NOT WALL CLOCK TIME.
+  window_minutes: 30
+  
+  # How often to update frequency statistics (in seconds)
+  # THIS CAN'T BE RIGHT. IT SEEMS TO BE FOR THE FREQUENCY PIPELINE, BUT THAT 
+  # SHOULD BE A NUMBER OF TWEETS, NOT A TIME INTERVAL
+  update_interval_seconds: 5
+  
+  # How often to persist frequency data (in seconds)
+  # THIS SEEMS TO BE REDUNDANT. SEE IF IT IS USED. See window_minutes above.
+  persistence_interval_seconds: 300
+
+# Bloom Filters
+bloom_filters:
+  # Frequency class bloom filters - determine which frequency class a word belongs to
+  # THIS SEEMS WRONG. ONLY THE LAST COUPLE SHOULD BE BLOOM FILTERS. THE REST
+  # SHOULD BE HASHED SETS.
+  frequency_class_filters:
+    # Size of bloom filter arrays by frequency class
+    # Class 1 = most frequent (few thousand words)
+    # Class 7 = least frequent (millions of words)
+    sizes:
+      class_1: 10000      # Most frequent words
+      class_2: 50000      # Very frequent words
+      class_3: 200000     # Frequent words
+      class_4: 1000000    # Uncommon words
+      class_5: 5000000    # Rare words
+      class_6: 20000000   # Very rare words
+      class_7: 50000000   # Extremely rare words
+    
+    # Target false positive rate (hash count calculated automatically)
+    # THIS SEEMS WRONG. SEE IF IT"S USED
+    false_positive_rate: 0.01
+  
+  # Word filtering bloom filter - fast lookup for words to exclude
+  word_filter_filter:
+    size: 1000000        # Size for filtered words list
+    false_positive_rate: 0.01
+  
+  # Three-part key bloom filter - check if a key combination exists
+  threepk_filter:
+    size: 50000000       # Size for three-part key combinations
+    false_positive_rate: 0.001  # Lower false positive rate for keys
+  
+  # Word existence bloom filter - check if we've seen a word before
+  word_existence_filter:
+    size: 100000000      # Size for all words ever encountered
+    false_positive_rate: 0.01   # Standard false positive rate
+
+# Anomaly Detection
+anomaly:
+  # Z-score threshold - only consider counters with Z score greater than this
+  detection_threshold: 2.0
+  
+  # Number of top counters to analyze (K in our discussion)
+  top_k_counters: 100
+  
+  # Minimum number of rare words that must co-occur
+  min_co_occurrence_count: 2
+
+# Database
+database:
+  # Database type (sqlite, postgres, redis)
+  type: "sqlite"
+  
+  # Database connection string or path
+  path: "./word_database.db"
+  
+  # How often to update the word database (in seconds)
+  update_interval_seconds: 300
+
+# Message Queue (for optional distribution)
+mq:
+  # Enable message queue for distribution
+  enabled: false
+  
+  # Message queue type (rabbitmq, kafka, local)
+  type: "local"
+  
+  # Connection settings
+  host: "localhost"
+  port: 5672
+  username: ""
+  password: ""
+  
+  # Queue names
+  tweet_queue: "twitter_tweets"
+  result_queue: "anomaly_results"
+  frequency_queue: "frequency_updates"
+
+# Logging
+logging:
+  # Log level (DEBUG, INFO, WARN, ERROR)
+  level: "INFO"
+  
+  # Log file path (empty for stdout)
+  file: "./pipeline.log"
+  
+  # Enable structured logging (JSON format)
+  structured: false
+  
+  # Include timestamps in logs
+  include_timestamps: true
+
+# Performance
+performance:
+  # Memory limit for the application (in MB)
+  memory_limit_mb: 1024
+  
+  # CPU limit (number of cores to use, 0 for all)
+  cpu_limit: 0
+  
+  # Enable profiling
+  profiling_enabled: false
+  
+  # Profiling port
+  profiling_port: 6060
+
+# Recovery
+recovery:
+  # Enable automatic recovery from crashes
+  enabled: true
+  
+  # Maximum recovery time (in seconds)
+  max_recovery_time: 30
+  
+  # Snapshot interval (in seconds)
+  snapshot_interval: 300
+
+# Word Filtering
+filtering:
+  # Enable word filtering
+  enabled: true
+  
+  # Path to file containing words to filter out
+  filter_file: "./config/filter_lists/test_filters.txt"
+  
+  # Filter categories
+  categories:
+    - "slurs"
+    - "profanity" 
+    - "spam_words"
+    - "common_noise"
+  
+  # Case sensitive filtering
+  case_sensitive: false
+  
+  # Enable regex patterns for complex filtering
+  enable_regex: false
+
+# Frequency Class Management
+frequency_classes:
+  # Number of frequency classes
+  total_classes: 7
+  
+  # Classes to ignore completely (1-based indexing)
+  # 1 = most frequent (the, a, an, at, etc.)
+  # 2 = very frequent (common words)
+  # 3-7 = progressively less frequent
+  ignore_classes: [1, 2]
+  
+  # Alternative: ignore classes by frequency range
+  # ignore_frequency_ranges:
+  #   - min: 0.01    # 1% of all words
+  #     max: 1.0     # 100% of all words
+  #   - min: 0.001   # 0.1% of all words  
+  #     max: 0.01    # 1% of all words
+
+# Tweet Clustering (Phase 2)
+clustering:
+  # Enable tweet clustering after anomaly detection
+  # This phase takes the "busy" three-part keys from Phase 1,
+  # maps them back to actual words, finds the original tweets,
+  # and clusters the tweet content
+  enabled: true
+  
+  # Clustering algorithm (kmeans, dbscan, hierarchical)
+  algorithm: "kmeans"
+  
+  # Number of clusters for k-means (0 for auto-determination)
+  num_clusters: 0
+  
+  # Auto-determination settings
+  auto_clusters:
+    # Minimum number of clusters
+    min_clusters: 2
+    
+    # Maximum number of clusters
+    max_clusters: 20
+    
+    # Method for determining optimal k (elbow, silhouette, gap)
+    method: "elbow"
+  
+  # Feature extraction for clustering
+  features:
+    # Use word frequency vectors
+    word_frequency: true
+    
+    # Use TF-IDF weighting
+    use_tfidf: true
+    
+    # Include hashtags in clustering
+    include_hashtags: true
+    
+    # Include user mentions in clustering
+    include_mentions: true
+    
+    # Include URLs in clustering
+    include_urls: false
+    
+    # Minimum word frequency to include in features
+    min_word_frequency: 2
+    
+    # Maximum features to use (0 for all)
+    max_features: 1000
+  
+  # Clustering parameters
+  parameters:
+    # Maximum iterations for k-means
+    max_iterations: 300
+    
+    # Convergence tolerance
+    tolerance: 0.0001
+    
+    # Random seed for reproducibility
+    random_seed: 42
+    
+    # Number of k-means runs (best result is kept)
+    num_runs: 10
+  
+  # Output settings
+  output:
+    # Save cluster assignments to file
+    save_assignments: true
+    
+    # Save cluster centroids to file
+    save_centroids: true
+    
+    # Generate cluster summaries
+    generate_summaries: true
+    
+    # Minimum cluster size to report
+    min_cluster_size: 3
+
+# Development
+development:
+  # Enable debug mode
+  debug: false
+  
+  # Enable verbose logging
+  verbose: false
+  
+  # Mock data for testing
+  use_mock_data: false 

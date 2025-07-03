@@ -1,0 +1,109 @@
+# Filtered Words List
+# This file contains words that should be excluded from anomaly detection
+# Format: one word per line, # for comments
+
+# Racial and ethnic slurs (examples - this is not comprehensive)
+# Note: This is a sample list - you would need a comprehensive list for production
+
+# Profanity and vulgar language
+fuck
+shit
+bitch
+ass
+damn
+hell
+piss
+cock
+dick
+pussy
+cunt
+whore
+slut
+
+# Common noise words that don't indicate new topics
+lol
+omg
+wtf
+fml
+smh
+tbh
+imo
+btw
+idk
+ttyl
+brb
+afk
+rofl
+lmao
+
+# Spam and bot indicators
+click
+here
+link
+free
+money
+winner
+congratulations
+claim
+prize
+offer
+limited
+time
+act
+now
+
+# Common abbreviations that don't add value
+u
+ur
+yr
+r
+c
+b
+w
+w/
+w/o
+b/c
+b/c
+etc
+vs
+aka
+imo
+btw
+
+# Social media noise
+retweet
+rt
+fav
+like
+follow
+unfollow
+block
+mute
+report
+spam
+bot
+fake
+real
+verified
+
+# Common filler words
+just
+very
+really
+actually
+literally
+basically
+obviously
+clearly
+definitely
+absolutely
+completely
+totally
+extremely
+incredibly
+
+# Note: This is a starting point. You would need to:
+# 1. Add comprehensive lists of slurs and offensive terms
+# 2. Customize based on your specific use case
+# 3. Regularly update as new patterns emerge
+# 4. Consider using external libraries for comprehensive filtering 
