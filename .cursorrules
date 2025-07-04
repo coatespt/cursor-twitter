@@ -1,0 +1,38 @@
+# Cursor Rules for Twitter Data Processing Pipeline
+
+## Project Structure
+- This is a Go-based Twitter data processing pipeline with Python components
+- Main project directory: `cursor-twitter/`
+- All source code should be in `src/` directory
+- Configuration files belong in `config/` directory
+- Logs should be written to `logs/` directory (not `src/logs/`)
+
+## Configuration Management
+- **CRITICAL**: There must be only ONE authoritative config file: `config/config.yaml`
+- Do NOT create multiple config files in different locations
+- Do NOT create backup config files with different names
+- All code must reference the single config file at `config/config.yaml`
+- The `log_dir` field is REQUIRED in the config file - no defaults allowed
+
+## Code Organization
+- Go source files go in `src/` directory
+- Python scripts go in `sender/` directory
+- Parser components go in `parser/` directory
+- Keep the project structure clean and organized
+
+## Logging
+- Logs must be written to the directory specified in `config.yaml` `log_dir` field
+- Never hardcode log paths in source code
+- The program should fail if `log_dir` is not specified in config
+- Do not create log directories automatically - they must exist
+
+## Git and Version Control
+- Use meaningful commit messages
+- Keep the repository clean and organized
+- Update documentation when making significant changes
+
+## Development Guidelines
+- Test changes thoroughly before committing
+- Follow Go and Python best practices
+- Document any new configuration options
+- Keep the codebase maintainable and well-documented 

@@ -6,5 +6,6 @@ mq_port: 5672
 mq_queue: tweet_in
 window: 2000
 batch: 200
-throttle: 500
+throttle: 10000
 verbose: true 
+log_dir: ../logs

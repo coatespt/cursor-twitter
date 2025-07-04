@@ -81,6 +81,12 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	// Require log_dir to be present and non-empty
+	if cfg.LogDir == "" {
+		fmt.Fprintln(os.Stderr, "ERROR: 'log_dir' must be defined in the config file and cannot be empty.")
+		os.Exit(1)
+	}
+
 	// Set up slog logger to write to a file in the specified log_dir
 	logger, logFile, err := setupLogger(cfg.LogDir)
 	if err != nil {
@@ -149,9 +155,37 @@ func main() {
 		slog.Error("Failed to register a consumer", "error", err)
 		return
 	}
+// TODO:Add Global stats including tweet count, token count, distinct token count
+//     (available from map size), 
+//    number of W window cycles, number of pipeline cycles, etc.
+//
+// TODO: Nothing like maxRebuildTime should exist. Check that this does not exist.
 
+
+// TODO: Create the TweetWindowQueue      This will not be allowed to grow beyond WindowSize
+// TODO: Create the InboundTokenQueue
+// TODO: Create the OldTokenQueue
+// TODO: Create the InboundTweetQueue 
+
+
+// TODO: Create a FrequencyComputationThread
+//       THE FCT take tokens from the InboundTokenQueue and register them in 
+//       the CountMap.
+//       It also takes tokens from the OldTokenQueue and decrements the 
+counts in the CountMap.
+//       It also checks a flag to see if it should stop taking tokens and 
+//       compute the frequency class filters.  If so, 
+//             it copies the CountMap to a new array 
+//             clears the existing CountMap.
+//       It also sets the flag to resume taking tokens.
+//       It also copies the CountMap to a new array and clears the CountMap.
+//       It also sets the flag to resume taking tokens. 
+//       It also sets the flag to resume taking tokens.
+//       It also sets the flag to resume taking tokens.
+ 
+	// Main loop runs forever
 	for msg := range msgs {
-		// Check if we should throttle ingestion
+		// TODOCheck if we should throttle ingestion. I don't think this is how to do it.
 		maxRebuildTime := cfg.MaxRebuildTimeSeconds
 		if maxRebuildTime <= 0 {
 			maxRebuildTime = 5 // Default to 5 seconds
@@ -161,19 +195,31 @@ func main() {
 			slog.Info("Throttling ingestion", "delay", delay)
 			time.Sleep(delay)
 		}
-
 		tweet, err := parseCSVToTweet(string(msg.Body))
 		if err != nil {
 			//slog.Warn("Failed to parse tweet", "error", err, "raw_row", string(msg.Body))
 			fmt.Printf("[PARSE ERROR] %v\nRaw: %s\n", err, string(msg.Body))
 			continue
 		}
+		// TODO: Write tweet to the TweetWindowQueue
+		// TODO: Write tweet tokens to the InboundTokenQueue
+		// TODO: If TweetWindowQueue reaches WindowSize, remove the oldest tweet
+		//     and write its tokens to the OldTokenQueue
+		// TODO: 
+
 		// Only print the tweet if the flag is set
 		if *printTweets {
 			fmt.Printf("Parsed Tweet: %+v\n", tweet)
 		}
 
 		// Manage the sliding window - add new tweet and remove old ones
+		// TODO: This is wrong. WindowSize is a constant set in configuration. A queue called 
+		// Inbound Tweet structs are stored on a Queue called TweetWindowQueue.
+		// The new inbound tweet's tokens are placed on an InboundTokenQueue.
+		// if the TweetWindowQueue reaches WindowSize, the oldest tweet is removed and
+		// it's tokens are placed on an OldTokenQueue.
+
+
 		windowSize := cfg.WindowSize
 		if windowSize <= 0 {
 			windowSize = 15 // Default to 15 minutes if not configured
@@ -220,8 +266,9 @@ func loadConfig(path string) (*Config, error) {
 
 // setupLogger creates the log directory if needed and returns a slog.Logger that writes to a file.
 func setupLogger(logDir string) (*slog.Logger, *os.File, error) {
+	// No default! logDir must be set by config and checked in main()
 	if logDir == "" {
-		logDir = "./logs"
+		return nil, nil, fmt.Errorf("logDir must be set in config; refusing to use a default")
 	}
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return nil, nil, err
@@ -298,7 +345,9 @@ func printStats() {
 	writer.Flush()
 }
 
-// parseCSVToTweet parses a CSV row string into a Tweet struct, tokenizes the text, generates ThreePartKeys, and updates the global token counter.
+// parseCSVToTweet parses a CSV row string into a Tweet struct, 
+// tokenizes the text, generates ThreePartKeys, and updates the global 
+// token counter.
 func parseCSVToTweet(row string) (*tweets.Tweet, error) {
 	reader := csv.NewReader(strings.NewReader(row))
 	reader.FieldsPerRecord = -1
@@ -348,7 +397,11 @@ func parseCSVToTweet(row string) (*tweets.Tweet, error) {
 	tokens := simpleTokenize(tweet.Text)
 	tweet.Tokens = tokens // Store tokens in the Tweet struct
 
-	// Step 2: For each token, generate a three-part key (3PK) and add it to the tweet.
+	// TODO: Check the global mapping for tokens-3pk's and 3pk's-tokens.
+	//    If the lookup fails, generate one and insert it into the mapping
+	//    before inserting it into the tweet.
+	// TODO: Verify that this is saving multiple copies if a word is repeated.
+	// 
 	var threePKs []tweets.ThreePartKey
 	for _, token := range tokens {
 		threePK := pipeline.GenerateThreePartKey(token)
