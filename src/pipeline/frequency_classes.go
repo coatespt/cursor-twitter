@@ -219,22 +219,25 @@ func BuildFrequencyClassHashSets(tokenCounts map[string]int, F int, bloomSizes [
 	}
 }
 
-// GlobalFilters holds the current frequency class filters for the main thread to access
-var GlobalFilters []FreqClassFilter
 var globalFiltersMutex sync.RWMutex
+var globalFilters []FreqClassFilter
 
-// SetGlobalFilters sets the global frequency class filters (thread-safe)
+// SetGlobalFilters sets the global frequency class filters
 func SetGlobalFilters(filters []FreqClassFilter) {
 	globalFiltersMutex.Lock()
 	defer globalFiltersMutex.Unlock()
-	GlobalFilters = filters
+	globalFilters = filters
+	fmt.Printf("*** SetGlobalFilters called with %d filters ***\n", len(filters))
 }
 
-// GetGlobalFilters returns the current global frequency class filters (thread-safe)
+// GetGlobalFilters returns the current global frequency class filters
 func GetGlobalFilters() []FreqClassFilter {
 	globalFiltersMutex.RLock()
 	defer globalFiltersMutex.RUnlock()
-	return GlobalFilters
+	result := make([]FreqClassFilter, len(globalFilters))
+	copy(result, globalFilters)
+	//fmt.Printf("*** GetGlobalFilters called, returning %d filters ***\n", len(result))
+	return result
 }
 
 // BuildFrequencyClassBloomFilters divides tokens into F frequency classes and returns F filters.

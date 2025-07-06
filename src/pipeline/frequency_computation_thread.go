@@ -267,7 +267,9 @@ func (fct *FrequencyComputationThread) performRebuild() {
 	fct.filtersMutex.Unlock()
 
 	// Also install globally for main thread
+	fmt.Printf("*** ABOUT TO INSTALL FILTERS GLOBALLY ***\n")
 	SetGlobalFilters(result.Filters)
+	fmt.Printf("*** FILTERS INSTALLED GLOBALLY ***\n")
 
 	duration := time.Since(startTime)
 	completionTime := time.Now()
@@ -284,6 +286,9 @@ func (fct *FrequencyComputationThread) performRebuild() {
 	// Add diagnostic line to show filters are installed
 	slog.Info("INSTALLED: frequency class filters are now active",
 		"num_filters", len(result.Filters))
+
+	// Print to stdout for immediate visibility
+	fmt.Printf("*** FREQUENCY FILTERS INSTALLED: %d filters now active ***\n", len(result.Filters))
 
 	// Log top tokens for debugging
 	if len(result.TopTokens) > 0 {

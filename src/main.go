@@ -253,25 +253,48 @@ func main() {
 					slog.Info("Filters are available for token routing",
 						"tweet_count", TotalTweetsRead,
 						"num_filters", len(filters))
+					fmt.Printf("*** TOKEN ROUTING ACTIVE: %d filters available ***\n", len(filters))
 				}
 
+				// Route tokens to frequency classes
 				for _, token := range tweet.Tokens {
-					freqClass := pipeline.GetTokenFrequencyClass(token)
-					freqClassProcessor.EnqueueToFrequencyClass(freqClass, token)
+					// Find which frequency class this token belongs to
+					freqClass := -1
+					for i, filter := range filters {
+						if filter.Contains(token) {
+							freqClass = i
+							break
+						}
+					}
 
-					// Debug: Log token assignments occasionally
-					if TotalTweetsRead%10000 == 0 {
-						slog.Debug("Token frequency class assignment",
-							"token", token,
-							"freq_class", freqClass,
-							"tweet_count", TotalTweetsRead)
+					if freqClass >= 0 {
+						// Generate or get the 3pk for this token
+						tokenMappingsMu.RLock()
+						threePK, exists := tokenToThreePK[token]
+						tokenMappingsMu.RUnlock()
+
+						if !exists {
+							// Generate new ThreePartKey and store in mappings
+							threePK = pipeline.GenerateThreePartKey(token)
+							tokenMappingsMu.Lock()
+							tokenToThreePK[token] = threePK
+							threePKToToken[threePK] = token
+							tokenMappingsMu.Unlock()
+						}
+
+						// Enqueue to appropriate frequency class
+						freqClassProcessor.EnqueueToFrequencyClass(freqClass, threePK)
+					} else {
+						// Token not in any frequency class (shouldn't happen with proper filters)
+						slog.Warn("Token not found in any frequency class filter", "token", token)
 					}
 				}
 			} else {
-				// Debug: Log when filters are not available
+				// No filters available yet - log occasionally
 				if TotalTweetsRead%10000 == 0 {
-					slog.Info("Skipping token routing - no frequency class filters available yet",
+					slog.Info("No frequency class filters available yet",
 						"tweet_count", TotalTweetsRead)
+					fmt.Printf("*** NO FILTERS AVAILABLE: waiting for first rebuild ***\n")
 				}
 			}
 		}
