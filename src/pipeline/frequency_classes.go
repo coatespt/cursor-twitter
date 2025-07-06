@@ -141,34 +141,63 @@ func min(a, b int) int {
 	return b
 }
 
-// BuildFrequencyClassHashSets is a dummy implementation that creates simple hash set filters
-// This is a placeholder until the real implementation is developed
+// BuildFrequencyClassHashSets divides tokens into F frequency classes and returns F hash set filters.
+// Each class accounts for roughly the same number of token occurrences (not unique tokens).
 func BuildFrequencyClassHashSets(tokenCounts map[string]int, F int, bloomSizes []uint, hashCounts []uint) FreqClassResult {
-	// Create F dummy filters using hash sets
-	filters := make([]FreqClassFilter, F)
-
-	// For now, just create empty hash sets for each class
-	for i := 0; i < F; i++ {
-		filters[i] = &SetFilter{tokens: make(map[string]bool)}
+	// Step 1: Build a slice of (token, count) pairs
+	tokenCountsSlice := make([]TokenCount, 0, len(tokenCounts))
+	for token, count := range tokenCounts {
+		tokenCountsSlice = append(tokenCountsSlice, TokenCount{Token: token, Count: count})
 	}
 
-	// Create some dummy top tokens for debugging
-	topTokens := make([]TokenCount, 0)
-	if len(tokenCounts) > 0 {
-		// Just take the first few tokens as "top" tokens
-		count := 0
-		for token, freq := range tokenCounts {
-			if count >= 10 { // Limit to 10 top tokens
-				break
-			}
-			topTokens = append(topTokens, TokenCount{Token: token, Count: freq})
-			count++
+	// Step 2: Sort by count descending (most frequent first)
+	sort.Slice(tokenCountsSlice, func(i, j int) bool {
+		return tokenCountsSlice[i].Count > tokenCountsSlice[j].Count
+	})
+
+	// Step 3: Calculate total count and class size
+	total := 0
+	for _, tc := range tokenCountsSlice {
+		total += tc.Count
+	}
+	if F <= 0 {
+		F = 1
+	}
+	C := total / F
+
+	// Step 4: Assign tokens to F classes
+	classes := make([][]string, F)
+	classIdx := 0
+	runningTotal := 0
+
+	for _, pair := range tokenCountsSlice {
+		if classIdx < F-1 && runningTotal >= (classIdx+1)*C {
+			classIdx++
 		}
+		classes[classIdx] = append(classes[classIdx], pair.Token)
+		runningTotal += pair.Count
 	}
+
+	// Step 5: Create F hash set filters and insert tokens
+	filters := make([]FreqClassFilter, F)
+	for i := 0; i < F; i++ {
+		setFilter := &SetFilter{tokens: make(map[string]bool, len(classes[i]))}
+		for _, token := range classes[i] {
+			setFilter.tokens[token] = true
+		}
+		filters[i] = setFilter
+	}
+
+	// Log final class distribution
+	fmt.Printf("*** FREQUENCY CLASS REBUILD: Built %d classes ***\n", F)
+	for i := 0; i < F; i++ {
+		fmt.Printf("  Class %d: %d tokens\n", i+1, len(classes[i]))
+	}
+	fmt.Printf("*** FREQUENCY CLASS REBUILD COMPLETE ***\n")
 
 	return FreqClassResult{
 		Filters:   filters,
-		TopTokens: topTokens,
+		TopTokens: tokenCountsSlice[:min(10, len(tokenCountsSlice))],
 	}
 }
 
@@ -298,4 +327,21 @@ func BuildFrequencyClassBloomFilters(tc *TokenCounter, F int, bloomSizes []uint,
 		Filters:   filters,
 		TopTokens: tokenCounts[:topN],
 	}
+}
+
+// GetTokenFrequencyClass returns the frequency class index for a token.
+// Checks filters in order from most frequent to least frequent.
+// If the token is not found in any class, returns the last index (least frequent class).
+func GetTokenFrequencyClass(token string) int {
+	filters := GetGlobalFilters() // Thread-safe getter
+	if len(filters) == 0 {
+		return 0 // Defensive: if no filters, return 0
+	}
+	for i, filter := range filters {
+		if filter.Contains(token) {
+			return i
+		}
+	}
+	// Not found: assign to least frequent class
+	return len(filters) - 1
 }
