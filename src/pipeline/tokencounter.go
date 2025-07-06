@@ -79,3 +79,12 @@ func (tc *TokenCounter) CountsSnapshot() map[string]int {
 	}
 	return snapshot
 }
+
+// Clear resets all token counts to zero.
+// Call this after frequency calculations to start fresh for the next window.
+func (tc *TokenCounter) Clear() {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	// Clear the map by creating a new one
+	tc.counts = make(map[string]int)
+}

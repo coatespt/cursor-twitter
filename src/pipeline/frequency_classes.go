@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sort"
 	"sync"
-	"time"
 
 	"github.com/bits-and-blooms/bloom/v3"
 )
@@ -44,159 +43,9 @@ type FreqClassResult struct {
 	TopTokens []TokenCount
 }
 
-// AsyncFreqClassManager handles asynchronous frequency class calculations
-type AsyncFreqClassManager struct {
-	currentFilters []FreqClassFilter
-	filtersMutex   sync.RWMutex
-	rebuildChan    chan struct{}
-	stopChan       chan struct{}
-	wg             sync.WaitGroup
-	tokenCounter   *TokenCounter
-
-	// Throttling mechanism
-	lastRebuildTime time.Time
-	rebuildDuration time.Duration
-	throttleMutex   sync.RWMutex
-}
-
-// NewAsyncFreqClassManager creates a new asynchronous frequency class manager
-func NewAsyncFreqClassManager(tc *TokenCounter) *AsyncFreqClassManager {
-	return &AsyncFreqClassManager{
-		rebuildChan:  make(chan struct{}, 1), // Buffered to avoid blocking
-		stopChan:     make(chan struct{}),
-		tokenCounter: tc,
-	}
-}
-
-// Start begins the background frequency calculation goroutine
-func (afcm *AsyncFreqClassManager) Start() {
-	afcm.wg.Add(1)
-	go afcm.backgroundWorker()
-}
-
-// Stop gracefully stops the background worker
-func (afcm *AsyncFreqClassManager) Stop() {
-	close(afcm.stopChan)
-	afcm.wg.Wait()
-}
-
-// TriggerRebuild signals that a frequency class rebuild is needed
-// Returns true if rebuild was triggered, false if throttled
-func (afcm *AsyncFreqClassManager) TriggerRebuild() bool {
-	// Check if we should throttle based on recent rebuild time
-	afcm.throttleMutex.RLock()
-	timeSinceLastRebuild := time.Since(afcm.lastRebuildTime)
-	afcm.throttleMutex.RUnlock()
-
-	// Throttle if last rebuild was less than 2x the rebuild duration ago
-	// This prevents overwhelming the system with rebuild requests
-	minInterval := afcm.rebuildDuration * 2
-	if timeSinceLastRebuild < minInterval {
-		fmt.Printf("[AsyncFreqClass] Throttling rebuild request (last rebuild was %v ago, min interval is %v)\n",
-			timeSinceLastRebuild, minInterval)
-		return false
-	}
-
-	select {
-	case afcm.rebuildChan <- struct{}{}:
-		// Successfully queued rebuild request
-		return true
-	default:
-		// Rebuild already queued, skip
-		return false
-	}
-}
-
-// GetCurrentFilters returns the current frequency class filters (thread-safe)
-func (afcm *AsyncFreqClassManager) GetCurrentFilters() []FreqClassFilter {
-	afcm.filtersMutex.RLock()
-	defer afcm.filtersMutex.RUnlock()
-	return afcm.currentFilters
-}
-
-// ShouldThrottleIngestion returns true if ingestion should be slowed down
-// to allow frequency calculations to catch up
-func (afcm *AsyncFreqClassManager) ShouldThrottleIngestion(maxRebuildTimeSeconds int) bool {
-	afcm.throttleMutex.RLock()
-	defer afcm.throttleMutex.RUnlock()
-
-	// If we haven't done a rebuild yet, don't throttle
-	if afcm.lastRebuildTime.IsZero() {
-		return false
-	}
-
-	// If the last rebuild took longer than expected, throttle
-	// This indicates the system is struggling to keep up
-	expectedRebuildTime := time.Duration(maxRebuildTimeSeconds) * time.Second
-	if afcm.rebuildDuration > expectedRebuildTime {
-		return true
-	}
-
-	// If we're getting rebuild requests too frequently, throttle
-	timeSinceLastRebuild := time.Since(afcm.lastRebuildTime)
-	minInterval := afcm.rebuildDuration * 2
-	return timeSinceLastRebuild < minInterval
-}
-
-// GetThrottleDelay returns the recommended delay for ingestion throttling
-func (afcm *AsyncFreqClassManager) GetThrottleDelay(maxRebuildTimeSeconds int) time.Duration {
-	if !afcm.ShouldThrottleIngestion(maxRebuildTimeSeconds) {
-		return 0
-	}
-
-	// Return a delay proportional to how far behind we are
-	afcm.throttleMutex.RLock()
-	timeSinceLastRebuild := time.Since(afcm.lastRebuildTime)
-	afcm.throttleMutex.RUnlock()
-
-	// Base delay of 100ms, plus additional time if we're falling behind
-	baseDelay := 100 * time.Millisecond
-	additionalDelay := timeSinceLastRebuild / 10 // Proportional to how long since last rebuild
-
-	return baseDelay + additionalDelay
-}
-
-// backgroundWorker runs the frequency calculation in the background
-func (afcm *AsyncFreqClassManager) backgroundWorker() {
-	defer afcm.wg.Done()
-
-	for {
-		select {
-		case <-afcm.stopChan:
-			return
-		case <-afcm.rebuildChan:
-			afcm.performRebuild(afcm.tokenCounter)
-		}
-	}
-}
-
-// performRebuild does the actual frequency class calculation
-func (afcm *AsyncFreqClassManager) performRebuild(tc *TokenCounter) {
-	startTime := time.Now()
-	fmt.Printf("[AsyncFreqClass] Starting background frequency calculation at %s\n", startTime.Format(time.RFC3339))
-
-	// Get a snapshot of current token counts (optimized for frequency calculations)
-	// We use the direct snapshot since we can tolerate some inconsistency
-	tokenCounts := tc.CountsSnapshot()
-
-	// Perform the calculation
-	result := BuildFrequencyClassBloomFiltersOptimized(tokenCounts, 7, nil, nil)
-
-	// Update filters atomically
-	afcm.filtersMutex.Lock()
-	afcm.currentFilters = result.Filters
-	afcm.filtersMutex.Unlock()
-
-	duration := time.Since(startTime)
-
-	// Update rebuild timing information
-	afcm.throttleMutex.Lock()
-	afcm.lastRebuildTime = time.Now()
-	afcm.rebuildDuration = duration
-	afcm.throttleMutex.Unlock()
-
-	fmt.Printf("[AsyncFreqClass] Completed background calculation in %v\n", duration)
-}
+// CRITICAL: ONLY the FCT (FrequencyComputationThread) should ever touch token counters or do frequency calculations.
+// DO NOT create any other threads, managers, or background processes that access token counters.
+// The FCT is the single source of truth for all token counting and frequency computation.
 
 // BuildFrequencyClassBloomFiltersOptimized is an optimized version that doesn't require TokenCounter
 func BuildFrequencyClassBloomFiltersOptimized(tokenCounts map[string]int, F int, bloomSizes []uint, hashCounts []uint) FreqClassResult {
@@ -290,6 +139,55 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// BuildFrequencyClassHashSets is a dummy implementation that creates simple hash set filters
+// This is a placeholder until the real implementation is developed
+func BuildFrequencyClassHashSets(tokenCounts map[string]int, F int, bloomSizes []uint, hashCounts []uint) FreqClassResult {
+	// Create F dummy filters using hash sets
+	filters := make([]FreqClassFilter, F)
+
+	// For now, just create empty hash sets for each class
+	for i := 0; i < F; i++ {
+		filters[i] = &SetFilter{tokens: make(map[string]bool)}
+	}
+
+	// Create some dummy top tokens for debugging
+	topTokens := make([]TokenCount, 0)
+	if len(tokenCounts) > 0 {
+		// Just take the first few tokens as "top" tokens
+		count := 0
+		for token, freq := range tokenCounts {
+			if count >= 10 { // Limit to 10 top tokens
+				break
+			}
+			topTokens = append(topTokens, TokenCount{Token: token, Count: freq})
+			count++
+		}
+	}
+
+	return FreqClassResult{
+		Filters:   filters,
+		TopTokens: topTokens,
+	}
+}
+
+// GlobalFilters holds the current frequency class filters for the main thread to access
+var GlobalFilters []FreqClassFilter
+var globalFiltersMutex sync.RWMutex
+
+// SetGlobalFilters sets the global frequency class filters (thread-safe)
+func SetGlobalFilters(filters []FreqClassFilter) {
+	globalFiltersMutex.Lock()
+	defer globalFiltersMutex.Unlock()
+	GlobalFilters = filters
+}
+
+// GetGlobalFilters returns the current global frequency class filters (thread-safe)
+func GetGlobalFilters() []FreqClassFilter {
+	globalFiltersMutex.RLock()
+	defer globalFiltersMutex.RUnlock()
+	return GlobalFilters
 }
 
 // BuildFrequencyClassBloomFilters divides tokens into F frequency classes and returns F filters.

@@ -23,20 +23,17 @@ import (
 
 // Config struct for YAML config file (add log_dir)
 type Config struct {
-	Mode                     string `yaml:"mode"`
-	InputDir                 string `yaml:"input"`
-	MQHost                   string `yaml:"mq_host"`
-	MQPort                   int    `yaml:"mq_port"`
-	MQQueue                  string `yaml:"mq_queue"`
-	WindowSize               int    `yaml:"window"`
-	BatchSize                int    `yaml:"batch"`
-	Throttle                 int    `yaml:"throttle"`
-	Verbose                  bool   `yaml:"verbose"`
-	LogDir                   string `yaml:"log_dir"`
-	FreqClassIntervalMinutes int    `yaml:"freq_class_interval_minutes"`
-	FreqClasses              int    `yaml:"freq_classes"`
-	EnableThrottling         bool   `yaml:"enable_throttling"`
-	MaxRebuildTimeSeconds    int    `yaml:"max_rebuild_time_seconds"`
+	Mode       string `yaml:"mode"`
+	InputDir   string `yaml:"input"`
+	MQHost     string `yaml:"mq_host"`
+	MQPort     int    `yaml:"mq_port"`
+	MQQueue    string `yaml:"mq_queue"`
+	WindowSize int    `yaml:"window"`
+	BatchSize  int    `yaml:"batch"`
+
+	Verbose     bool   `yaml:"verbose"`
+	LogDir      string `yaml:"log_dir"`
+	FreqClasses int    `yaml:"freq_classes"`
 }
 
 // GlobalTokenCounter keeps track of token counts in the current window.
@@ -46,6 +43,15 @@ var GlobalTokenCounter = pipeline.NewTokenCounter()
 var (
 	TotalTweetsRead    int
 	TotalTokensCounted int
+	lastStatsTime      time.Time
+	lastTweetCount     int
+)
+
+// Global mappings for token <-> ThreePartKey relationships
+var (
+	tokenToThreePK  map[string]tweets.ThreePartKey
+	threePKToToken  map[tweets.ThreePartKey]string
+	tokenMappingsMu sync.RWMutex
 )
 
 // Sliding window management
@@ -57,17 +63,17 @@ var (
 // Add a global variable to hold the stats CSV file path
 var statsCSVPath string
 
-// Global Bloom filters and last rebuild time
+// Global Bloom filters
 var (
-	GlobalFilters            []pipeline.FreqClassFilter
-	lastFreqClassRebuildTime time.Time
+	GlobalFilters []pipeline.FreqClassFilter
 )
 
-// Add a global variable to hold the interval start time
-var intervalStartUnix int64
-
-// Global asynchronous frequency class manager
-var asyncFreqClassManager *pipeline.AsyncFreqClassManager
+// Global FCT and queues
+var (
+	inboundTokenQueue *pipeline.TokenQueue
+	oldTokenQueue     *pipeline.TokenQueue
+	fct               *pipeline.FrequencyComputationThread
+)
 
 func main() {
 	// Add a command line flag to control printing of tweets
@@ -104,10 +110,35 @@ func main() {
 	// Start periodic stats printer (prints every 30 seconds)
 	startStatsPrinter()
 
-	// Initialize and start the asynchronous frequency class manager
-	asyncFreqClassManager = pipeline.NewAsyncFreqClassManager(GlobalTokenCounter)
-	asyncFreqClassManager.Start()
-	defer asyncFreqClassManager.Stop()
+	// Initialize global token mappings
+	tokenToThreePK = make(map[string]tweets.ThreePartKey)
+	threePKToToken = make(map[tweets.ThreePartKey]string)
+
+	// Create the token queues and FCT
+	inboundTokenQueue = pipeline.NewTokenQueue()
+	oldTokenQueue = pipeline.NewTokenQueue()
+
+	// Create FCT with configuration
+	freqClasses := cfg.FreqClasses
+	if freqClasses <= 0 {
+		slog.Error("Main: freq_classes must be > 0 in config, got", "value", freqClasses)
+		os.Exit(1)
+	}
+
+	fct = pipeline.NewFrequencyComputationThread(
+		GlobalTokenCounter,
+		inboundTokenQueue,
+		oldTokenQueue,
+		0, // Not used - frequency rebuilds happen based on window size
+		freqClasses,
+	)
+
+	// Start the FCT
+	fct.Start()
+	defer fct.Stop()
+
+	slog.Info("FCT created and started",
+		"freq_classes", freqClasses)
 
 	// Connect to RabbitMQ
 	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
@@ -155,99 +186,107 @@ func main() {
 		slog.Error("Failed to register a consumer", "error", err)
 		return
 	}
-// TODO:Add Global stats including tweet count, token count, distinct token count
-//     (available from map size), 
-//    number of W window cycles, number of pipeline cycles, etc.
-//
-// TODO: Nothing like maxRebuildTime should exist. Check that this does not exist.
+	// TODO:Add Global stats including tweet count, token count, distinct token count
+	//     (available from map size),
+	//    number of W window cycles, number of pipeline cycles, etc.
+	//
+	// TODO: Nothing like maxRebuildTime should exist. Check that this does not exist.
 
+	// TODO: Create the TweetWindowQueue      This will not be allowed to grow beyond WindowSize
+	// TODO: Create the InboundTokenQueue
+	// TODO: Create the OldTokenQueue
+	// TODO: Create the InboundTweetQueue
 
-// TODO: Create the TweetWindowQueue      This will not be allowed to grow beyond WindowSize
-// TODO: Create the InboundTokenQueue
-// TODO: Create the OldTokenQueue
-// TODO: Create the InboundTweetQueue 
+	// TODO: Create a FrequencyComputationThread
+	//       THE FCT take tokens from the InboundTokenQueue and register them in
+	//       the CountMap.
+	//       It also takes tokens from the OldTokenQueue and decrements the counts in the CountMap.
+	//       It also checks a flag to see if it should stop taking tokens and
+	//       compute the frequency class filters.  If so,
+	//             it copies the CountMap to a new array
+	//             clears the existing CountMap.
+	//       It also sets the flag to resume taking tokens.
+	//       It also copies the CountMap to a new array and clears the CountMap.
+	//       It also sets the flag to resume taking tokens.
+	//       It also sets the flag to resume taking tokens.
+	//       It also sets the flag to resume taking tokens.
 
-
-// TODO: Create a FrequencyComputationThread
-//       THE FCT take tokens from the InboundTokenQueue and register them in 
-//       the CountMap.
-//       It also takes tokens from the OldTokenQueue and decrements the 
-counts in the CountMap.
-//       It also checks a flag to see if it should stop taking tokens and 
-//       compute the frequency class filters.  If so, 
-//             it copies the CountMap to a new array 
-//             clears the existing CountMap.
-//       It also sets the flag to resume taking tokens.
-//       It also copies the CountMap to a new array and clears the CountMap.
-//       It also sets the flag to resume taking tokens. 
-//       It also sets the flag to resume taking tokens.
-//       It also sets the flag to resume taking tokens.
- 
 	// Main loop runs forever
 	for msg := range msgs {
-		// TODOCheck if we should throttle ingestion. I don't think this is how to do it.
-		maxRebuildTime := cfg.MaxRebuildTimeSeconds
-		if maxRebuildTime <= 0 {
-			maxRebuildTime = 5 // Default to 5 seconds
-		}
-		if cfg.EnableThrottling && asyncFreqClassManager.ShouldThrottleIngestion(maxRebuildTime) {
-			delay := asyncFreqClassManager.GetThrottleDelay(maxRebuildTime)
-			slog.Info("Throttling ingestion", "delay", delay)
-			time.Sleep(delay)
-		}
+
 		tweet, err := parseCSVToTweet(string(msg.Body))
 		if err != nil {
 			//slog.Warn("Failed to parse tweet", "error", err, "raw_row", string(msg.Body))
-			fmt.Printf("[PARSE ERROR] %v\nRaw: %s\n", err, string(msg.Body))
+			//fmt.Printf("[PARSE ERROR] %v\nRaw: %s\n", err, string(msg.Body))
 			continue
 		}
-		// TODO: Write tweet to the TweetWindowQueue
-		// TODO: Write tweet tokens to the InboundTokenQueue
-		// TODO: If TweetWindowQueue reaches WindowSize, remove the oldest tweet
-		//     and write its tokens to the OldTokenQueue
-		// TODO: 
-
 		// Only print the tweet if the flag is set
 		if *printTweets {
 			fmt.Printf("Parsed Tweet: %+v\n", tweet)
 		}
 
+		// Always add new tweet tokens to the inbound queue for FCT to build frequency filters
+		if len(tweet.Tokens) > 0 {
+			inboundTokenQueue.Enqueue(tweet.Tokens)
+			slog.Info("Added tokens to InboundTokenQueue",
+				"tweet_id", tweet.IDStr,
+				"token_count", len(tweet.Tokens),
+				"queue_size_after", inboundTokenQueue.Len())
+		}
+
 		// Manage the sliding window - add new tweet and remove old ones
-		// TODO: This is wrong. WindowSize is a constant set in configuration. A queue called 
+		// TODO: This is wrong. WindowSize is a constant set in configuration. A queue called
 		// Inbound Tweet structs are stored on a Queue called TweetWindowQueue.
 		// The new inbound tweet's tokens are placed on an InboundTokenQueue.
 		// if the TweetWindowQueue reaches WindowSize, the oldest tweet is removed and
 		// it's tokens are placed on an OldTokenQueue.
 
-
-		windowSize := cfg.WindowSize
-		if windowSize <= 0 {
-			windowSize = 15 // Default to 15 minutes if not configured
+		if cfg.WindowSize <= 0 {
+			slog.Error("Main: window must be > 0 in config, got", "value", cfg.WindowSize)
+			os.Exit(1)
 		}
-		manageSlidingWindow(tweet, windowSize)
+		manageSlidingWindow(tweet, cfg.WindowSize)
 
-		// Interval-based frequency class/Bloom filter rebuilding
-		// When a frequency interval has passed we compute the global frequency table,
-		// partition the tokens into F frequency classes, and build the Bloom filters.
-		// The Bloom filters are used to filter the tokens into the correct frequency class.
+		// Frequency class rebuilding - happens every time we cross the window boundary
+		// When we've processed window-size tweets, we rebuild the frequency classes
+		// NOTE: TotalTweetsRead is incremented in parseCSVToTweet, so we check after parsing
 
-		interval := int64(cfg.WindowSize) * 60 // interval in seconds
-		if intervalStartUnix == 0 {
-			intervalStartUnix = tweet.Unix - (tweet.Unix % interval)
+		// Check if we've crossed a window boundary
+		currentWindow := TotalTweetsRead / cfg.WindowSize
+
+		// Debug: Log every 1000 tweets to see what's happening
+		if TotalTweetsRead%1000 == 0 {
+			slog.Info("Main: Window boundary debug",
+				"tweet_count", TotalTweetsRead,
+				"window_size", cfg.WindowSize,
+				"current_window", currentWindow,
+				"modulo_check", TotalTweetsRead%cfg.WindowSize)
 		}
-		if tweet.Unix >= intervalStartUnix+interval {
-			// Trigger asynchronous frequency class rebuild
-			rebuildTriggered := asyncFreqClassManager.TriggerRebuild()
 
-			// Advance to the start of the interval containing this tweet
-			intervalStartUnix = tweet.Unix - (tweet.Unix % interval)
-
-			if rebuildTriggered {
-				slog.Info("Triggered asynchronous frequency class rebuild", "tweet_time", tweet.CreatedAt.Format(time.RFC3339), "window_minutes", cfg.WindowSize)
+		if TotalTweetsRead%cfg.WindowSize == 0 && TotalTweetsRead > 0 {
+			// We've crossed into a new window, trigger rebuild
+			fmt.Printf("*** WINDOW BOUNDARY CROSSED: Tweet %d, Window %d ***\n",
+				TotalTweetsRead, currentWindow)
+			slog.Info("Main: About to trigger rebuild",
+				"tweet_count", TotalTweetsRead,
+				"window_size", cfg.WindowSize,
+				"current_window", currentWindow)
+			triggered := fct.TriggerRebuild()
+			if triggered {
+				fmt.Printf("*** REBUILD TRIGGERED SUCCESSFULLY ***\n")
+				slog.Info("Main: Window boundary crossed, triggered rebuild",
+					"tweet_count", TotalTweetsRead,
+					"window_size", cfg.WindowSize,
+					"current_window", currentWindow)
 			} else {
-				slog.Info("Frequency class rebuild throttled", "tweet_time", tweet.CreatedAt.Format(time.RFC3339), "window_minutes", cfg.WindowSize)
+				fmt.Printf("*** REBUILD ALREADY IN PROGRESS ***\n")
+				slog.Warn("Main: Failed to trigger rebuild - already in progress",
+					"tweet_count", TotalTweetsRead,
+					"window_size", cfg.WindowSize,
+					"current_window", currentWindow)
 			}
 		}
+
 	}
 }
 
@@ -284,6 +323,8 @@ func setupLogger(logDir string) (*slog.Logger, *os.File, error) {
 
 // startStatsPrinter launches a goroutine that prints stats every 30 seconds.
 func startStatsPrinter() {
+	lastStatsTime = time.Now()
+	lastTweetCount = 0
 	ticker := time.NewTicker(30 * time.Second)
 	go func() {
 		for range ticker.C {
@@ -309,24 +350,48 @@ func ensureStatsCSVHeader(path string) {
 
 // printStats prints the current pipeline statistics and logs them as CSV.
 func printStats() {
-	timestamp := time.Now().Format(time.RFC3339)
+	now := time.Now()
+	timestamp := now.Format(time.RFC3339)
 	totalTweets := TotalTweetsRead
 	totalTokens := TotalTokensCounted
 	distinctTokens := len(GlobalTokenCounter.Counts())
+
+	// Calculate processing rate
+	timeDiff := now.Sub(lastStatsTime).Seconds()
+	tweetDiff := totalTweets - lastTweetCount
+	processingRate := float64(tweetDiff) / timeDiff
 
 	// Get sliding window stats
 	tweetQueueMu.RLock()
 	windowSize := len(tweetQueue)
 	tweetQueueMu.RUnlock()
 
+	// Get queue lengths
+	inboundQueueSize := inboundTokenQueue.Len()
+	oldQueueSize := oldTokenQueue.Len()
+
 	fmt.Printf("\n--- Pipeline Stats ---\n")
 	fmt.Printf("Total tweets read: %d\n", totalTweets)
 	fmt.Printf("Total tokens counted: %d\n", totalTokens)
 	fmt.Printf("Distinct tokens: %d\n", distinctTokens)
 	fmt.Printf("Tweets in current window: %d\n", windowSize)
+	fmt.Printf("Inbound token queue size: %d\n", inboundQueueSize)
+	fmt.Printf("Old token queue size: %d\n", oldQueueSize)
+	fmt.Printf("Processing rate: %.2f tweets/sec\n", processingRate)
 	fmt.Printf("----------------------\n")
 	// Also log to slog
-	slog.Info("Pipeline stats", "tweets", totalTweets, "tokens", totalTokens, "distinct", distinctTokens, "window_size", windowSize)
+	slog.Info("Pipeline stats",
+		"tweets", totalTweets,
+		"tokens", totalTokens,
+		"distinct", distinctTokens,
+		"window_size", windowSize,
+		"inbound_queue_size", inboundQueueSize,
+		"old_queue_size", oldQueueSize,
+		"processing_rate_tweets_per_sec", processingRate)
+
+	// Update for next calculation
+	lastStatsTime = now
+	lastTweetCount = totalTweets
 
 	// Log as CSV for machine consumption
 	f, err := os.OpenFile(statsCSVPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -345,8 +410,8 @@ func printStats() {
 	writer.Flush()
 }
 
-// parseCSVToTweet parses a CSV row string into a Tweet struct, 
-// tokenizes the text, generates ThreePartKeys, and updates the global 
+// parseCSVToTweet parses a CSV row string into a Tweet struct,
+// tokenizes the text, generates ThreePartKeys, and updates the global
 // token counter.
 func parseCSVToTweet(row string) (*tweets.Tweet, error) {
 	reader := csv.NewReader(strings.NewReader(row))
@@ -374,16 +439,11 @@ func parseCSVToTweet(row string) (*tweets.Tweet, error) {
 	// Create the Tweet struct and fill in the basic fields from the CSV
 	tweet := &tweets.Tweet{
 		IDStr:        record[0],
-		CreatedAt:    createdAt,
 		Unix:         createdAt.Unix(),
 		UserIDStr:    record[2],
-		RetweetCount: record[3],
 		Text:         record[4],
-		Retweeted:    record[5],
-		At:           record[6],
-		Http:         record[7],
-		Hashtag:      record[8],
-		ThreePKs:     nil, // We'll fill this in below
+		Retweeted:    record[5] == "True",
+		RetweetCount: 0,   // TODO: parse record[3] as int
 		Tokens:       nil, // We'll fill this in below
 	}
 
@@ -397,22 +457,28 @@ func parseCSVToTweet(row string) (*tweets.Tweet, error) {
 	tokens := simpleTokenize(tweet.Text)
 	tweet.Tokens = tokens // Store tokens in the Tweet struct
 
-	// TODO: Check the global mapping for tokens-3pk's and 3pk's-tokens.
-	//    If the lookup fails, generate one and insert it into the mapping
-	//    before inserting it into the tweet.
-	// TODO: Verify that this is saving multiple copies if a word is repeated.
-	// 
+	// Generate ThreePartKeys and store in global mappings
 	var threePKs []tweets.ThreePartKey
 	for _, token := range tokens {
-		threePK := pipeline.GenerateThreePartKey(token)
+		// Check if we already have a mapping for this token
+		tokenMappingsMu.RLock()
+		threePK, exists := tokenToThreePK[token]
+		tokenMappingsMu.RUnlock()
+
+		if !exists {
+			// Generate new ThreePartKey and store in mappings
+			threePK = pipeline.GenerateThreePartKey(token)
+			tokenMappingsMu.Lock()
+			tokenToThreePK[token] = threePK
+			threePKToToken[threePK] = token
+			tokenMappingsMu.Unlock()
+		}
+
 		threePKs = append(threePKs, threePK)
 	}
-	tweet.ThreePKs = threePKs
+	// Note: ThreePKs not stored in Tweet struct but still generated for other uses
 
-	// Step 3: Update the global token counter for these tokens
-	GlobalTokenCounter.IncrementTokens(tokens)
-
-	// Step 4: Update global stats counters
+	// Step 3: Update global stats counters (token counting is now handled by FCT)
 	TotalTweetsRead++
 	TotalTokensCounted += len(tokens)
 
@@ -451,35 +517,37 @@ func normalizeWhitespace(s string) string {
 }
 
 // manageSlidingWindow adds a new tweet to the queue and removes old tweets that fall outside the window
-func manageSlidingWindow(tweet *tweets.Tweet, windowSizeMinutes int) {
+func manageSlidingWindow(tweet *tweets.Tweet, windowSize int) {
 	tweetQueueMu.Lock()
 	defer tweetQueueMu.Unlock()
 
 	// Add the new tweet to the queue
 	tweetQueue = append(tweetQueue, tweet)
 
-	// Calculate the cutoff time for the sliding window
-	cutoffTime := tweet.Unix - int64(windowSizeMinutes*60)
+	// Keep only the most recent windowSize tweets
+	if len(tweetQueue) > windowSize {
+		removedCount := len(tweetQueue) - windowSize
+		oldTweets := tweetQueue[:removedCount]
+		tweetQueue = tweetQueue[removedCount:]
 
-	// Remove old tweets that fall outside the window
-	removedCount := 0
-	for len(tweetQueue) > 0 && tweetQueue[0].Unix < cutoffTime {
-		oldTweet := tweetQueue[0]
-		tweetQueue = tweetQueue[1:] // Remove from front of queue
-
-		// Decrement tokens from the old tweet
-		if len(oldTweet.Tokens) > 0 {
-			GlobalTokenCounter.DecrementTokens(oldTweet.Tokens)
-			removedCount++
+		// Add old tweet tokens to the old token queue for FCT to process
+		for _, oldTweet := range oldTweets {
+			if len(oldTweet.Tokens) > 0 {
+				oldTokenQueue.Enqueue(oldTweet.Tokens)
+				slog.Info("Added old tokens to OldTokenQueue",
+					"tweet_id", oldTweet.IDStr,
+					"token_count", len(oldTweet.Tokens),
+					"queue_size_after", oldTokenQueue.Len())
+			}
 		}
-	}
 
-	// Log window management stats periodically
-	if removedCount > 0 {
-		slog.Info("Sliding window management",
-			"tweets_removed", removedCount,
-			"queue_size", len(tweetQueue),
-			"window_minutes", windowSizeMinutes)
+		// Log window management stats
+		if removedCount > 0 {
+			slog.Info("Sliding window management",
+				"tweets_removed", removedCount,
+				"queue_size", len(tweetQueue),
+				"window_size", windowSize)
+		}
 	}
 }
 

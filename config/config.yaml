@@ -1,11 +1,28 @@
 # Sample configuration for the Twitter subject detection pipeline
-mode: mq
-input: ./data
+
+# So far the only input mode is RabbitMQ
+mode: mqj
 mq_host: localhost
 mq_port: 5672
 mq_queue: tweet_in
-window: 2000
-batch: 200
-throttle: 10000
+
+# The number of tweets to keep in memory
+# Also the set of tweets over which global frequency classes are computed
+window: 50000
+
+# The number of tweets to process in each batch
+batch: 5000
+
+# Whether to log to the console
 verbose: true 
+
+# The directory to log to
 log_dir: ../logs
+
+# The minimum Z score for a 3pk element to be considered anomalous
+z_score: 20
+
+# The number of frequency classes to create
+freq_classes: 7
+
+
