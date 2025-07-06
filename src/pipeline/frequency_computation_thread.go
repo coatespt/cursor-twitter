@@ -1,7 +1,9 @@
 package pipeline
 
 import (
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"log/slog"
@@ -16,9 +18,7 @@ type FrequencyComputationThread struct {
 	oldTokenQueue     *TokenQueue
 
 	// Frequency calculation control
-	shouldRebuild   bool
-	rebuildMutex    sync.RWMutex
-	rebuildComplete chan struct{}
+	shouldRebuild int32 // Atomic boolean (0 = false, 1 = true)
 
 	// Thread control
 	stopChan chan struct{}
@@ -49,7 +49,6 @@ func NewFrequencyComputationThread(
 		tokenCounter:      tokenCounter,
 		inboundTokenQueue: inboundTokenQueue,
 		oldTokenQueue:     oldTokenQueue,
-		rebuildComplete:   make(chan struct{}, 1), // Buffered to avoid blocking
 		stopChan:          make(chan struct{}),
 		freqClassInterval: time.Duration(freqClassIntervalTweets) * time.Second, // Not used in current implementation
 		freqClasses:       freqClasses,
@@ -75,29 +74,10 @@ func (fct *FrequencyComputationThread) Stop() {
 }
 
 // TriggerRebuild signals that a frequency class rebuild is needed
-// Returns true if the rebuild was triggered, false if one was already in progress
-func (fct *FrequencyComputationThread) TriggerRebuild() bool {
-	fct.rebuildMutex.Lock()
-	defer fct.rebuildMutex.Unlock()
-
-	if fct.shouldRebuild {
-		slog.Info("FCT: Rebuild flag already set, skipping trigger")
-		return false // Already triggered
-	}
-
-	fct.shouldRebuild = true
+// The FCT will handle the rebuild autonomously when it's ready
+func (fct *FrequencyComputationThread) TriggerRebuild() {
+	atomic.StoreInt32(&fct.shouldRebuild, 1)
 	slog.Info("FCT: Rebuild flag SET - frequency boundary crossed")
-	return true
-}
-
-// WaitForRebuildComplete blocks until the current rebuild is complete
-func (fct *FrequencyComputationThread) WaitForRebuildComplete() {
-	select {
-	case <-fct.rebuildComplete:
-		// Rebuild completed
-	case <-time.After(30 * time.Second):
-		slog.Warn("Timeout waiting for frequency rebuild to complete")
-	}
 }
 
 // run is the main loop of the FCT goroutine
@@ -126,16 +106,31 @@ func (fct *FrequencyComputationThread) run() {
 			if loopCount%10000 == 0 { // Log every 10,000 iterations
 				slog.Info("FCT loop iteration", "count", loopCount)
 			}
+			if loopCount%100000 == 0 { // Log every 100,000 iterations to confirm it's running
+				slog.Info("FCT: Loop is running, iteration", "count", loopCount)
+			}
 
 			// Check if rebuild is needed first
-			fct.rebuildMutex.RLock()
-			shouldRebuild := fct.shouldRebuild
-			fct.rebuildMutex.RUnlock()
+			shouldRebuild := atomic.LoadInt32(&fct.shouldRebuild) == 1
 
-			// Debug: Log the branch we're taking
-			if loopCount%10000 == 0 {
+			// Debug: Log rebuild flag status more frequently
+			if loopCount%1000 == 0 {
+				slog.Info("FCT: Rebuild flag check",
+					"loop_count", loopCount,
+					"should_rebuild", shouldRebuild)
+			}
+
+			// ALWAYS log when rebuild flag is true (this should be rare)
+			if shouldRebuild {
+				slog.Info("FCT: REBUILD FLAG DETECTED!",
+					"loop_count", loopCount,
+					"should_rebuild", shouldRebuild)
+			}
+
+			// Debug: Log the branch we're taking more frequently
+			if loopCount%1000 == 0 {
 				if shouldRebuild {
-					slog.Debug("FCT: Taking rebuild branch", "loop_count", loopCount)
+					slog.Info("FCT: Taking rebuild branch", "loop_count", loopCount)
 				} else {
 					slog.Debug("FCT: Taking token processing branch", "loop_count", loopCount)
 				}
@@ -148,58 +143,49 @@ func (fct *FrequencyComputationThread) run() {
 				currentRebuildCount := fct.rebuildCount
 				fct.rebuildCountMutex.Unlock()
 
-				slog.Info("FCT: Starting rebuild", "rebuild_count", currentRebuildCount)
+				// Consume all accumulated tokens before starting computation
+				slog.Info("FCT: Consuming accumulated tokens before rebuild", "rebuild_count", currentRebuildCount)
+				fct.consumeAllAccumulatedTokens()
+
+				rebuildStartTime := time.Now()
+				slog.Info("FCT: Starting rebuild", "rebuild_count", currentRebuildCount, "start_time", rebuildStartTime.Format("15:04:05"))
+				fmt.Printf("*** FCT REBUILD STARTED at %s ***\n", rebuildStartTime.Format("15:04:05"))
 				// Pause token processing and do rebuild
 				fct.performRebuild()
 
-				// Signal completion
-				select {
-				case fct.rebuildComplete <- struct{}{}:
-				default:
-					// Channel is full, which means someone is already waiting
-				}
-
-				// Reset the rebuild flag
-				fct.rebuildMutex.Lock()
-				fct.shouldRebuild = false
-				fct.rebuildMutex.Unlock()
-				slog.Info("FCT: Rebuild flag RESET - returning to token processing", "rebuild_count", currentRebuildCount)
-
-				// Debug: Log queue sizes after rebuild to confirm we can process tokens
+				// Debug: Log queue sizes after rebuild
 				inboundSizeAfter := fct.inboundTokenQueue.Len()
 				oldSizeAfter := fct.oldTokenQueue.Len()
 				slog.Info("FCT: Queue sizes after rebuild",
 					"rebuild_count", currentRebuildCount,
 					"inbound_queue_size", inboundSizeAfter,
 					"old_queue_size", oldSizeAfter)
-			} else {
-				// Process tokens continuously
-				inboundSize := fct.inboundTokenQueue.Len()
-				oldSize := fct.oldTokenQueue.Len()
-				if inboundSize > 0 || oldSize > 0 {
-					slog.Info("FCT: Processing tokens", "inbound_queue_size", inboundSize, "old_queue_size", oldSize)
-				}
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							slog.Error("FCT processTokens panicked", "panic", r)
-						}
-					}()
-					fct.processTokens()
+
+			}
+
+			// Process a small amount of tokens (main loop body - always happens)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("FCT processTokens panicked", "panic", r)
+					}
 				}()
+				fct.processTokens()
+			}()
 
-				// Add a small delay when no tokens are being processed to prevent CPU spinning
-				if inboundSize == 0 && oldSize == 0 {
-					time.Sleep(1 * time.Millisecond)
-				}
+			// Add a small delay when no tokens are being processed to prevent CPU spinning
+			inboundSize := fct.inboundTokenQueue.Len()
+			oldSize := fct.oldTokenQueue.Len()
+			if inboundSize == 0 && oldSize == 0 {
+				time.Sleep(1 * time.Millisecond)
+			}
 
-				// Debug: Log when we're in the token processing branch but queues are empty
-				if loopCount%1000 == 0 && inboundSize == 0 && oldSize == 0 {
-					slog.Debug("FCT: No tokens to process, waiting...",
-						"loop_count", loopCount,
-						"inbound_queue_size", inboundSize,
-						"old_queue_size", oldSize)
-				}
+			// Debug: Log when queues are empty
+			if loopCount%1000 == 0 && inboundSize == 0 && oldSize == 0 {
+				slog.Debug("FCT: No tokens to process, waiting...",
+					"loop_count", loopCount,
+					"inbound_queue_size", inboundSize,
+					"old_queue_size", oldSize)
 			}
 		}
 	}
@@ -256,6 +242,10 @@ func (fct *FrequencyComputationThread) processTokens() {
 
 // performRebuild performs the actual frequency class calculation and filter building
 func (fct *FrequencyComputationThread) performRebuild() {
+	// Reset the rebuild flag immediately so loop can detect new rebuild requests
+	atomic.StoreInt32(&fct.shouldRebuild, 0)
+	slog.Info("FCT: Rebuild flag RESET at start of performRebuild")
+
 	startTime := time.Now()
 	slog.Info("Starting frequency class rebuild")
 
@@ -280,10 +270,16 @@ func (fct *FrequencyComputationThread) performRebuild() {
 	SetGlobalFilters(result.Filters)
 
 	duration := time.Since(startTime)
+	completionTime := time.Now()
 	slog.Info("Frequency class rebuild completed",
 		"duration", duration,
+		"completion_time", completionTime.Format("15:04:05"),
 		"token_count", len(tokenCounts),
 		"filters_built", len(result.Filters))
+
+	// Also print to stdout for immediate visibility
+	fmt.Printf("*** FREQUENCY REBUILD COMPLETED at %s (duration: %v) ***\n",
+		completionTime.Format("15:04:05"), duration)
 
 	// Add diagnostic line to show filters are installed
 	slog.Info("INSTALLED: frequency class filters are now active",
@@ -318,4 +314,44 @@ func (fct *FrequencyComputationThread) GetRebuildCount() int {
 	fct.rebuildCountMutex.Lock()
 	defer fct.rebuildCountMutex.Unlock()
 	return fct.rebuildCount
+}
+
+// consumeAllAccumulatedTokens processes tokens from both queues using queue size snapshots
+func (fct *FrequencyComputationThread) consumeAllAccumulatedTokens() {
+	// Get current queue sizes (snapshot to prevent infinite catch-up)
+	inboundQueueSize := fct.inboundTokenQueue.Len()
+	oldQueueSize := fct.oldTokenQueue.Len()
+
+	slog.Info("FCT: Starting token consumption with queue snapshot",
+		"inbound_queue_size", inboundQueueSize,
+		"old_queue_size", oldQueueSize)
+
+	inboundProcessed := 0
+	oldProcessed := 0
+
+	// Process exactly inboundQueueSize tokens from inbound queue
+	for i := 0; i < inboundQueueSize; i++ {
+		tokens := fct.inboundTokenQueue.Dequeue()
+		if tokens == nil {
+			break // Queue is empty (shouldn't happen given our size check)
+		}
+		fct.tokenCounter.IncrementTokens(tokens)
+		inboundProcessed += len(tokens)
+	}
+
+	// Process exactly oldQueueSize tokens from old queue
+	for i := 0; i < oldQueueSize; i++ {
+		tokens := fct.oldTokenQueue.Dequeue()
+		if tokens == nil {
+			break // Queue is empty (shouldn't happen given our size check)
+		}
+		fct.tokenCounter.DecrementTokens(tokens)
+		oldProcessed += len(tokens)
+	}
+
+	slog.Info("FCT: Consumed tokens using queue snapshot",
+		"inbound_processed", inboundProcessed,
+		"old_processed", oldProcessed,
+		"inbound_queue_size_after", fct.inboundTokenQueue.Len(),
+		"old_queue_size_after", fct.oldTokenQueue.Len())
 }

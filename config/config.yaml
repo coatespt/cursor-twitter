@@ -8,7 +8,7 @@ mq_queue: tweet_in
 
 # The number of tweets to keep in memory
 # Also the set of tweets over which global frequency classes are computed
-window: 50000
+window: 150000
 
 # The number of tweets to process in each batch
 batch: 5000

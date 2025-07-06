@@ -73,20 +73,19 @@ The key to this working is that the sliding window has to be small, e.g., fiver 
 tweets or so to keep the computation manageable. The size of the window determines the "resolution" of the view. 
 
 So sum up, the algorithm 
-  -- Detects all the currently surging words.
-  -- Finds the tweets in the current window that use a proper subset of these words
-  -- Discards all the other tweets
-  -- Clusters the busy-word tweets by the busy words they use.  This isn't necessarily
-     a unique clustering.
+- Detects all the currently surging words.
+- Finds the tweets in the current window that use a proper subset of these words
+- Discards all the other tweets
+- Clusters the busy-word tweets by the busy words they use.  This isn't necessarily a unique clustering.
 
 ### How It Works
 
 The trick is, you can't use an ordinary frequency calculation. Frequency calculation
-could be modified to show frequency relative to the previous frequencies, but you'd have to do that massive calculation every few seconds in order to keep the window small.
+could be modified to show frequency relative to the previous frequencies, but you'd have to do that massive calculation every few seconds in order to keep the Tweet window small.
  
 It would be difficult to execute such a large computation on millions of words every few seconds. 
 You would need to 
-- count the frequencies of all words in the current window of time.
+- Count the frequencies of all words in the current window of time.
 - When the limit of the window is reached, compute the relative frequencies for the words.
 - Compare them to the relative frequencies of of the current window to those of previous window
 - Derive a list of those with changes too large to be random chance.
@@ -95,24 +94,32 @@ In addition to this, words differ radically in how often they are used. The most
 or so words in a window of say, a million tweets, get about as much total usage as the least
 used 100,000.
 
---- How the heuristic works.
+## How the heuristic works.
 
---- Word frequency computations.
-We use a periodic computation of global frequency to divide the universe of words into F frequency classes, with the most frequently used words in the first class, and the least frequent words in the last class. This frequency analysis is done outside of the processing of the stream of inbound tweets.
+### Word Frequency Computations
 
-The global computation is done at a very coarse grain, e.g., say, between fifteen minutes and an hour.  The word freqencies are computed and the words are divided into equivalence classes according to
-frequency.  If you have F frequency classes, the words in each class will in the aggregate have
-been used approximately equally.  
+We use a periodic computation of global word frequency to divide the universe of words into F frequency classes, with the most frequently used words in the first class, and the least frequent words in the last class. This frequency analysis is done outside of the processing of the stream of inbound tweets. The purpose is to provide a background look at what normal word frequencies are 
+at the particular time of day, day of week, etc.
+
+The global computation is done at a very coarse grain, e.g., say, between fifteen minutes and an hour.The word freqencies are computed and the words are divided into equivalence classes according to
+frequency. The words in each class will account for approximately equal usage.
 
 The word frequency classes are used to construct a series of filters that allow an incoming word's 
-frequency to be identified. The first few classes are quite small, so hashed sets are appropriate.
-The bigger classes use Bloom filters.  Any word that doesn't match at all obviously rare, so it is 
-treated as being in the least frequent class.
+frequency to be identified. The first few classes contain only a few words, and the last more than all the others put together. Any incoming word that doesn't match to any frequency class is necessarily rare, so it is treated as being in the least frequent class.
 
-The word counts, frequency class computation, etc. is done on a separate thread, and the main tweet 
-processing is periodically suspended while the frequency filters are updated.
+The word counts, frequency class computation, etc. are done on a separate thread. Behind the scenese it swaps in new frequency filters to be used by the main processing pipeline.
 
--- Processing the stream
+### Receiving Tweets
+The main routine reads inbound Tweets in CSV format.
+It maintains a queue of the latest W Tweets. (W might be fifteen minutes to an hour's worth of Tweets.)
+
+It parses them, identifies the tokens in the text, and puts the tokens on a queue for the off-line frequency calculations to use.  When Tweets age out of the queue, it puts these on another queue for the the off-line frequency calculations to use to age them out of the frequency counts.
+
+The tokens from the tweets are divided into the F frequency classes and handed off to F queues for the busy word processors to work on. They are not handed off as Tokens but as three-part-keys 3pk's.
+
+The busy word processors work or shorter windows of Tweets--a few thousand in a window. When a window of tokens have been handed to the busy word processors, th
+
+### Processing the Stream of 
 
 There is a separate pipeline for each of the frequency classes. 
 
@@ -224,14 +231,11 @@ If you see a config file anywhere else, delete it or move its contents into the 
 
 ---
 
-## Key Decisions
-
-- **Message format:** CSV row as a string (not JSON) for simplicity and generic compatibility
-- **Queue name:** `tweet_in`
-- **RabbitMQ:** Running locally on default port (`localhost:5672`), default credentials
-- **Consumer:** Blocking consumer (no polling, no "no message available" warnings)
-- **Current approach:** Minimal, working foundation first, then add complexity incrementally
-- **Persistence:** All important code, architecture, and decisions should be saved in project files (like this one) due to stateless AI sessions
+## Things Known To Be Wrong
+* Mode is in configuration but not needed. Remove--we will always use MQ for now
+* maxRebuildTime should be removed from Configuation.  It is also used at the beginning
+of the main loop. That code should be removed.
+ 
 
 ---
 
@@ -427,72 +431,62 @@ Next big milestone is to be able to read mulitple windows tweets. We should see
 go clean -cache -modcache    (if necessary)
 ./process  -config ../config.yaml -print-tweets=false
    
-Running Notes
+# Running Notes
 
 The code is in ~/python-work/cursor-twitter
-A few things might still be in ~/python-work/twitprocess.
-
-The twitprocess directory should be retired as soon as it's uselessness is confirmed.
-There is also a ton of stuff in ~/python/src most of which looks obsolete. Be careful deleting though.
-
---- Sending Tweets
+ 
+## Sending Tweets
 Running the actual software assumes you have a directory of CSV files of tweets, in this case msg_output.
 
--- The CSV is created as follows. This reads GZ files from msg_input and writes them as  CSV files in msg_output
+ python ./send_csv_to_mq.py ../twits/msg_output
 
-I THING THIS IS OBSOLETE 
-cd /Users/petercoates/python-work/twitprocess 
-## Obsolete python ./src/send_csv_to_mq.py ../twits/msg_output
- ./process  -config ../config.yaml -print-tweets=false
-
--- LOGS SEEM TO BE IN THE WRONG PLACE. THE LOCATION IS CONFIGURABLE 
-Logs in ./logs
+ If MQ is not running, you get a messy failure. It should be restartable with the following. It is
+ possible it might need sudo prepended.
+ 
+  brew services start rabbitmq
 
 
---- THE CURRENT WAY TO RUN THE JSON->CSV PREPROCESSOR
-This was formerly done in Python and created parsing problems in Go 
-because the parsing was sloppy.
+## Creating the CSV from GZ files
+The CSV is created as follows. This reads GZ files from msg_input and writes them as  CSV files in msg_output
 
 cd /Users/petercoates/python-work/cursor-twitter/parser
 go build -o tweetparser parser.go 
 ./tweetparser -inputdir ../../twits/msg_input  -outputdir ../../twits/msg_output 
 
---- THE CURRENT TWAY TO BUILD AND RUN THE MAIN PROCESSING
+## Starting RabbitMQ
+
+RabbitMQ is a service normally running  as a daemon which could be started as follows.
+
+brew services start rabbitmq  
+
+However, this doesn't seem to work right, so just ask Cursor to start rabbit in Docker.
+
+
+##  Build and run the main program
+
 cd /Users/petercoates/python-work/cursor-twitter/src
 go build -o process main.go
 ./process  -config ../config.yaml -print-tweets=false
 
+## Tests
+cd /Users/petercoates/python-work/cursor-twitter
+make build
+make run-consumer
+make run-sender
+make test-verbose
 
---- DEVELOPMENT PLAN
--- A big concern is to eliminate problems with concurrent access of counting data structures.
 
--- Maintaining a window of the last W tweets in the system.
-  - We assume that W tweets constitute one window that is maintained in TweetWindowQueue
-  - In main() each tweet structs is computed, including the tokenization of the text. 
-  - As part of tokenization, each token is checked for existence in the data structure that
-    maps Tokens to 3pk's and 3pk's to tokens. If it's not there, it is added.
-  - The newly constructed tweets are put on a TweetWindowQueue
-  - After W tweets have been accumulated in the TweetWindowQueue, the oldest tweet will be removed
-    and its tokens placed on the OldTokenQueue.
+# Development Plan
 
---- Accumulating word counts for the latest W tweets (off of main-pipeline processing)
-- Every time a tweet is constructed and placed on the TweetWindowQueue
-  - The tokens for the tweet are put on an InboundTokenQueue
-  - A maximum of W tweets can be on the TweetWindowQueue
-  - If more than W tweets have come in, the tweet from the tail of the 
-      TweetWindowQueue is removed and the its tokens are place on an
-       OldTokensQueue OTQ (see below.)
-  - If the current interval of W has been reached, a flag is set so that 
-      the FCT thread knows to process.
-  - the InboundTokenQueue and the OldTokenQueue will buffer until the new
-      data structures are built.
-  - On each loop, a flag set by the FTC is set that says new frequency 
-      filters are ready.
+## Some Concerns to Look Out For
+ 
 
-Check Go--I think it has a syntactically nice way to do mutual exclusion on 
-access to the the frequency filter data structures.
+* If the current interval of W has been reached, flag is set so the
+  the FCT thread knows it is time to do frequency analysis
+* When the frequency analysis is done, a flag set by the FTC to tell the main thread that the that the new frequency filters are ready. There may be a better way to do this.
 
---- Counts and frequencies are computed by a FrequencyComputationThread FCT
+
+## Counts and frequencies are computed by a FrequencyComputationThread FCT
  
   - The FCT runs in a loop that 
       - Takes a token off the InboundTokenQueue queue and 
@@ -508,61 +502,92 @@ access to the the frequency filter data structures.
 - Meanwhile, the main thread keeps putting values on the InboundTweetQueue and  
     the OldTweetQueue. There is no conflict as the queues are thread safe, and the FCT will drain those queues when it finishes constructing the current frequency filters.
 
-- When the filters are complete it makes them available for asynchronous pickup by the main thread.
+- When the filters are complete it makes them available for asynchronous pickup by the main thread. This might be made thread safe without a flag by using mutexes around the block
+of code that accesses the filters? Not sure the best way to do it. 
 
-- Then it resumes draining the ITQ and the OTC, one token at a time each.
+- When the global frequency calculations are done, it resumes draining the ITQ and the OTC, one token at a time each. This is easily accomplished by putting the entire  process in a function call that is in the loop, but only runs when the flag is set.
 
-- There is a potential issue here if the frequency computations are consistently slower than the 
-  main pipeline is processing tweets. If it's temporarily a cycle of two or three off, it's not
-  a big problem, but if the pipline is consistently faster, the size of the unprocessed 
-  backlog on the InboundTokenQueue and OldTokenQueue grow without bound and the frequency 
-  filters will get more and more out of sync with the tweet stream. This will degrade quality, as words that have become more frequent pollute the streams of lower-frequency 
+- There is a potential issue here if the frequency computations can't keep up with the pipeline is processing tweets. If the global calculations are temporarily off by a cycle of two or three off, it's not a big problem, but if the pipline is consistently faster
+  - The size of the unprocessed backlog on the InboundTokenQueue and OldTokenQueue grow without bound.
+  - The creation of fresh frequencyfilters will get more and more out of sync with the tweet stream. 
+  - The former is a memory consumption problem. The latter will degrade quality, as words that have recently become more frequent pollute the streams of lower-frequency 
   frequency classes. Possible solutions include
-    - Increase the W for fewer global computations. The number of distinct tokens
-      rises slowly with the number of tweets but there are fewer computations. 
-    -It would be useful to do a
-      performance analysis to find out where the time goes.
+ 
 
--- Main processing pipeline.
+## Main processing pipeline.
 
--  The F frequency class filters are used to determine what class word is in.
-    - The word is fed to each, starting from most frequent to least frequent.
-    - If kth filter recognizes the token, the token is passed to pipeline k
-    - If no filter recognizes the token, it is treated as being in the least frequent class
--  It's 3pK is identified from a global lookup table.
+### Using the Frequency Class Filters
+-  The F frequency class filters described in the previous section are used to determine what class word is in.
+    -- The word is fed to each, starting from most frequent to least frequent.
+    -- If kth filter recognizes the token, the token is passed to pipeline k
+    -- If no filter recognizes the token, it is treated as being in the least frequent class
+-  It's 3pK's are identified from a global lookup table. If a token doesn't have a 3pk registered, it is created and added to the global table.
 -- the 3pk is passed into the appropriate kth frequency class pipeline.
--- The heart of a processing pipeline is a data structure with three arrays of counters. The
-    size is configurable, but experience suggests about 1000 is a good balance for reasons 
-    that will be made clear below.
--- Each element of the 3pk is used to choose the index of a counter to increment. 
--- After a window of width T, for T a fraction of the size of W, a lot counters will be 
-    incremented. Approximately the average number of tokens in a tweet multiplied by T.
--- Ingestion is suspended.
-      - The counter arrays are copied and then cleared.
-      - A flag is set to tell the next stage to compute. The next stage is the only user of
-        the copied counters
--- Processing is resumed.
 
--- Next Stage
--- While processing continues, the the analysis of the three arrays is as follows.
-    - The assumption is that if all words had approximately the average frequency of their
-      frequency class, the counters would be approximately equal, with a gaussian distribution.
-    - Busy words, however, will give high, non-random values to the corresponding counters.
-    - A Z score is computed for each counter of each array.
-    - Only the counters with sufficiently high z are considered.
-    - The Cartesian product of the indices of the counters is taken. 
-        - Most of these will not corrrespond to existing 3pk's. 
-        - If there are K busy words in the interval, there will be about k^3 combinations.
-        - You are discarding about k/k^3 of them. 
-        - If there are 25 legit busy words, that's 15,625 combination of which approximately
-          15,600 are spurious.
-    - If the size of the counter arrays is 1000, there are a billion possible 3pk's. 
-    - This means that about 1/6410 of the spurious keys will match something.
-        - So these will result in false positives
-        - However, who cares? There aren't that many and they are unlikely to show up in the
-          output.
+We had formerly been planning to use Bloom filters for the frequency class
+registers, but why not just use some kind of hashed set? It should be faster and it's not that much space.
+
+### The Core Token Processing Structures
+The heart of a processing pipeline are the 3pK stream processors. There is one 
+for each freqency class.
+
+Each 3pk processor is centered around a data structure with three arrays of counters. The arrays are all of the same size. 
+
+The size (3pkCountArraySize) is configurable, but experience suggests about 1000 is a good balance. The for reasons why will be made clear below.
+
+The 3pkProcessor reads 3pk's from a queue. (The 3pk's are put on the queue by the main processing thread.)
+
+Each of the three elements of the 3pk is used to choose the index of a counter to increment, by taking the integer value modulo 3pkCountArraySize. That counter in the corresponding array is bumped.
+
+After a window of width Batch, (Batch is typically a small fraction of WindowSize, perhaps a few seconds) its counters will be have been incremented in total approximately the average number of tokens in a tweet multiplied by Batch and divided by the number of frequency classes.
+
+When Batch number of tweets have been processed by the main thread and their 
+3pk's sent to the 3pk processors, the main thread sends a special
+3pk to all 3pK processors to tell them to stop reading 3pk's and process the batch. E.g. a 3pk with all three values equal to -1?  
+
+The reason for this, and not a flag, is to keep them synchonized, as the signal 3pk's would be injected into the queues at the same time. Therefore each processor would keep draining its queue until it hits the signal.
+
+* The counter arrays are copied and then cleared.
+* The copies are posted to be picked up by computation threads.  Possibly put 
+        on queues to allow for asynchronous processing?
+* Processing is resumed.
+
+### Computing the Busy Words
+While ingestion of Tweets, background frequency processing continues, and populating of the 3pk counter arrays continues, the the analysis of the three arrays 
+from each processing queue proceeds as follows
+* The assumption is that if all the words behind the 3pk's in a frequency class
+    had approximately the same average frequency, the counters would have fairly 
+    similar values with a Gaussian (i.e. normal) distribution.
+* Busy words, however, will give higher values to the counters they map to.
+* A Z score is computed for each counter of each array. Z measures how unlikely
+      the deviation of a given counter value is from what would be expected by random.
+* We only care about the counters with sufficiently high z. Z is set in configuration, and is much higher than the -4 to 4 range normally encountered in social statistics.
+
+Given three sets of indices of counters that pass the Z test
+* We take the Cartesian product of the three sets 
+* Most of these will not corrrespond to existing 3pk's. 
+** If you actually had K busy words producing high index values in each array, you'd have k^3 combinations, and all but about k/k^3 of them would be
+spurious. For example if there are 25 legit busy words, that's 15,625 combination of which approximately 15,600 are spurious.
+* Note that if the size of the counter arrays is 1000, there are a billion possible 3pk's, but probably only about 20 million distict tokens appear in a 
+day of tweets, which means about 1 in 50 random 3pk's would correspond to a 
+real token. 
+* 1 in 50 sounds high, but most of them will never actually appear even
+once in any of the few thousand Tweets considered in an interval. And when one does, so what? It's one spurious busy word that is again, unlikely to appear in 
+the same Tweets as other busy words. Therefore, very little harm comes from a reasonable spurious busy-word rate. 
+  
+### What Happens with the busy words.
+The busy words produced by all the 3pk processing pipelines are grouped together. 
+The set of Batch Tweets are examined, and all Tweets that don't contain tokens
+matching the 3pk's produced by the pipelines are discarded.
+
+Depending upon configured values, 1, 2 or more busy words might be required. The 
+best value will be determined empirically.
+
+A clustering algorithm is applied to the Tweets, grouping them together based upon 
+the subset of busy words they contain. Details TBD.
 
 
+## Some Sample Code for PTC's Edification
 sample of how to do mutex to protect the data structures
 that are modified by other threads.
 
@@ -590,3 +615,24 @@ func updateData() {
     data = newData
     mu.Unlock()
 }
+
+## How to Create Short Lived Git Branches so Cursor Doesn't Trash Yo Shit
+
+### Start From Main branch
+git checkout main
+git pull origin main
+
+
+### Create and Switch to New Branch
+git checkout -b my-feature
+
+
+### Make Your Changes and Commit Them
+git add .
+git commit -m "Sjprt ;oved change"
+
+### Switch Back to Main and Merge the Feature Branch
+git checkout main
+git merge my-feature
+
+This will fast-forward merge if no other changes have been made to main.

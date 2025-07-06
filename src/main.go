@@ -45,6 +45,8 @@ var (
 	TotalTokensCounted int
 	lastStatsTime      time.Time
 	lastTweetCount     int
+	freqClasses        int // Number of frequency classes from config
+
 )
 
 // Global mappings for token <-> ThreePartKey relationships
@@ -70,9 +72,10 @@ var (
 
 // Global FCT and queues
 var (
-	inboundTokenQueue *pipeline.TokenQueue
-	oldTokenQueue     *pipeline.TokenQueue
-	fct               *pipeline.FrequencyComputationThread
+	inboundTokenQueue  *pipeline.TokenQueue
+	oldTokenQueue      *pipeline.TokenQueue
+	fct                *pipeline.FrequencyComputationThread
+	freqClassProcessor *pipeline.FrequencyClassProcessor
 )
 
 func main() {
@@ -81,7 +84,8 @@ func main() {
 	configPath := flag.String("config", "../config/config.yaml", "Path to YAML config file")
 	flag.Parse()
 
-	// Load config from YAML file
+	// Load config from YAML file.
+
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
@@ -119,7 +123,7 @@ func main() {
 	oldTokenQueue = pipeline.NewTokenQueue()
 
 	// Create FCT with configuration
-	freqClasses := cfg.FreqClasses
+	freqClasses = cfg.FreqClasses
 	if freqClasses <= 0 {
 		slog.Error("Main: freq_classes must be > 0 in config, got", "value", freqClasses)
 		os.Exit(1)
@@ -139,6 +143,14 @@ func main() {
 
 	slog.Info("FCT created and started",
 		"freq_classes", freqClasses)
+
+	// Create and start the frequency class processor
+	freqClassProcessor = pipeline.NewFrequencyClassProcessor(freqClasses)
+	freqClassProcessor.Start()
+	defer freqClassProcessor.Stop()
+
+	slog.Info("FrequencyClassProcessor created and started",
+		"num_classes", freqClasses)
 
 	// Connect to RabbitMQ
 	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
@@ -232,6 +244,36 @@ func main() {
 				"tweet_id", tweet.IDStr,
 				"token_count", len(tweet.Tokens),
 				"queue_size_after", inboundTokenQueue.Len())
+
+			// Route each token to its appropriate frequency class (only if filters are available)
+			filters := pipeline.GetGlobalFilters()
+			if len(filters) > 0 {
+				// Debug: Log when filters are available
+				if TotalTweetsRead%10000 == 0 {
+					slog.Info("Filters are available for token routing",
+						"tweet_count", TotalTweetsRead,
+						"num_filters", len(filters))
+				}
+
+				for _, token := range tweet.Tokens {
+					freqClass := pipeline.GetTokenFrequencyClass(token)
+					freqClassProcessor.EnqueueToFrequencyClass(freqClass, token)
+
+					// Debug: Log token assignments occasionally
+					if TotalTweetsRead%10000 == 0 {
+						slog.Debug("Token frequency class assignment",
+							"token", token,
+							"freq_class", freqClass,
+							"tweet_count", TotalTweetsRead)
+					}
+				}
+			} else {
+				// Debug: Log when filters are not available
+				if TotalTweetsRead%10000 == 0 {
+					slog.Info("Skipping token routing - no frequency class filters available yet",
+						"tweet_count", TotalTweetsRead)
+				}
+			}
 		}
 
 		// Manage the sliding window - add new tweet and remove old ones
@@ -263,28 +305,41 @@ func main() {
 				"modulo_check", TotalTweetsRead%cfg.WindowSize)
 		}
 
-		if TotalTweetsRead%cfg.WindowSize == 0 && TotalTweetsRead > 0 {
-			// We've crossed into a new window, trigger rebuild
-			fmt.Printf("*** WINDOW BOUNDARY CROSSED: Tweet %d, Window %d ***\n",
-				TotalTweetsRead, currentWindow)
-			slog.Info("Main: About to trigger rebuild",
+		// Debug: Always log the window boundary check
+		if TotalTweetsRead%10000 == 0 {
+			slog.Info("Main: Window boundary check",
 				"tweet_count", TotalTweetsRead,
 				"window_size", cfg.WindowSize,
-				"current_window", currentWindow)
-			triggered := fct.TriggerRebuild()
-			if triggered {
-				fmt.Printf("*** REBUILD TRIGGERED SUCCESSFULLY ***\n")
-				slog.Info("Main: Window boundary crossed, triggered rebuild",
-					"tweet_count", TotalTweetsRead,
-					"window_size", cfg.WindowSize,
-					"current_window", currentWindow)
+				"current_window", currentWindow,
+				"modulo_result", TotalTweetsRead%cfg.WindowSize,
+				"should_trigger", TotalTweetsRead%cfg.WindowSize == 0 && TotalTweetsRead > 0)
+		}
+
+		// Check if we should trigger a rebuild (window boundary crossed)
+		if TotalTweetsRead%cfg.WindowSize == 0 && TotalTweetsRead > 0 {
+			// We've crossed into a new window, give FCT permission to rebuild
+			rebuildStartTime := time.Now()
+			fmt.Printf("*** WINDOW BOUNDARY CROSSED: Tweet %d, Window %d at %s ***\n",
+				TotalTweetsRead, currentWindow, rebuildStartTime.Format("15:04:05"))
+			slog.Info("Main: Window boundary crossed, giving FCT permission to rebuild",
+				"tweet_count", TotalTweetsRead,
+				"window_size", cfg.WindowSize,
+				"current_window", currentWindow,
+				"rebuild_start_time", rebuildStartTime.Format("15:04:05"))
+
+			if fct == nil {
+				slog.Error("Main: FCT is nil! Cannot trigger rebuild")
 			} else {
-				fmt.Printf("*** REBUILD ALREADY IN PROGRESS ***\n")
-				slog.Warn("Main: Failed to trigger rebuild - already in progress",
-					"tweet_count", TotalTweetsRead,
-					"window_size", cfg.WindowSize,
-					"current_window", currentWindow)
+				slog.Info("Main: About to call fct.TriggerRebuild()")
+				fct.TriggerRebuild()
+				slog.Info("Main: fct.TriggerRebuild() completed")
 			}
+			fmt.Printf("*** REBUILD FLAG SET at %s ***\n", rebuildStartTime.Format("15:04:05"))
+			slog.Info("Main: Rebuild flag set for FCT",
+				"tweet_count", TotalTweetsRead,
+				"window_size", cfg.WindowSize,
+				"current_window", currentWindow,
+				"rebuild_start_time", rebuildStartTime.Format("15:04:05"))
 		}
 
 	}
@@ -370,6 +425,10 @@ func printStats() {
 	inboundQueueSize := inboundTokenQueue.Len()
 	oldQueueSize := oldTokenQueue.Len()
 
+	// Get frequency class stats
+	freqClassQueueStats := freqClassProcessor.GetQueueStats()
+	freqClassProcessorStats := freqClassProcessor.GetProcessorStats()
+
 	fmt.Printf("\n--- Pipeline Stats ---\n")
 	fmt.Printf("Total tweets read: %d\n", totalTweets)
 	fmt.Printf("Total tokens counted: %d\n", totalTokens)
@@ -378,6 +437,16 @@ func printStats() {
 	fmt.Printf("Inbound token queue size: %d\n", inboundQueueSize)
 	fmt.Printf("Old token queue size: %d\n", oldQueueSize)
 	fmt.Printf("Processing rate: %.2f tweets/sec\n", processingRate)
+
+	// Print frequency class stats
+	fmt.Printf("--- Frequency Class Stats ---\n")
+	for i := 0; i < freqClasses; i++ {
+		queueKey := fmt.Sprintf("freq_class_%d_queue_size", i)
+		processorKey := fmt.Sprintf("freq_class_%d_tokens_processed", i)
+		queueSize := freqClassQueueStats[queueKey]
+		tokensProcessed := freqClassProcessorStats[processorKey]
+		fmt.Printf("Class %d: Queue=%d, Processed=%d\n", i, queueSize, tokensProcessed)
+	}
 	fmt.Printf("----------------------\n")
 	// Also log to slog
 	slog.Info("Pipeline stats",

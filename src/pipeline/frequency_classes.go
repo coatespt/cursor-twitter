@@ -170,13 +170,17 @@ func BuildFrequencyClassHashSets(tokenCounts map[string]int, F int, bloomSizes [
 	classIdx := 0
 	runningTotal := 0
 
+	fmt.Printf("*** DEBUG: Starting token distribution to %d classes ***\n", F)
 	for _, pair := range tokenCountsSlice {
 		if classIdx < F-1 && runningTotal >= (classIdx+1)*C {
+			fmt.Printf("*** DEBUG: Advancing from class %d to class %d at running total %d (threshold: %d) ***\n",
+				classIdx+1, classIdx+2, runningTotal, (classIdx+1)*C)
 			classIdx++
 		}
 		classes[classIdx] = append(classes[classIdx], pair.Token)
 		runningTotal += pair.Count
 	}
+	fmt.Printf("*** DEBUG: Token distribution complete. Final running total: %d ***\n", runningTotal)
 
 	// Step 5: Create F hash set filters and insert tokens
 	filters := make([]FreqClassFilter, F)
@@ -188,10 +192,24 @@ func BuildFrequencyClassHashSets(tokenCounts map[string]int, F int, bloomSizes [
 		filters[i] = setFilter
 	}
 
-	// Log final class distribution
+	// Log final class distribution with usage counts
 	fmt.Printf("*** FREQUENCY CLASS REBUILD: Built %d classes ***\n", F)
+	fmt.Printf("*** DEBUG: Total tokens to distribute: %d, Target per class: %d ***\n", total, C)
 	for i := 0; i < F; i++ {
-		fmt.Printf("  Class %d: %d tokens\n", i+1, len(classes[i]))
+		// Calculate total usage for this class
+		classUsage := 0
+		for _, token := range classes[i] {
+			for _, tc := range tokenCountsSlice {
+				if tc.Token == token {
+					classUsage += tc.Count
+					break
+				}
+			}
+		}
+		fmt.Printf("  Class %d: %d distinct tokens, %d total usages\n", i+1, len(classes[i]), classUsage)
+		if len(classes[i]) == 0 {
+			fmt.Printf("  *** WARNING: Class %d is empty! ***\n", i+1)
+		}
 	}
 	fmt.Printf("*** FREQUENCY CLASS REBUILD COMPLETE ***\n")
 
@@ -335,8 +353,22 @@ func BuildFrequencyClassBloomFilters(tc *TokenCounter, F int, bloomSizes []uint,
 func GetTokenFrequencyClass(token string) int {
 	filters := GetGlobalFilters() // Thread-safe getter
 	if len(filters) == 0 {
+		fmt.Printf("WARNING: No frequency class filters available, assigning token '%s' to class 0\n", token)
 		return 0 // Defensive: if no filters, return 0
 	}
+
+	// Debug: Log filter status occasionally (but not too often)
+	// Note: This is a simple approach - in production you'd want a thread-safe counter
+	// For now, we'll just log the first few calls to see what's happening
+	if len(filters) > 0 {
+		// Check if this is a SetFilter and has tokens
+		if setFilter, ok := filters[0].(*SetFilter); ok {
+			if len(setFilter.tokens) == 0 {
+				fmt.Printf("WARNING: Frequency class filter 0 is empty\n")
+			}
+		}
+	}
+
 	for i, filter := range filters {
 		if filter.Contains(token) {
 			return i
