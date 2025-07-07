@@ -20,9 +20,13 @@ verbose: true
 log_dir: ../logs
 
 # The minimum Z score for a 3pk element to be considered anomalous
-z_score: 20
+z_score: 7
 
 # The number of frequency classes to create
 freq_classes: 7
+
+# The length of the busy word processor counter arrays
+bw_array_len: 1000
+
 
 

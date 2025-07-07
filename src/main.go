@@ -31,9 +31,11 @@ type Config struct {
 	WindowSize int    `yaml:"window"`
 	BatchSize  int    `yaml:"batch"`
 
-	Verbose     bool   `yaml:"verbose"`
-	LogDir      string `yaml:"log_dir"`
-	FreqClasses int    `yaml:"freq_classes"`
+	Verbose     bool    `yaml:"verbose"`
+	LogDir      string  `yaml:"log_dir"`
+	FreqClasses int     `yaml:"freq_classes"`
+	BWArrayLen  int     `yaml:"bw_array_len"`
+	ZScore      float64 `yaml:"z_score"`
 }
 
 // GlobalTokenCounter keeps track of token counts in the current window.
@@ -118,6 +120,9 @@ func main() {
 	tokenToThreePK = make(map[string]tweets.ThreePartKey)
 	threePKToToken = make(map[tweets.ThreePartKey]string)
 
+	// Set global array length for 3PK generation
+	pipeline.SetGlobalArrayLen(cfg.BWArrayLen)
+
 	// Create the token queues and FCT
 	inboundTokenQueue = pipeline.NewTokenQueue()
 	oldTokenQueue = pipeline.NewTokenQueue()
@@ -145,12 +150,15 @@ func main() {
 		"freq_classes", freqClasses)
 
 	// Create and start the frequency class processor
-	freqClassProcessor = pipeline.NewFrequencyClassProcessor(freqClasses)
+	freqClassProcessor = pipeline.NewFrequencyClassProcessor(freqClasses, cfg.BWArrayLen, float64(cfg.ZScore))
+	freqClassProcessor.SetGlobalTokenMappingForAll(threePKToToken, &tokenMappingsMu)
 	freqClassProcessor.Start()
 	defer freqClassProcessor.Stop()
 
 	slog.Info("FrequencyClassProcessor created and started",
-		"num_classes", freqClasses)
+		"num_classes", freqClasses,
+		"bw_array_len", cfg.BWArrayLen,
+		"z_score_threshold", cfg.ZScore)
 
 	// Connect to RabbitMQ
 	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
@@ -365,6 +373,33 @@ func main() {
 				"rebuild_start_time", rebuildStartTime.Format("15:04:05"))
 		}
 
+		// Send termination signals to busy word processors every batch number of tweets
+		// Only send if frequency class filters are available
+		if TotalTweetsRead%cfg.BatchSize == 0 && TotalTweetsRead > 0 {
+			filters := pipeline.GetGlobalFilters()
+			if len(filters) > 0 {
+				terminationSignal := tweets.ThreePartKey{Part1: -1, Part2: -1, Part3: -1}
+
+				// Send termination signal to all frequency class processors
+				for i := 0; i < freqClasses; i++ {
+					freqClassProcessor.EnqueueToFrequencyClass(i, terminationSignal)
+				}
+
+				fmt.Printf("*** BATCH BOUNDARY: Sent termination signals to all %d busy word processors at tweet %d ***\n",
+					freqClasses, TotalTweetsRead)
+				slog.Info("Main: Sent termination signals to busy word processors",
+					"tweet_count", TotalTweetsRead,
+					"batch_size", cfg.BatchSize,
+					"num_freq_classes", freqClasses)
+			} else {
+				// No filters available yet - log occasionally
+				if TotalTweetsRead%10000 == 0 {
+					slog.Info("Skipping batch termination - no frequency class filters available yet",
+						"tweet_count", TotalTweetsRead,
+						"batch_size", cfg.BatchSize)
+				}
+			}
+		}
 	}
 }
 

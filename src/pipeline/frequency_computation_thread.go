@@ -164,14 +164,7 @@ func (fct *FrequencyComputationThread) run() {
 			}
 
 			// Process a small amount of tokens (main loop body - always happens)
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						slog.Error("FCT processTokens panicked", "panic", r)
-					}
-				}()
-				fct.processTokens()
-			}()
+			fct.processTokens()
 
 			// Add a small delay when no tokens are being processed to prevent CPU spinning
 			inboundSize := fct.inboundTokenQueue.Len()
