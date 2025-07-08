@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Simple tokenizer: splits on non-word characters, lowercases, removes empty tokens
@@ -48,6 +49,7 @@ func getCSVFiles(dir string) ([]string, error) {
 func main() {
 	inputDir := flag.String("input", "data", "Directory containing tweet CSV files")
 	interval := flag.Int("interval", 10000, "Interval for reporting stats (default 10000)")
+	filterTokens := flag.Bool("filter-tokens", true, "Filter out URLs, mentions, hashtags, and short tokens (default true)")
 	flag.Parse()
 
 	files, err := getCSVFiles(*inputDir)
@@ -62,6 +64,7 @@ func main() {
 
 	tokenSet := make(map[string]struct{})
 	tweetsRead := 0
+	startTime := time.Now()
 	fmt.Printf("TweetsRead\tDistinctTokens\n")
 
 	// For graphing
@@ -105,11 +108,28 @@ func main() {
 			text := record[textCol]
 			tokens := simpleTokenize(text)
 			for _, tok := range tokens {
+				if *filterTokens {
+					if len(tok) < 2 {
+						continue
+					}
+					if strings.HasPrefix(tok, "http") {
+						continue
+					}
+					if strings.HasPrefix(tok, "@") {
+						continue
+					}
+					if strings.HasPrefix(tok, "#") {
+						continue
+					}
+				}
 				tokenSet[tok] = struct{}{}
 			}
 			tweetsRead++
 			if tweetsRead%(*interval) == 0 {
-				fmt.Printf("%d\t%d\n", tweetsRead, len(tokenSet))
+				elapsed := time.Since(startTime).Seconds()
+				tps := float64(tweetsRead) / elapsed
+				progress := fmt.Sprintf("Processed %d tweets (distinct: %d) [%.0f tweets/sec]", tweetsRead, len(tokenSet), tps)
+				fmt.Printf("\r%-80s", progress)
 				xVals = append(xVals, tweetsRead)
 				yVals = append(yVals, len(tokenSet))
 			}
@@ -117,7 +137,7 @@ func main() {
 		f.Close()
 	}
 	// Final output
-	fmt.Printf("%d\t%d\n", tweetsRead, len(tokenSet))
+	fmt.Printf("\rProcessed %d tweets (distinct: %d)\n", tweetsRead, len(tokenSet))
 	xVals = append(xVals, tweetsRead)
 	yVals = append(yVals, len(tokenSet))
 

@@ -7,8 +7,9 @@ import sys
 import os
 import glob
 from pathlib import Path
+import time
 
-def process_json_file(input_path, output_path):
+def process_json_file(input_path, output_path, global_tweet_count):
     """Process a single gzipped JSON file and convert to CSV."""
     print(f"Processing {input_path} -> {output_path}")
     
@@ -24,6 +25,7 @@ def process_json_file(input_path, output_path):
     scrub_geo_events = 0
     json_decode_errors = 0
     missing_fields = 0
+    start_time = time.time()
     
     # Try different encodings
     encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
@@ -95,7 +97,9 @@ def process_json_file(input_path, output_path):
                             ])
                             tweet_count += 1
                             if tweet_count % 1000 == 0:
-                                print(f"Processed {tweet_count} tweets so far...", end='\r', flush=True)
+                                elapsed = time.time() - start_time
+                                tps = tweet_count / elapsed if elapsed > 0 else 0
+                                print(f"Processed {tweet_count} tweets in this file (total: {global_tweet_count + tweet_count}) [{tps:.0f} tweets/sec]", end='\r', flush=True)
                         else:
                             missing_fields += 1
                             print(f"Line {line_num}: missing one of id_str, text, or user")
@@ -161,7 +165,7 @@ def main():
         csv_file = os.path.join(output_dir, base_name.replace('.json.gz', '.csv'))
         
         try:
-            tweets, skipped = process_json_file(gz_file, csv_file)
+            tweets, skipped = process_json_file(gz_file, csv_file, total_tweets)
             total_tweets += tweets
             total_skipped += skipped
         except Exception as e:

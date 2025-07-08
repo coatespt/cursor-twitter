@@ -28,5 +28,8 @@ freq_classes: 7
 # The length of the busy word processor counter arrays
 bw_array_len: 1000
 
+# List of frequency classes (1-based) to skip for busy word detection. E.g., [1, 2] skips the most frequent and second most frequent classes.
+skip_frequency_classes: []
+
 
 

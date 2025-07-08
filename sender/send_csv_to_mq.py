@@ -40,8 +40,8 @@ def send_csv_rows_to_mq(directory: str, queue_name: str = 'tweet_in'):
                 )
                 total_sent += 1
                 if total_sent % 1000 == 0:
-                    print(f"Sent {total_sent} messages...")
-    print(f"Done. Sent {total_sent} messages in total.")
+                    print(f"Sent {total_sent} messages...", end='\r', flush=True)
+    print(f"\nDone. Sent {total_sent} messages in total.")
     connection.close()
 
 

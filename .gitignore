@@ -4,4 +4,5 @@
 *.csv
 process
 testdata
+analyze_tokens
 

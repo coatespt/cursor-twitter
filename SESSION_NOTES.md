@@ -3,7 +3,9 @@
 ## Project Architecture & Workflow
 
 ###
-Absolute priority number one directive to Cursor AI. DO NOT IMPLEMENT ANYTHING, NOT ONE SINGLE LINE, WITHOUT EXPLICITLY ASKING ME AND GETTING AN AFFIRMATIVE RESPONSE. LITERALLY HALF THE TIME I HAVE USED YOU HAS BEEN SPENT UNDOING CRAZY SHIT YOU DID WITHOUT ME ASKING YOU TO. THE POLICY IS ONE STEP AT A TIME AND ASK FIRST.
+Absolute priority number one directive to Cursor AI. Do not implement anything without explicit approval. Sometimes I just want to talk about an approach. That doesn't mean that I want to rewrite the entire codebase!
+
+Priority two: for every feature, we need to add unit tests.  The tests should be carefully commented about what is being tested and why the pass/fail conditions are what they are.
 
 ### Goal
 The project is a way to read the Twitter firehose and find new subjects appearing in the 
@@ -13,9 +15,9 @@ tens of thousands--at least 100x too much for a human to grasp.
 
 Fortunately, new subjects actually arrive at a manageable rate. Depending upon exactly how you define "subject," new subjects arrive perhaps every few seconds. By exposing only the stream of new subjects (and the tweets they are in) you see a useful, evolving view of what people are talking about. With reasonable parameterization of the definition of "subject" you get something about like the Times Square News Ticker.
 
-To charcterize the semantics of thousands of tweets per second, and then group them together based upon subject likenss would be a daunting task computationally. Certainly it would be extremely difficult to do in real time. Fortunately, hower groups meaningful words used together are an excellent proxy for semantics. 
+To find subjects by characterizing the semantics of thousands of tweets per second, and then group them together based upon subject likenss would be a daunting task computationally. Certainly it would be extremely difficult to do in real time. Fortunately, however, groups meaningful words used together are an excellent proxy for semantics. 
 
-Interestingly, a subject is easiest to identify not by grouping based upon the most frequently used words, but by using words that being used are anomalously frequently at the moment. 
+Interestingly, a subject is easiest to identify not by grouping based upon the most frequently used words, but by spotting less frequencly used words that being used are anomalously frequently at the moment. 
 
 As the overwhelming majority of words are very rarely used (on the order of zero to a handful of times a day), in practice new subjects are typically characterised by the appearance together of two or three (or more) words that are suddenly being used with unusual frequency.
 
@@ -232,6 +234,10 @@ go build -o parser/parser parser/parser.go
 cd to cursor-tweet
 python3 parser/parser.py /Users/petercoates/python-work/twits/msg_input ./test_output
 
+- ** Test program for parsed data
+This program reads CSV files to ensure that we can create tweets from them.
+
+go run tests/csv_tweet_parse_test.go <path_to_your_csv_file>
 
 - **Build the Go receiver:**
   ```bash
@@ -259,6 +265,46 @@ python3 parser/parser.py /Users/petercoates/python-work/twits/msg_input ./test_o
 - Find the right data structure to output the set of busy words too. It need the words by frequency class and the ID's of the tweets.  Or some way to identify the tweets that the batch of words pertains to.
 - Fix the feeder. It doesn't seem to be working on the big set of files.  We need a jumbo set of tweets to run on.
 - Find the tweets that the set of busy words applies to and do the clustering.
+
+### The Main Counts/Frequency Mechanism Is Too Short a Window.
+
+- I think the low quality of busy words we are computing is partly because the frequency counters are working over a tiny winddo I think there should be millions of tweets--like an hour's worth or more--in the window.
+
+- This is a proposal to do much larger windows and update the counts a file at a time completely offline.  
+
+- Assumptions 
+  - Word count and frequency should cover more like a few million tweets.
+  - A file is typically about 100k tweets. So if a window is in the right ballpark of size it will represent many file, e.g. 10 to 30 files.
+  - This is too long to wait for startup, and a lot of tweets too keep in memory. Figure a Tweeit is probably a kilobyte, that's gigabytes of memory.
+
+  The basic design doesn't seem that hard--the tricky part will be keeping the feeder and coordinated.
+
+- Proposed new design
+  - The counts and frequency computations are entirely done in a different thread. 
+  - The main would not pass tokens into the FCT anymore.
+  - The FCT would update the count map a file at a time. This means there is no rolling record of tweets read necessary (except a short one for the pipleline.)
+  - Assume a word count should be N files. The files vary in size a little, but with 10 or more files, the cound will always be about the same number of Tweets. Close enough.
+  - If the FCT does not see a count map file in the appropriate directory when it starts, it will read the input data one file at a time until it has read N. Then it will construct the frequency filters and write both the count map and the frequency filters to disk. 
+  - The count file and filter file are named by the latest tweet file they include.
+  -  Ordinarily, the FCT will see these files at startup and will load them. Normally, it should have to do a cold start.
+  - The feeder knows what file to start sending by looking at the countmap and frequency files.  
+  -  The feeder will append the name of each file it has processed to a named file, under file locking discipline.
+  - The FCT will endeavor to keep up with what the feeder has sent, taking from the back of the list and deleting each name as it processes the file.  
+  - it inserts the token data from each tweet into the counter map.
+  - Each time it inserts a file of tweet tokesn, it opens the current-Nth file and deletes those tokens.
+  - Evey x number of files, it 
+    - does a frequency calculation
+    - creates the frequency filters and makes them available to the main
+    - writes the count map and frequency filtes to disk
+  - If there are no lines in the file, the FCT is current.
+  - If the feeder sees that lines are not being removed from the file, i.e., there are more than some configured number, it will throttle back its send rate. The number will go up each time the FCT is busy doing a frequency calculation.    
+
+  Note, this is sort of cheating because the processor is acknowledging that the data is coming from files. However, it's not a big cheat because you can do something similar with data strictly from the MQ.
+
+  If data were coming in from MQ, it could be logged to disk in big chunks, e.g. similar to the 100k tweet size in the test set. The FCT could try to keep as current as possible with the files as they appear.
+
+  It might be possible to speed up the FCT by not logging the full tweets but just the tokens.
+
 
 
 
@@ -365,6 +411,8 @@ make run-sender
 make test-verbose
 
 ## The analysis program
+This is to get a picture of how the universe of words grows with the number of Tweets processed.  Up to a million there are more distinct words than Tweets. At two million, it is a little less. By four million, 
+
 cd to cursor-twitter
 go build -o analyze_tokens analyze_tokens.go 
 ./analyze_tokens -input ../twits/msg_output
