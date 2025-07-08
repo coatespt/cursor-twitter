@@ -2,6 +2,9 @@
 
 ## Project Architecture & Workflow
 
+###
+Absolute priority number one directive to Cursor AI. DO NOT IMPLEMENT ANYTHING, NOT ONE SINGLE LINE, WITHOUT EXPLICITLY ASKING ME AND GETTING AN AFFIRMATIVE RESPONSE. LITERALLY HALF THE TIME I HAVE USED YOU HAS BEEN SPENT UNDOING CRAZY SHIT YOU DID WITHOUT ME ASKING YOU TO. THE POLICY IS ONE STEP AT A TIME AND ASK FIRST.
+
 ### Goal
 The project is a way to read the Twitter firehose and find new subjects appearing in the 
 tweet stream. The underlying insight is that it would be essentially useless to 
@@ -217,6 +220,19 @@ If you see a config file anywhere else, delete it or move its contents into the 
 
 ## Useful Commands
 
+- ** Build and Run the Golang JSON->CSV Parser--
+
+WE HAVE NOT BEEN ABLE TO GET THIS WORKING RIGHT. SO WE'RE TRYING PYTHON>
+
+cd /Users/petercoates/python-work/cursor-twitter
+go build -o parser/parser parser/parser.go
+./parser/parser -inputdir ../twits/msg_input/ -outputdir ../twits/test_output
+
+- ** Python JSON->CSV parser.
+cd to cursor-tweet
+python3 parser/parser.py /Users/petercoates/python-work/twits/msg_input ./test_output
+
+
 - **Build the Go receiver:**
   ```bash
   cd cursor-twitter/src
@@ -268,6 +284,25 @@ If you see a config file anywhere else, delete it or move its contents into the 
 
 # TTD
  
+## Long Window
+The window is so small that many relatively common words don't get a chance to appear and thus get misinterpreted as busy.
+
+- We need a test routine to find out how the number of distinct tokens grows with the number of tweets read in. There are about 10 tokens per tweet, but we have no idea how fast the number of distinct tokens grows.
+
+I think we are having a problem in that the number of tweets represented in the counter array is too small. Even relatively common words haven't had time to show up, and so get classified as being in the wrong frequency category.
+
+The universe of words in a few days of tweets is something like 20,0000 distinct words. That should be an approximate baseline against which we run.
+
+But we don't want to read many millions of tweets in order to start up.
+
+- We need two window sizes
+-- The window should hold perhaps a tweet-time hour of tweets. At 500/second for the decahose, that's 1.8 million.  
+-- The recompute time should be smaller--hundreds of thousands.
+-- Every time a recomputation is done, it should write the contents of the counter array to disk, as well as the range of files from which it was derived.
+-- The counter array should be read in to give a large base to start on. 
+-- On startup, Tweets in the file range should be read into the window. This can be done at about 3000/second. That means 20 minutes per million. Whew, that's slow.
+-- 
+-- The processing should pick up with the next file after the window of Tweets represented by the 
    
 ## Comments
 Let's make a practice of saying what each module does
@@ -329,6 +364,10 @@ make run-consumer
 make run-sender
 make test-verbose
 
+## The analysis program
+cd to cursor-twitter
+go build -o analyze_tokens analyze_tokens.go 
+./analyze_tokens -input ../twits/msg_output
 
 # Development Plan
 
@@ -440,10 +479,16 @@ git checkout -b my-feature
 
 ### Make Your Changes and Commit Them
 git add .
-git commit -m "Sjprt ;oved change"
+git commit -m "Test change"
 
 ### Switch Back to Main and Merge the Feature Branch
 git checkout main
 git merge my-feature
 
 This will fast-forward merge if no other changes have been made to main.
+
+
+The broken code is in ./tweetparser -inputdir ../../twits/msg_input  -outputdir ../../twits/msg_output
+
+
+VS Code has a launch.json. Set one up for running and debugging all the tests.

@@ -1,158 +1,224 @@
 package main
 
 import (
+	"bufio"
 	"compress/gzip"
 	"encoding/csv"
-	"flag"
+	"encoding/json"
 	"fmt"
-	"hash/fnv"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-var (
-	CSV_COLS = []string{
-		"id_str",
-		"created_at",
-		"user_id_str",
-		"retweet_count",
-		"text",
-		"retweeted",
-		"at",
-		"http",
-		"hashtag",
-		"words",
-		"threepk",
+// StringOrNumber handles JSON fields that may be a string or a number
+type StringOrNumber string
+
+func (s *StringOrNumber) UnmarshalJSON(b []byte) error {
+	// Try as string
+	var str string
+	if err := json.Unmarshal(b, &str); err == nil {
+		*s = StringOrNumber(str)
+		return nil
 	}
-	BIT_FIELD_LEN  = 1000
-	UNIQUE_STRINGS = []string{"__0NE__", "__TW0__", "__THR33__"}
-)
+	// Try as number
+	var num int
+	if err := json.Unmarshal(b, &num); err == nil {
+		*s = StringOrNumber(fmt.Sprintf("%d", num))
+		return nil
+	}
+	return fmt.Errorf("StringOrNumber: could not unmarshal %s", string(b))
+}
+
+type Tweet struct {
+	IDStr        string         `json:"id_str"`
+	Text         string         `json:"text"`
+	CreatedAt    string         `json:"created_at"`
+	RetweetCount StringOrNumber `json:"retweet_count"`
+	Retweeted    bool           `json:"retweeted"`
+	User         struct {
+		IDStr string `json:"id_str"`
+		Name  string `json:"name"`
+	} `json:"user"`
+}
+
+func processJSONFile(inputPath, outputPath string) (int, int, error) {
+	fmt.Printf("Processing %s -> %s\n", inputPath, outputPath)
+
+	// Remove existing output file if it exists
+	if _, err := os.Stat(outputPath); err == nil {
+		os.Remove(outputPath)
+	}
+
+	// Open gzipped file
+	file, err := os.Open(inputPath)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to open file: %v", err)
+	}
+	defer file.Close()
+
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to create gzip reader: %v", err)
+	}
+	defer gzReader.Close()
+
+	// Create output CSV file
+	outFile, err := os.Create(outputPath)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to create output file: %v", err)
+	}
+	defer outFile.Close()
+
+	writer := csv.NewWriter(outFile)
+	defer writer.Flush()
+
+	// Write CSV header
+	header := []string{"id_str", "created_at", "user_id_str", "retweet_count", "text", "retweeted", "at", "http", "hashtag", "words"}
+	if err := writer.Write(header); err != nil {
+		return 0, 0, fmt.Errorf("failed to write header: %v", err)
+	}
+
+	scanner := bufio.NewScanner(gzReader)
+	tweetCount := 0
+	skipCount := 0
+
+	for lineNum := 1; scanner.Scan(); lineNum++ {
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines
+		if line == "" {
+			continue
+		}
+
+		// Skip opening and closing brackets (like GPT code)
+		if line == "[" || line == "]" {
+			continue
+		}
+
+		// Remove trailing comma (like GPT code)
+		line = strings.TrimRight(line, ",")
+
+		var tweet Tweet
+		if err := json.Unmarshal([]byte(line), &tweet); err != nil {
+			fmt.Printf("Failed to decode JSON at line %d: %v\n", lineNum, err)
+			skipCount++
+			continue
+		}
+
+		// Check if we have the required fields
+		if tweet.IDStr == "" || tweet.Text == "" || tweet.User.IDStr == "" {
+			skipCount++
+			continue
+		}
+
+		// Count patterns
+		atCount := strings.Count(tweet.Text, "@")
+		httpCount := strings.Count(tweet.Text, "http")
+		hashtagCount := strings.Count(tweet.Text, "#")
+
+		// Extract words (simple approach)
+		words := extractWords(tweet.Text)
+
+		// Write CSV row
+		row := []string{
+			tweet.IDStr,
+			tweet.CreatedAt,
+			tweet.User.IDStr,
+			string(tweet.RetweetCount),
+			tweet.Text,
+			fmt.Sprintf("%t", tweet.Retweeted),
+			fmt.Sprintf("%d", atCount),
+			fmt.Sprintf("%d", httpCount),
+			fmt.Sprintf("%d", hashtagCount),
+			words,
+		}
+
+		if err := writer.Write(row); err != nil {
+			fmt.Printf("Failed to write row at line %d: %v\n", lineNum, err)
+			skipCount++
+			continue
+		}
+
+		tweetCount++
+		if tweetCount%1000 == 0 {
+			fmt.Printf("Processed %d tweets so far...\n", tweetCount)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return tweetCount, skipCount, fmt.Errorf("scanner error: %v", err)
+	}
+
+	fmt.Printf("Processed %d tweets, skipped %d objects\n", tweetCount, skipCount)
+	return tweetCount, skipCount, nil
+}
+
+func extractWords(text string) string {
+	words := strings.Fields(text)
+	var cleanWords []string
+	for _, word := range words {
+		// Remove punctuation and convert to lowercase
+		word = strings.ToLower(strings.Trim(word, ".,!?;:\"()[]{}"))
+		if len(word) > 1 && isAlpha(word) {
+			cleanWords = append(cleanWords, word)
+		}
+	}
+	return strings.Join(cleanWords, " ")
+}
+
+func isAlpha(s string) bool {
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+			return false
+		}
+	}
+	return true
+}
 
 func main() {
-	inputDir := flag.String("inputdir", "", "Path to input directory containing gzipped CSV files")
-	outputDir := flag.String("outputdir", "", "Path to output directory for CSV files")
-	flag.Parse()
-
-	if *inputDir == "" || *outputDir == "" {
-		log.Fatalf("Usage: parser -inputdir input_dir -outputdir output_dir")
+	if len(os.Args) != 3 {
+		fmt.Println("Usage: go run parser.go <input_dir> <output_dir>")
+		os.Exit(1)
 	}
 
-	files, err := filepath.Glob(filepath.Join(*inputDir, "*.gz"))
-	if err != nil {
-		log.Fatalf("Failed to list .gz files: %v", err)
-	}
-	if len(files) == 0 {
-		log.Fatalf("No .gz files found in %s", *inputDir)
-	}
+	inputDir := os.Args[1]
+	outputDir := os.Args[2]
 
-	if err := os.MkdirAll(*outputDir, 0755); err != nil {
+	// Create output directory if it doesn't exist
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		log.Fatalf("Failed to create output directory: %v", err)
 	}
 
+	// Find all .json.gz files
+	pattern := filepath.Join(inputDir, "*.json.gz")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		log.Fatalf("Failed to find files: %v", err)
+	}
+
+	if len(files) == 0 {
+		fmt.Printf("No .json.gz files found in %s\n", inputDir)
+		os.Exit(1)
+	}
+
+	totalTweets := 0
+	totalSkipped := 0
+
 	for _, gzFile := range files {
-		base := filepath.Base(gzFile)
-		outFile := filepath.Join(*outputDir, strings.TrimSuffix(base, ".gz")+".csv")
-		log.Printf("Processing %s -> %s", gzFile, outFile)
-		if err := processCSVFile(gzFile, outFile); err != nil {
-			log.Printf("Failed to process %s: %v", gzFile, err)
-		}
-	}
-}
+		baseName := filepath.Base(gzFile)
+		csvFile := filepath.Join(outputDir, strings.Replace(baseName, ".json.gz", ".csv", 1))
 
-func processCSVFile(inputPath, outputPath string) error {
-	f, err := os.Open(inputPath)
-	if err != nil {
-		return fmt.Errorf("failed to open input: %w", err)
-	}
-	defer f.Close()
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return fmt.Errorf("failed to open gzip: %w", err)
-	}
-	defer gz.Close()
-
-	reader := csv.NewReader(gz)
-	reader.FieldsPerRecord = -1
-	reader.LazyQuotes = true
-
-	outf, err := os.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("failed to create output: %w", err)
-	}
-	defer outf.Close()
-	writer := csv.NewWriter(outf)
-	defer writer.Flush()
-
-	head, err := reader.Read()
-	if err != nil {
-		return fmt.Errorf("failed to read header: %w", err)
-	}
-	if len(head) < 10 {
-		return fmt.Errorf("expected at least 10 columns in header, got %d", len(head))
-	}
-	// Write header with threepk
-	if err := writer.Write(CSV_COLS); err != nil {
-		return fmt.Errorf("failed to write header: %w", err)
-	}
-
-	for {
-		row, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
+		tweets, skipped, err := processJSONFile(gzFile, csvFile)
 		if err != nil {
-			log.Printf("Skipping row: %v", err)
+			fmt.Printf("Failed to process %s: %v\n", gzFile, err)
 			continue
 		}
-		if len(row) < 10 {
-			log.Printf("Skipping short row: %v", row)
-			continue
-		}
-		// Generate three-part keys for words
-		words := strings.Fields(row[9])
-		wordDict := make(map[string][3]int)
-		for _, word := range words {
-			if isValidWord(word) {
-				wordDict[word] = generateThreePartKey(word, BIT_FIELD_LEN)
-			}
-		}
-		threepk := formatWordDictForCSV(wordDict)
-		outRow := append(row, threepk)
-		if err := writer.Write(outRow); err != nil {
-			log.Printf("Failed to write row: %v", err)
-		}
+
+		totalTweets += tweets
+		totalSkipped += skipped
 	}
-	return nil
-}
 
-func isValidWord(word string) bool {
-	return strings.TrimSpace(word) != ""
-}
-
-func generateThreePartKey(word string, maxValue int) [3]int {
-	return [3]int{
-		hashWithSuffix(word, UNIQUE_STRINGS[0], maxValue),
-		hashWithSuffix(word, UNIQUE_STRINGS[1], maxValue),
-		hashWithSuffix(word, UNIQUE_STRINGS[2], maxValue),
-	}
-}
-
-func hashWithSuffix(word, suffix string, modulo int) int {
-	h := fnv.New32a()
-	h.Write([]byte(word + suffix))
-	return int(h.Sum32()) % modulo
-}
-
-func formatWordDictForCSV(wordDict map[string][3]int) string {
-	parts := make([]string, 0, len(wordDict)*4)
-	for word, vals := range wordDict {
-		parts = append(parts, word,
-			fmt.Sprintf("%d", vals[0]),
-			fmt.Sprintf("%d", vals[1]),
-			fmt.Sprintf("%d", vals[2]))
-	}
-	return strings.Join(parts, " ")
+	fmt.Printf("Total: %d tweets, %d skipped\n", totalTweets, totalSkipped)
 }

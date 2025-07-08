@@ -3,4 +3,5 @@
 *.gz
 *.csv
 process
+testdata
 
