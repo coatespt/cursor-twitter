@@ -38,5 +38,15 @@ filter:
   # Path to file containing words to filter out
   filter_file: "../config/filter_lists/test_filters.txt"
 
+# Persistence configuration
+persistence:
+  # Directory for storing state files (counts, filters, 3pk mappings)
+  state_dir: "../data/state"
+
+# Sender status tracking
+sender:
+  # File to track the last processed CSV file
+  status_file: "../data/sender_status.txt"
+
 
 

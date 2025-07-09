@@ -1,7 +1,10 @@
 package pipeline
 
 import (
+	"encoding/gob"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 
@@ -44,6 +47,13 @@ type BloomFilterWrapper struct {
 
 func (bf *BloomFilterWrapper) Contains(token string) bool {
 	return bf.filter.TestString(token)
+}
+
+// SerializableFilter represents a filter that can be saved/loaded
+type SerializableFilter struct {
+	Type   string   // "set" or "bloom"
+	Tokens []string // For SetFilter
+	// Note: Bloom filters are not easily serializable, so we'll focus on SetFilter for now
 }
 
 // Add a struct to hold the result
@@ -247,6 +257,104 @@ func GetGlobalFilters() []FreqClassFilter {
 	copy(result, globalFilters)
 	//fmt.Printf("*** GetGlobalFilters called, returning %d filters ***\n", len(result))
 	return result
+}
+
+// SaveToFile saves the frequency class filters to a file
+// Note: This only saves SetFilter types, not BloomFilterWrapper
+func (fcr *FreqClassResult) SaveToFile(filename string) error {
+	// Ensure the directory exists
+	dir := filepath.Dir(filename)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %v", dir, err)
+	}
+
+	// Create the file
+	file, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("failed to create file %s: %v", filename, err)
+	}
+	defer file.Close()
+
+	// Convert filters to serializable format
+	serializableFilters := make([]SerializableFilter, len(fcr.Filters))
+	for i, filter := range fcr.Filters {
+		if setFilter, ok := filter.(*SetFilter); ok {
+			// Convert SetFilter to SerializableFilter
+			tokens := make([]string, 0, len(setFilter.tokens))
+			for token := range setFilter.tokens {
+				tokens = append(tokens, token)
+			}
+			serializableFilters[i] = SerializableFilter{
+				Type:   "set",
+				Tokens: tokens,
+			}
+		} else {
+			// Skip BloomFilterWrapper for now
+			serializableFilters[i] = SerializableFilter{
+				Type:   "bloom",
+				Tokens: []string{}, // Bloom filters not serialized
+			}
+		}
+	}
+
+	// Create serializable result
+	serializableResult := struct {
+		Filters   []SerializableFilter
+		TopTokens []TokenCount
+	}{
+		Filters:   serializableFilters,
+		TopTokens: fcr.TopTokens,
+	}
+
+	// Encode and write to file
+	encoder := gob.NewEncoder(file)
+	if err := encoder.Encode(serializableResult); err != nil {
+		return fmt.Errorf("failed to encode filters to %s: %v", filename, err)
+	}
+
+	return nil
+}
+
+// LoadFromFile loads frequency class filters from a file
+func (fcr *FreqClassResult) LoadFromFile(filename string) error {
+	// Open the file
+	file, err := os.Open(filename)
+	if err != nil {
+		return fmt.Errorf("failed to open file %s: %v", filename, err)
+	}
+	defer file.Close()
+
+	// Decode the serializable result
+	var serializableResult struct {
+		Filters   []SerializableFilter
+		TopTokens []TokenCount
+	}
+	decoder := gob.NewDecoder(file)
+	if err := decoder.Decode(&serializableResult); err != nil {
+		return fmt.Errorf("failed to decode filters from %s: %v", filename, err)
+	}
+
+	// Convert back to FreqClassFilter
+	filters := make([]FreqClassFilter, len(serializableResult.Filters))
+	for i, sf := range serializableResult.Filters {
+		if sf.Type == "set" {
+			// Convert SerializableFilter back to SetFilter
+			setFilter := &SetFilter{tokens: make(map[string]bool, len(sf.Tokens))}
+			for _, token := range sf.Tokens {
+				setFilter.tokens[token] = true
+			}
+			filters[i] = setFilter
+		} else {
+			// For bloom filters, create an empty SetFilter (placeholder)
+			filters[i] = &SetFilter{tokens: make(map[string]bool)}
+		}
+	}
+
+	// Update the FreqClassResult
+	fcr.Filters = filters
+	fcr.TopTokens = serializableResult.TopTokens
+
+	return nil
 }
 
 // BuildFrequencyClassBloomFilters divides tokens into F frequency classes and returns F filters.

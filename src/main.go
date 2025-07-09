@@ -42,6 +42,14 @@ type Config struct {
 		Enabled    bool   `yaml:"enabled"`
 		FilterFile string `yaml:"filter_file"`
 	} `yaml:"filter"`
+
+	Persistence struct {
+		StateDir string `yaml:"state_dir"`
+	} `yaml:"persistence"`
+
+	Sender struct {
+		StatusFile string `yaml:"status_file"`
+	} `yaml:"sender"`
 }
 
 // GlobalTokenCounter keeps track of token counts in the current window.

@@ -1,6 +1,10 @@
 package pipeline
 
 import (
+	"encoding/gob"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -87,4 +91,55 @@ func (tc *TokenCounter) Clear() {
 	defer tc.mu.Unlock()
 	// Clear the map by creating a new one
 	tc.counts = make(map[string]int)
+}
+
+// SaveToFile saves the current token counts to a file using gob encoding
+func (tc *TokenCounter) SaveToFile(filename string) error {
+	// Ensure the directory exists
+	dir := filepath.Dir(filename)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %v", dir, err)
+	}
+
+	// Create the file
+	file, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("failed to create file %s: %v", filename, err)
+	}
+	defer file.Close()
+
+	// Get a snapshot of the counts
+	counts := tc.CountsSnapshot()
+
+	// Encode and write to file
+	encoder := gob.NewEncoder(file)
+	if err := encoder.Encode(counts); err != nil {
+		return fmt.Errorf("failed to encode counts to %s: %v", filename, err)
+	}
+
+	return nil
+}
+
+// LoadFromFile loads token counts from a file using gob decoding
+func (tc *TokenCounter) LoadFromFile(filename string) error {
+	// Open the file
+	file, err := os.Open(filename)
+	if err != nil {
+		return fmt.Errorf("failed to open file %s: %v", filename, err)
+	}
+	defer file.Close()
+
+	// Decode the counts
+	var counts map[string]int
+	decoder := gob.NewDecoder(file)
+	if err := decoder.Decode(&counts); err != nil {
+		return fmt.Errorf("failed to decode counts from %s: %v", filename, err)
+	}
+
+	// Replace the current counts with the loaded ones
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	tc.counts = counts
+
+	return nil
 }

@@ -144,6 +144,15 @@ else
     exit 1
 fi
 
+# Run Python status tracking test
+echo -e "\n${BLUE}Running Python status tracking test...${NC}"
+if python3 sender/test_status_tracking.py; then
+    print_status "PASS" "Python status tracking test passed"
+else
+    print_status "FAIL" "Python status tracking test failed"
+    exit 1
+fi
+
 # End time and duration
 end_time=$(date +%s)
 duration=$((end_time - start_time))
