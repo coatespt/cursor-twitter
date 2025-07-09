@@ -24,6 +24,15 @@ type SetFilter struct {
 	tokens map[string]bool
 }
 
+// NewSetFilter creates a new SetFilter with the given tokens
+func NewSetFilter(tokens []string) *SetFilter {
+	sf := &SetFilter{tokens: make(map[string]bool, len(tokens))}
+	for _, token := range tokens {
+		sf.tokens[token] = true
+	}
+	return sf
+}
+
 func (sf *SetFilter) Contains(token string) bool {
 	return sf.tokens[token]
 }

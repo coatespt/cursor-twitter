@@ -31,5 +31,12 @@ bw_array_len: 1000
 # List of frequency classes (1-based) to skip for busy word detection. E.g., [1, 2] skips the most frequent and second most frequent classes.
 skip_frequency_classes: []
 
+# Word filtering configuration
+filter:
+  # Enable word filtering
+  enabled: true
+  # Path to file containing words to filter out
+  filter_file: "../config/filter_lists/test_filters.txt"
+
 
 

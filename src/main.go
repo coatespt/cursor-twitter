@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"cursor-twitter/src/filter"
 	"cursor-twitter/src/pipeline"
 	"cursor-twitter/src/tweets"
 	"log/slog"
@@ -36,6 +37,11 @@ type Config struct {
 	FreqClasses int     `yaml:"freq_classes"`
 	BWArrayLen  int     `yaml:"bw_array_len"`
 	ZScore      float64 `yaml:"z_score"`
+
+	Filter struct {
+		Enabled    bool   `yaml:"enabled"`
+		FilterFile string `yaml:"filter_file"`
+	} `yaml:"filter"`
 }
 
 // GlobalTokenCounter keeps track of token counts in the current window.
@@ -80,6 +86,9 @@ var (
 	freqClassProcessor *pipeline.FrequencyClassProcessor
 )
 
+// Global word filter
+var globalWordFilter *filter.WordFilter
+
 func main() {
 	// Add a command line flag to control printing of tweets
 	printTweets := flag.Bool("print-tweets", true, "Print each parsed tweet to the console")
@@ -119,6 +128,18 @@ func main() {
 	// Initialize global token mappings
 	tokenToThreePK = make(map[string]tweets.ThreePartKey)
 	threePKToToken = make(map[tweets.ThreePartKey]string)
+
+	// Initialize word filter if enabled
+	if cfg.Filter.Enabled {
+		globalWordFilter = filter.NewWordFilter()
+		if err := globalWordFilter.LoadFromFile(cfg.Filter.FilterFile); err != nil {
+			slog.Error("Failed to load word filter", "error", err, "file", cfg.Filter.FilterFile)
+			return
+		}
+		slog.Info("Word filter initialized", "filtered_words_count", globalWordFilter.GetFilteredCount(), "file", cfg.Filter.FilterFile)
+	} else {
+		slog.Info("Word filtering disabled")
+	}
 
 	// Set global array length for 3PK generation
 	pipeline.SetGlobalArrayLen(cfg.BWArrayLen)
@@ -621,6 +642,7 @@ func parseCSVToTweet(row string) (*tweets.Tweet, error) {
 // - Removes punctuation
 // - Removes apostrophes and what follows
 // - Splits on whitespace
+// - Filters out offensive words if word filtering is enabled
 func simpleTokenize(text string) []string {
 	// Convert to lowercase
 	text = strings.ToLower(text)
@@ -635,6 +657,18 @@ func simpleTokenize(text string) []string {
 
 	// Split on whitespace
 	tokens := strings.Fields(text)
+
+	// Filter out offensive words if word filtering is enabled
+	if globalWordFilter != nil {
+		var filteredTokens []string
+		for _, token := range tokens {
+			if !globalWordFilter.IsFiltered(token) {
+				filteredTokens = append(filteredTokens, token)
+			}
+		}
+		return filteredTokens
+	}
+
 	return tokens
 }
 

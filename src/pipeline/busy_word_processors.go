@@ -429,17 +429,17 @@ func (bwp *BusyWordProcessor) performCoordinatedZComputation() {
 	// fmt.Printf("*** BusyWordProcessor-%d: COORDINATED Z-COMPUTATION STARTED ***\n", bwp.classIndex)
 
 	// Calculate statistics for each array
-	part1Stats := bwp.calculateArrayStats(bwp.part1Counters)
-	part2Stats := bwp.calculateArrayStats(bwp.part2Counters)
-	part3Stats := bwp.calculateArrayStats(bwp.part3Counters)
+	part1Stats := bwp.CalculateArrayStats(bwp.part1Counters)
+	part2Stats := bwp.CalculateArrayStats(bwp.part2Counters)
+	part3Stats := bwp.CalculateArrayStats(bwp.part3Counters)
 
 	// Calculate z-scores and find high-scoring positions
-	part1HighZScores := bwp.calculateZScores(bwp.part1Counters, part1Stats, bwp.zScoreThreshold)
-	part2HighZScores := bwp.calculateZScores(bwp.part2Counters, part2Stats, bwp.zScoreThreshold)
-	part3HighZScores := bwp.calculateZScores(bwp.part3Counters, part3Stats, bwp.zScoreThreshold)
+	part1HighZScores := bwp.CalculateZScores(bwp.part1Counters, part1Stats, bwp.zScoreThreshold)
+	part2HighZScores := bwp.CalculateZScores(bwp.part2Counters, part2Stats, bwp.zScoreThreshold)
+	part3HighZScores := bwp.CalculateZScores(bwp.part3Counters, part3Stats, bwp.zScoreThreshold)
 
 	// Find busy words
-	busyWords := bwp.findBusyWords(part1HighZScores, part2HighZScores, part3HighZScores)
+	busyWords := bwp.FindBusyWords(part1HighZScores, part2HighZScores, part3HighZScores)
 
 	// Report results to coordinator
 	result := BatchResult{
@@ -519,30 +519,30 @@ func (bwp *BusyWordProcessor) performZComputation() {
 	fmt.Printf("*** BusyWordProcessor-%d: Z-COMPUTATION STARTED ***\n", bwp.classIndex)
 
 	// Calculate statistics for each array
-	part1Stats := bwp.calculateArrayStats(bwp.part1Counters)
-	part2Stats := bwp.calculateArrayStats(bwp.part2Counters)
-	part3Stats := bwp.calculateArrayStats(bwp.part3Counters)
+	part1Stats := bwp.CalculateArrayStats(bwp.part1Counters)
+	part2Stats := bwp.CalculateArrayStats(bwp.part2Counters)
+	part3Stats := bwp.CalculateArrayStats(bwp.part3Counters)
 
 	// Calculate z-scores and find high-scoring positions
-	part1HighZScores := bwp.calculateZScores(bwp.part1Counters, part1Stats, bwp.zScoreThreshold)
-	part2HighZScores := bwp.calculateZScores(bwp.part2Counters, part2Stats, bwp.zScoreThreshold)
-	part3HighZScores := bwp.calculateZScores(bwp.part3Counters, part3Stats, bwp.zScoreThreshold)
+	part1HighZScores := bwp.CalculateZScores(bwp.part1Counters, part1Stats, bwp.zScoreThreshold)
+	part2HighZScores := bwp.CalculateZScores(bwp.part2Counters, part2Stats, bwp.zScoreThreshold)
+	part3HighZScores := bwp.CalculateZScores(bwp.part3Counters, part3Stats, bwp.zScoreThreshold)
 
 	// Take cartesian product of high z-score positions to generate candidate 3PKs
 	// For each combination (pos1, pos2, pos3) where pos1 ∈ part1HighZScores, pos2 ∈ part2HighZScores, pos3 ∈ part3HighZScores
 	// Generate 3PK and check if it exists in the global token mapping table
 	// This will identify the "busy words" for this frequency class
-	busyWords := bwp.findBusyWords(part1HighZScores, part2HighZScores, part3HighZScores)
+	busyWords := bwp.FindBusyWords(part1HighZScores, part2HighZScores, part3HighZScores)
 
 	fmt.Printf("*** BusyWordProcessor-%d: Z-COMPUTATION COMPLETED ***\n", bwp.classIndex)
 	fmt.Printf("*** BusyWordProcessor-%d: Array totals - Part1: %d, Part2: %d, Part3: %d ***\n",
-		bwp.classIndex, part1Stats.total, part2Stats.total, part3Stats.total)
+		bwp.classIndex, part1Stats.Total, part2Stats.Total, part3Stats.Total)
 	fmt.Printf("*** BusyWordProcessor-%d: Part1 stats - Mean: %.2f, StdDev: %.2f ***\n",
-		bwp.classIndex, part1Stats.mean, part1Stats.stdDev)
+		bwp.classIndex, part1Stats.Mean, part1Stats.StdDev)
 	fmt.Printf("*** BusyWordProcessor-%d: Part2 stats - Mean: %.2f, StdDev: %.2f ***\n",
-		bwp.classIndex, part2Stats.mean, part2Stats.stdDev)
+		bwp.classIndex, part2Stats.Mean, part2Stats.StdDev)
 	fmt.Printf("*** BusyWordProcessor-%d: Part3 stats - Mean: %.2f, StdDev: %.2f ***\n",
-		bwp.classIndex, part3Stats.mean, part3Stats.stdDev)
+		bwp.classIndex, part3Stats.Mean, part3Stats.StdDev)
 	fmt.Printf("*** BusyWordProcessor-%d: High Z-scores (>=%.1f) - Part1: %d, Part2: %d, Part3: %d ***\n",
 		bwp.classIndex, bwp.zScoreThreshold, len(part1HighZScores), len(part2HighZScores), len(part3HighZScores))
 	fmt.Printf("*** BusyWordProcessor-%d: Busy words found: %d ***\n", bwp.classIndex, len(busyWords))
@@ -560,35 +560,35 @@ func (bwp *BusyWordProcessor) performZComputation() {
 	slog.Info("Z-computation completed and arrays reset",
 		"class_index", bwp.classIndex,
 		"array_len", bwp.arrayLen,
-		"part1_total", part1Stats.total,
-		"part2_total", part2Stats.total,
-		"part3_total", part3Stats.total,
-		"part1_mean", part1Stats.mean,
-		"part1_stddev", part1Stats.stdDev,
-		"part2_mean", part2Stats.mean,
-		"part2_stddev", part2Stats.stdDev,
-		"part3_mean", part3Stats.mean,
-		"part3_stddev", part3Stats.stdDev,
+		"part1_total", part1Stats.Total,
+		"part2_total", part2Stats.Total,
+		"part3_total", part3Stats.Total,
+		"part1_mean", part1Stats.Mean,
+		"part1_stddev", part1Stats.StdDev,
+		"part2_mean", part2Stats.Mean,
+		"part2_stddev", part2Stats.StdDev,
+		"part3_mean", part3Stats.Mean,
+		"part3_stddev", part3Stats.StdDev,
 		"z_score_threshold", bwp.zScoreThreshold,
 		"part1_high_z_scores", len(part1HighZScores),
 		"part2_high_z_scores", len(part2HighZScores),
 		"part3_high_z_scores", len(part3HighZScores))
 }
 
-// calculateZScores calculates z-scores for each position and returns set of high-scoring positions
+// CalculateZScores calculates z-scores for each position and returns set of high-scoring positions
 // Also calculates min, max, and mean z-scores for threshold tuning
-func (bwp *BusyWordProcessor) calculateZScores(counts []int, stats ArrayStats, threshold float64) map[int]float64 {
+func (bwp *BusyWordProcessor) CalculateZScores(counts []int, stats ArrayStats, threshold float64) map[int]float64 {
 	highZScores := make(map[int]float64)
 
 	// Avoid division by zero
-	if stats.stdDev == 0 {
+	if stats.StdDev == 0 {
 		return highZScores
 	}
 
 	// Calculate all z-scores and track statistics
 	var allZScores []float64
 	for i, count := range counts {
-		zScore := (float64(count) - stats.mean) / stats.stdDev
+		zScore := (float64(count) - stats.Mean) / stats.StdDev
 		allZScores = append(allZScores, zScore)
 		if zScore >= threshold {
 			highZScores[i] = zScore
@@ -621,13 +621,13 @@ func (bwp *BusyWordProcessor) calculateZScores(counts []int, stats ArrayStats, t
 
 // ArrayStats holds statistical information about an array
 type ArrayStats struct {
-	total  int
-	mean   float64
-	stdDev float64
+	Total  int
+	Mean   float64
+	StdDev float64
 }
 
-// calculateArrayStats calculates mean, standard deviation, and z-scores for an array
-func (bwp *BusyWordProcessor) calculateArrayStats(counts []int) ArrayStats {
+// CalculateArrayStats calculates mean, standard deviation, and z-scores for an array
+func (bwp *BusyWordProcessor) CalculateArrayStats(counts []int) ArrayStats {
 	// Calculate total and mean
 	total := 0
 	for _, count := range counts {
@@ -647,14 +647,14 @@ func (bwp *BusyWordProcessor) calculateArrayStats(counts []int) ArrayStats {
 	stdDev := math.Sqrt(variance)
 
 	return ArrayStats{
-		total:  total,
-		mean:   mean,
-		stdDev: stdDev,
+		Total:  total,
+		Mean:   mean,
+		StdDev: stdDev,
 	}
 }
 
-// findBusyWords finds busy words from high z-score positions
-func (bwp *BusyWordProcessor) findBusyWords(part1HighZScores, part2HighZScores, part3HighZScores map[int]float64) []tweets.ThreePartKey {
+// FindBusyWords finds busy words from high z-score positions
+func (bwp *BusyWordProcessor) FindBusyWords(part1HighZScores, part2HighZScores, part3HighZScores map[int]float64) []tweets.ThreePartKey {
 	busyWords := []tweets.ThreePartKey{}
 
 	// Iterate over all combinations of high z-score positions

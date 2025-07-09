@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -29,7 +28,7 @@ type RabbitMQ struct {
 func NewRabbitMQ(config RabbitMQConfig) (*RabbitMQ, error) {
 	// Build connection URL
 	url := fmt.Sprintf("amqp://%s:%s@%s:%d/", config.Username, config.Password, config.Host, config.Port)
-	
+
 	// Connect to RabbitMQ
 	conn, err := amqp.Dial(url)
 	if err != nil {
@@ -101,4 +100,4 @@ func (r *RabbitMQ) GetQueueInfo() (map[string]interface{}, error) {
 		"messages":  queue.Messages,
 		"consumers": queue.Consumers,
 	}, nil
-} 
+}
