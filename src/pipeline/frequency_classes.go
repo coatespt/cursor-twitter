@@ -189,17 +189,14 @@ func BuildFrequencyClassHashSets(tokenCounts map[string]int, F int, bloomSizes [
 	classIdx := 0
 	runningTotal := 0
 
-	fmt.Printf("*** DEBUG: Starting token distribution to %d classes ***\n", F)
+	// Distribute tokens to classes (removed excessive debug output for performance)
 	for _, pair := range tokenCountsSlice {
 		if classIdx < F-1 && runningTotal >= (classIdx+1)*C {
-			fmt.Printf("*** DEBUG: Advancing from class %d to class %d at running total %d (threshold: %d) ***\n",
-				classIdx+1, classIdx+2, runningTotal, (classIdx+1)*C)
 			classIdx++
 		}
 		classes[classIdx] = append(classes[classIdx], pair.Token)
 		runningTotal += pair.Count
 	}
-	fmt.Printf("*** DEBUG: Token distribution complete. Final running total: %d ***\n", runningTotal)
 
 	// Step 5: Create F hash set filters and insert tokens
 	filters := make([]FreqClassFilter, F)
@@ -215,15 +212,10 @@ func BuildFrequencyClassHashSets(tokenCounts map[string]int, F int, bloomSizes [
 	fmt.Printf("*** FREQUENCY CLASS REBUILD: Built %d classes ***\n", F)
 	fmt.Printf("*** DEBUG: Total tokens to distribute: %d, Target per class: %d ***\n", total, C)
 	for i := 0; i < F; i++ {
-		// Calculate total usage for this class
+		// Calculate total usage for this class (optimized - use map lookup)
 		classUsage := 0
 		for _, token := range classes[i] {
-			for _, tc := range tokenCountsSlice {
-				if tc.Token == token {
-					classUsage += tc.Count
-					break
-				}
-			}
+			classUsage += tokenCounts[token] // Direct map lookup - O(1)
 		}
 		fmt.Printf("  Class %d: %d distinct tokens, %d total usages\n", i+1, len(classes[i]), classUsage)
 		if len(classes[i]) == 0 {

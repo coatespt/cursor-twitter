@@ -8,7 +8,7 @@ mq_queue: tweet_in
 
 # The number of tweets to keep in memory
 # Also the set of tweets over which global frequency classes are computed
-window: 50000
+window: 1000000
 
 # The number of tweets to process in each batch
 batch: 5000
@@ -42,10 +42,16 @@ filter:
 persistence:
   # Directory for storing state files (counts, filters, 3pk mappings)
   state_dir: "../data/state"
+  # Token batch size for file-based sliding window (tokens per file)
+  token_batch_persist: 50000
+  # Number of token files to keep before deleting oldest
+  token_persist_files: 20
 
 # Sender status tracking
 sender:
   # File to track the last processed CSV file
+  # NOTE: To future me--this is relative to where the sender runs from so 
+  # it's actually next to the ../data/state directory. Confusing.
   status_file: "../../data/sender/sender_status.txt"
 
 # The minimum length of a token to be considered

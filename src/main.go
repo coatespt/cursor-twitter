@@ -49,7 +49,9 @@ type Config struct {
 	} `yaml:"filter"`
 
 	Persistence struct {
-		StateDir string `yaml:"state_dir"`
+		StateDir          string `yaml:"state_dir"`
+		TokenBatchPersist int    `yaml:"token_batch_persist"`
+		TokenPersistFiles int    `yaml:"token_persist_files"`
 	} `yaml:"persistence"`
 
 	Sender struct {
@@ -161,7 +163,7 @@ func main() {
 		globalWordFilter = filter.NewWordFilter()
 		if err := globalWordFilter.LoadFromFile(cfg.Filter.FilterFile); err != nil {
 			slog.Error("Failed to load word filter", "error", err, "file", cfg.Filter.FilterFile)
-			return
+			os.Exit(1)
 		}
 		slog.Info("Word filter initialized", "filtered_words_count", globalWordFilter.GetFilteredCount(), "file", cfg.Filter.FilterFile)
 	} else {
@@ -212,7 +214,7 @@ func main() {
 	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
 	if err != nil {
 		slog.Error("Failed to connect to RabbitMQ", "error", err)
-		return
+		os.Exit(1)
 	}
 	defer conn.Close()
 
@@ -220,7 +222,7 @@ func main() {
 	ch, err := conn.Channel()
 	if err != nil {
 		slog.Error("Failed to open channel", "error", err)
-		return
+		os.Exit(1)
 	}
 	defer ch.Close()
 
@@ -235,7 +237,7 @@ func main() {
 	)
 	if err != nil {
 		slog.Error("Failed to declare queue", "error", err)
-		return
+		os.Exit(1)
 	}
 
 	slog.Info("Connected to RabbitMQ. Waiting for messages...", "queue", q.Name)
@@ -282,7 +284,7 @@ func main() {
 	)
 	if err != nil {
 		slog.Error("Failed to register a consumer", "error", err)
-		return
+		os.Exit(1)
 	}
 	// TODO:Add Global stats including tweet count, token count, distinct token count
 	//     (available from map size),

@@ -239,42 +239,25 @@ go build -o parser/parser parser/parser.go
 ./parser/parser -inputdir ../twits/msg_input/ -outputdir ../twits/test_output
 
 - ** Python JSON->CSV parser.
-cd to cursor-tweet
-python3 parser/parser.py /Users/petercoates/python-work/twits/msg_input ./test_output
+cd to cursor-twitter/sender.
+
+Run the following.
+
+python ./send_csv_to_mq.py ../../twits/msg_output_2
 
 - ** Test program for parsed data
 This program reads CSV files to ensure that we can create Tweets from them.
 
 go run tests/csv_tweet_parse_test.go <path_to_your_csv_file>
 
-- **Build the Go receiver:**
-  ```bash
-  cd cursor-twitter/src
-  go build -o process main.go
-  ```
-- **Run the receiver:**
-  ```bash
-  ./process
-  ```
-- **Run the sender:**
-  ```bash
-  python src/send_csv_to_mq.py /path/to/csv/files
-  ```
-- **Install pika (Python RabbitMQ library):**
-  ```bash
-  pip install pika
-  ```
-
-
-
 ## TODO / Next Steps
 
 
-- Comments
+- Useful Comments
 Let's make a practice of saying what each module does
 at the top of the file.  Comment as if I'm an idiot.
-  
-- orderly shutdown.  Perhaps a command.
+   
+ 
 
 - Check that 'sorted order' for the file names is the same as the order given by the times embeddede in the file names.
 
@@ -407,16 +390,11 @@ Right now it's something like 300k. It should probably be in the millions. Howev
 # Building and Running Everything
     
 
-The code is in ~/python-work/cursor-twitter
+The codebase is in ~/python-work/cursor-twitter. Data that it writes to persist data structures, etc. is in ~/python-work/data, i.e., at the same level as the project root.
 
 ## Creating the CSV from GZ files
 The CSV is created as follows. This reads GZ files from msg_input and writes them as  CSV files in msg_output
-
-### This is obsolete. We spent agest trying to tet a Go parser working and finally gave up.
-
-cd /Users/petercoates/python-work/cursor-twitter/parser
-go build -o tweetparser parser.go 
-./tweetparser -inputdir ../../twits/msg_input  -outputdir ../../twits/msg_output 
+ 
 
 ### This way of parsing the JSON to CSV seems to work very well.
  python3 parser/parser.py /Users/petercoates/python-work/twits/msg_input_2 ../twits/msg_output_2
@@ -439,10 +417,16 @@ Running the actual software assumes you have a directory of CSV files of Tweets,
 
 ##  Build and run the main program
 
-cd /Users/petercoates/python-work/cursor-twitter
-go build -o main src/main.go
-./process  -config ../config.yaml -print-tweets=false
+Note, this assumes you are in the root. Sometimes cursor wants to run it from src which
+is not right. It is better to build and run from the root directory.
 
+cd /Users/petercoates/python-work/cursor-twitter
+go build -o main src/main.go 
+./main  -config ./config/config.yaml -print-tweets=false
+
+## Shutting down the main
+
+Control-C will send a signal. If the process of writing persisted data to disk is underway it will finish before it shuts down. Otherwise it shuts down immediately.
 
 ## The analysis program
 This is a utility to get a picture of how the universe of words grows with the number of Tweets processed. You need to point it at a large directory of CSV files.  

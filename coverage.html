@@ -3,7 +3,7 @@
 <html>
 	<head>
 		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-		<title>cursor-twitter: Go Coverage Report</title>
+		<title>filter: Go Coverage Report</title>
 		<style>
 			body {
 				background: black;
@@ -55,27 +55,19 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">cursor-twitter/analyze_tokens.go (0.0%)</option>
+				<option value="file0">cursor-twitter/src/filter/word_filter.go (97.1%)</option>
 				
-				<option value="file1">cursor-twitter/parser/parser.go (0.0%)</option>
+				<option value="file1">cursor-twitter/src/pipeline/busy_word_processors.go (0.0%)</option>
 				
-				<option value="file2">cursor-twitter/src/filter/word_filter.go (97.1%)</option>
+				<option value="file2">cursor-twitter/src/pipeline/frequency_classes.go (54.5%)</option>
 				
-				<option value="file3">cursor-twitter/src/main.go (17.1%)</option>
+				<option value="file3">cursor-twitter/src/pipeline/frequency_computation_thread.go (80.6%)</option>
 				
-				<option value="file4">cursor-twitter/src/pipeline/busy_word_processors.go (0.0%)</option>
+				<option value="file4">cursor-twitter/src/pipeline/queues.go (82.4%)</option>
 				
-				<option value="file5">cursor-twitter/src/pipeline/frequency_classes.go (54.5%)</option>
+				<option value="file5">cursor-twitter/src/pipeline/threepartkey.go (0.0%)</option>
 				
-				<option value="file6">cursor-twitter/src/pipeline/frequency_computation_thread.go (80.2%)</option>
-				
-				<option value="file7">cursor-twitter/src/pipeline/queues.go (82.4%)</option>
-				
-				<option value="file8">cursor-twitter/src/pipeline/threepartkey.go (0.0%)</option>
-				
-				<option value="file9">cursor-twitter/src/pipeline/tokencounter.go (94.3%)</option>
-				
-				<option value="file10">cursor-twitter/src/rabbitmq.go (0.0%)</option>
+				<option value="file6">cursor-twitter/src/pipeline/tokencounter.go (94.3%)</option>
 				
 				</select>
 			</div>
@@ -89,456 +81,7 @@
 		</div>
 		<div id="content">
 		
-		<pre class="file" id="file0" style="display: none">package main
-
-import (
-        "bufio"
-        "encoding/csv"
-        "flag"
-        "fmt"
-        "io"
-        "os"
-        "path/filepath"
-        "regexp"
-        "sort"
-        "strings"
-        "time"
-)
-
-// Simple tokenizer: splits on non-word characters, lowercases, removes empty tokens
-func simpleTokenize(text string) []string <span class="cov0" title="0">{
-        // Remove punctuation, split on whitespace
-        re := regexp.MustCompile(`\W+`)
-        tokens := re.Split(strings.ToLower(text), -1)
-        var out []string
-        for _, t := range tokens </span><span class="cov0" title="0">{
-                t = strings.TrimSpace(t)
-                if t != "" </span><span class="cov0" title="0">{
-                        out = append(out, t)
-                }</span>
-        }
-        <span class="cov0" title="0">return out</span>
-}
-
-// Reads all CSV files in a directory (non-recursive)
-func getCSVFiles(dir string) ([]string, error) <span class="cov0" title="0">{
-        var files []string
-        entries, err := os.ReadDir(dir)
-        if err != nil </span><span class="cov0" title="0">{
-                return nil, err
-        }</span>
-        <span class="cov0" title="0">for _, entry := range entries </span><span class="cov0" title="0">{
-                if !entry.IsDir() &amp;&amp; strings.HasSuffix(entry.Name(), ".csv") </span><span class="cov0" title="0">{
-                        files = append(files, filepath.Join(dir, entry.Name()))
-                }</span>
-        }
-        // Sort for reproducibility
-        <span class="cov0" title="0">sort.Strings(files)
-        return files, nil</span>
-}
-
-func main() <span class="cov0" title="0">{
-        inputDir := flag.String("input", "data", "Directory containing tweet CSV files")
-        interval := flag.Int("interval", 10000, "Interval for reporting stats (default 10000)")
-        filterTokens := flag.Bool("filter-tokens", true, "Filter out URLs, mentions, hashtags, and short tokens (default true)")
-        flag.Parse()
-
-        files, err := getCSVFiles(*inputDir)
-        if err != nil </span><span class="cov0" title="0">{
-                fmt.Fprintf(os.Stderr, "Error reading input directory: %v\n", err)
-                os.Exit(1)
-        }</span>
-        <span class="cov0" title="0">if len(files) == 0 </span><span class="cov0" title="0">{
-                fmt.Fprintf(os.Stderr, "No CSV files found in directory: %s\n", *inputDir)
-                os.Exit(1)
-        }</span>
-
-        <span class="cov0" title="0">tokenSet := make(map[string]struct{})
-        tweetsRead := 0
-        startTime := time.Now()
-        fmt.Printf("TweetsRead\tDistinctTokens\n")
-
-        // For graphing
-        var xVals []int
-        var yVals []int
-
-        for _, file := range files </span><span class="cov0" title="0">{
-                f, err := os.Open(file)
-                if err != nil </span><span class="cov0" title="0">{
-                        fmt.Fprintf(os.Stderr, "Error opening file %s: %v\n", file, err)
-                        continue</span>
-                }
-                <span class="cov0" title="0">reader := csv.NewReader(bufio.NewReader(f))
-                reader.FieldsPerRecord = -1 // allow variable columns
-                reader.LazyQuotes = true    // handle bare quotes in tweet text
-                firstRow := true
-                textCol := -1
-                for </span><span class="cov0" title="0">{
-                        record, err := reader.Read()
-                        if err == io.EOF </span><span class="cov0" title="0">{
-                                break</span>
-                        }
-                        <span class="cov0" title="0">if err != nil </span><span class="cov0" title="0">{
-                                fmt.Fprintf(os.Stderr, "Error reading CSV: %v\n", err)
-                                break</span>
-                        }
-                        <span class="cov0" title="0">if firstRow </span><span class="cov0" title="0">{
-                                // Find the text column (case-insensitive match for "text")
-                                for i, col := range record </span><span class="cov0" title="0">{
-                                        if strings.ToLower(col) == "text" </span><span class="cov0" title="0">{
-                                                textCol = i
-                                                break</span>
-                                        }
-                                }
-                                <span class="cov0" title="0">firstRow = false
-                                continue</span>
-                        }
-                        <span class="cov0" title="0">if textCol == -1 || textCol &gt;= len(record) </span><span class="cov0" title="0">{
-                                continue</span> // skip if no text column
-                        }
-                        <span class="cov0" title="0">text := record[textCol]
-                        tokens := simpleTokenize(text)
-                        for _, tok := range tokens </span><span class="cov0" title="0">{
-                                if *filterTokens </span><span class="cov0" title="0">{
-                                        if len(tok) &lt; 2 </span><span class="cov0" title="0">{
-                                                continue</span>
-                                        }
-                                        <span class="cov0" title="0">if strings.HasPrefix(tok, "http") </span><span class="cov0" title="0">{
-                                                continue</span>
-                                        }
-                                        <span class="cov0" title="0">if strings.HasPrefix(tok, "@") </span><span class="cov0" title="0">{
-                                                continue</span>
-                                        }
-                                        <span class="cov0" title="0">if strings.HasPrefix(tok, "#") </span><span class="cov0" title="0">{
-                                                continue</span>
-                                        }
-                                }
-                                <span class="cov0" title="0">tokenSet[tok] = struct{}{}</span>
-                        }
-                        <span class="cov0" title="0">tweetsRead++
-                        if tweetsRead%(*interval) == 0 </span><span class="cov0" title="0">{
-                                elapsed := time.Since(startTime).Seconds()
-                                tps := float64(tweetsRead) / elapsed
-                                progress := fmt.Sprintf("Processed %d tweets (distinct: %d) [%.0f tweets/sec]", tweetsRead, len(tokenSet), tps)
-                                fmt.Printf("\r%-80s", progress)
-                                xVals = append(xVals, tweetsRead)
-                                yVals = append(yVals, len(tokenSet))
-                        }</span>
-                }
-                <span class="cov0" title="0">f.Close()</span>
-        }
-        // Final output
-        <span class="cov0" title="0">fmt.Printf("\rProcessed %d tweets (distinct: %d)\n", tweetsRead, len(tokenSet))
-        xVals = append(xVals, tweetsRead)
-        yVals = append(yVals, len(tokenSet))
-
-        // ASCII Art Graph
-        printASCIIGraph(xVals, yVals, 60, 20)</span>
-}
-
-// printASCIIGraph prints a simple ASCII line graph for the data
-func printASCIIGraph(xVals, yVals []int, width, height int) <span class="cov0" title="0">{
-        if len(xVals) &lt; 2 </span><span class="cov0" title="0">{
-                fmt.Println("Not enough data for graph.")
-                return
-        }</span>
-        // Find min/max
-        <span class="cov0" title="0">xMin, xMax := xVals[0], xVals[len(xVals)-1]
-        yMin, yMax := yVals[0], yVals[0]
-        for _, y := range yVals </span><span class="cov0" title="0">{
-                if y &lt; yMin </span><span class="cov0" title="0">{
-                        yMin = y
-                }</span>
-                <span class="cov0" title="0">if y &gt; yMax </span><span class="cov0" title="0">{
-                        yMax = y
-                }</span>
-        }
-        <span class="cov0" title="0">if yMax == yMin </span><span class="cov0" title="0">{
-                yMax = yMin + 1 // avoid div by zero
-        }</span>
-        // Prepare grid
-        <span class="cov0" title="0">grid := make([][]rune, height)
-        for i := range grid </span><span class="cov0" title="0">{
-                grid[i] = make([]rune, width)
-                for j := range grid[i] </span><span class="cov0" title="0">{
-                        grid[i][j] = ' '
-                }</span>
-        }
-        // Map data points to grid
-        <span class="cov0" title="0">for i := 0; i &lt; len(xVals); i++ </span><span class="cov0" title="0">{
-                col := int(float64(i) / float64(len(xVals)-1) * float64(width-1))
-                row := int(float64(yVals[i]-yMin) / float64(yMax-yMin) * float64(height-1))
-                row = height - 1 - row // invert Y axis
-                if col &gt;= 0 &amp;&amp; col &lt; width &amp;&amp; row &gt;= 0 &amp;&amp; row &lt; height </span><span class="cov0" title="0">{
-                        grid[row][col] = '*'
-                }</span>
-        }
-        // Prepare Y axis labels
-        <span class="cov0" title="0">yLabels := make([]string, height)
-        yLabels[0] = fmt.Sprintf("%d", yMax)
-        yLabels[height/2] = fmt.Sprintf("%d", (yMax+yMin)/2)
-        yLabels[height-1] = fmt.Sprintf("%d", yMin)
-        for i := 1; i &lt; height-1; i++ </span><span class="cov0" title="0">{
-                if yLabels[i] == "" </span><span class="cov0" title="0">{
-                        yLabels[i] = " "
-                }</span>
-        }
-        // Print graph with Y axis labels
-        <span class="cov0" title="0">fmt.Println("\nASCII Graph: Distinct Tokens vs. Tweets Read")
-        for i := 0; i &lt; height; i++ </span><span class="cov0" title="0">{
-                fmt.Printf("%8s |", yLabels[i])
-                for j := 0; j &lt; width; j++ </span><span class="cov0" title="0">{
-                        fmt.Print(string(grid[i][j]))
-                }</span>
-                <span class="cov0" title="0">fmt.Println()</span>
-        }
-        // X axis
-        <span class="cov0" title="0">fmt.Printf("%8s +%s\n", "", strings.Repeat("-", width))
-        // X axis labels: min, mid, max
-        xMid := (xMin + xMax) / 2
-        label := fmt.Sprintf("%d", xMin)
-        labelMid := fmt.Sprintf("%d", xMid)
-        labelMax := fmt.Sprintf("%d", xMax)
-        // Place min at start, mid at center, max at end
-        labelLine := make([]rune, width)
-        for i := range labelLine </span><span class="cov0" title="0">{
-                labelLine[i] = ' '
-        }</span>
-        <span class="cov0" title="0">copy(labelLine[0:], []rune(label))
-        copy(labelLine[width/2-len(labelMid)/2:], []rune(labelMid))
-        copy(labelLine[width-len(labelMax):], []rune(labelMax))
-        fmt.Printf("         %s\n", string(labelLine))
-        fmt.Printf("Y: %d to %d\n", yMin, yMax)</span>
-}
-</pre>
-		
-		<pre class="file" id="file1" style="display: none">package main
-
-import (
-        "bufio"
-        "compress/gzip"
-        "encoding/csv"
-        "encoding/json"
-        "fmt"
-        "log"
-        "os"
-        "path/filepath"
-        "strings"
-)
-
-// StringOrNumber handles JSON fields that may be a string or a number
-type StringOrNumber string
-
-func (s *StringOrNumber) UnmarshalJSON(b []byte) error <span class="cov0" title="0">{
-        // Try as string
-        var str string
-        if err := json.Unmarshal(b, &amp;str); err == nil </span><span class="cov0" title="0">{
-                *s = StringOrNumber(str)
-                return nil
-        }</span>
-        // Try as number
-        <span class="cov0" title="0">var num int
-        if err := json.Unmarshal(b, &amp;num); err == nil </span><span class="cov0" title="0">{
-                *s = StringOrNumber(fmt.Sprintf("%d", num))
-                return nil
-        }</span>
-        <span class="cov0" title="0">return fmt.Errorf("StringOrNumber: could not unmarshal %s", string(b))</span>
-}
-
-type Tweet struct {
-        IDStr        string         `json:"id_str"`
-        Text         string         `json:"text"`
-        CreatedAt    string         `json:"created_at"`
-        RetweetCount StringOrNumber `json:"retweet_count"`
-        Retweeted    bool           `json:"retweeted"`
-        User         struct {
-                IDStr string `json:"id_str"`
-                Name  string `json:"name"`
-        } `json:"user"`
-}
-
-func processJSONFile(inputPath, outputPath string) (int, int, error) <span class="cov0" title="0">{
-        fmt.Printf("Processing %s -&gt; %s\n", inputPath, outputPath)
-
-        // Remove existing output file if it exists
-        if _, err := os.Stat(outputPath); err == nil </span><span class="cov0" title="0">{
-                os.Remove(outputPath)
-        }</span>
-
-        // Open gzipped file
-        <span class="cov0" title="0">file, err := os.Open(inputPath)
-        if err != nil </span><span class="cov0" title="0">{
-                return 0, 0, fmt.Errorf("failed to open file: %v", err)
-        }</span>
-        <span class="cov0" title="0">defer file.Close()
-
-        gzReader, err := gzip.NewReader(file)
-        if err != nil </span><span class="cov0" title="0">{
-                return 0, 0, fmt.Errorf("failed to create gzip reader: %v", err)
-        }</span>
-        <span class="cov0" title="0">defer gzReader.Close()
-
-        // Create output CSV file
-        outFile, err := os.Create(outputPath)
-        if err != nil </span><span class="cov0" title="0">{
-                return 0, 0, fmt.Errorf("failed to create output file: %v", err)
-        }</span>
-        <span class="cov0" title="0">defer outFile.Close()
-
-        writer := csv.NewWriter(outFile)
-        defer writer.Flush()
-
-        // Write CSV header
-        header := []string{"id_str", "created_at", "user_id_str", "retweet_count", "text", "retweeted", "at", "http", "hashtag", "words"}
-        if err := writer.Write(header); err != nil </span><span class="cov0" title="0">{
-                return 0, 0, fmt.Errorf("failed to write header: %v", err)
-        }</span>
-
-        <span class="cov0" title="0">scanner := bufio.NewScanner(gzReader)
-        tweetCount := 0
-        skipCount := 0
-
-        for lineNum := 1; scanner.Scan(); lineNum++ </span><span class="cov0" title="0">{
-                line := strings.TrimSpace(scanner.Text())
-
-                // Skip empty lines
-                if line == "" </span><span class="cov0" title="0">{
-                        continue</span>
-                }
-
-                // Skip opening and closing brackets (like GPT code)
-                <span class="cov0" title="0">if line == "[" || line == "]" </span><span class="cov0" title="0">{
-                        continue</span>
-                }
-
-                // Remove trailing comma (like GPT code)
-                <span class="cov0" title="0">line = strings.TrimRight(line, ",")
-
-                var tweet Tweet
-                if err := json.Unmarshal([]byte(line), &amp;tweet); err != nil </span><span class="cov0" title="0">{
-                        fmt.Printf("Failed to decode JSON at line %d: %v\n", lineNum, err)
-                        skipCount++
-                        continue</span>
-                }
-
-                // Check if we have the required fields
-                <span class="cov0" title="0">if tweet.IDStr == "" || tweet.Text == "" || tweet.User.IDStr == "" </span><span class="cov0" title="0">{
-                        skipCount++
-                        continue</span>
-                }
-
-                // Count patterns
-                <span class="cov0" title="0">atCount := strings.Count(tweet.Text, "@")
-                httpCount := strings.Count(tweet.Text, "http")
-                hashtagCount := strings.Count(tweet.Text, "#")
-
-                // Extract words (simple approach)
-                words := extractWords(tweet.Text)
-
-                // Write CSV row
-                row := []string{
-                        tweet.IDStr,
-                        tweet.CreatedAt,
-                        tweet.User.IDStr,
-                        string(tweet.RetweetCount),
-                        tweet.Text,
-                        fmt.Sprintf("%t", tweet.Retweeted),
-                        fmt.Sprintf("%d", atCount),
-                        fmt.Sprintf("%d", httpCount),
-                        fmt.Sprintf("%d", hashtagCount),
-                        words,
-                }
-
-                if err := writer.Write(row); err != nil </span><span class="cov0" title="0">{
-                        fmt.Printf("Failed to write row at line %d: %v\n", lineNum, err)
-                        skipCount++
-                        continue</span>
-                }
-
-                <span class="cov0" title="0">tweetCount++
-                if tweetCount%1000 == 0 </span><span class="cov0" title="0">{
-                        fmt.Printf("Processed %d tweets so far...\n", tweetCount)
-                }</span>
-        }
-
-        <span class="cov0" title="0">if err := scanner.Err(); err != nil </span><span class="cov0" title="0">{
-                return tweetCount, skipCount, fmt.Errorf("scanner error: %v", err)
-        }</span>
-
-        <span class="cov0" title="0">fmt.Printf("Processed %d tweets, skipped %d objects\n", tweetCount, skipCount)
-        return tweetCount, skipCount, nil</span>
-}
-
-func extractWords(text string) string <span class="cov0" title="0">{
-        words := strings.Fields(text)
-        var cleanWords []string
-        for _, word := range words </span><span class="cov0" title="0">{
-                // Remove punctuation and convert to lowercase
-                word = strings.ToLower(strings.Trim(word, ".,!?;:\"()[]{}"))
-                if len(word) &gt; 1 &amp;&amp; isAlpha(word) </span><span class="cov0" title="0">{
-                        cleanWords = append(cleanWords, word)
-                }</span>
-        }
-        <span class="cov0" title="0">return strings.Join(cleanWords, " ")</span>
-}
-
-func isAlpha(s string) bool <span class="cov0" title="0">{
-        for _, r := range s </span><span class="cov0" title="0">{
-                if !((r &gt;= 'a' &amp;&amp; r &lt;= 'z') || (r &gt;= 'A' &amp;&amp; r &lt;= 'Z')) </span><span class="cov0" title="0">{
-                        return false
-                }</span>
-        }
-        <span class="cov0" title="0">return true</span>
-}
-
-func main() <span class="cov0" title="0">{
-        if len(os.Args) != 3 </span><span class="cov0" title="0">{
-                fmt.Println("Usage: go run parser.go &lt;input_dir&gt; &lt;output_dir&gt;")
-                os.Exit(1)
-        }</span>
-
-        <span class="cov0" title="0">inputDir := os.Args[1]
-        outputDir := os.Args[2]
-
-        // Create output directory if it doesn't exist
-        if err := os.MkdirAll(outputDir, 0755); err != nil </span><span class="cov0" title="0">{
-                log.Fatalf("Failed to create output directory: %v", err)
-        }</span>
-
-        // Find all .json.gz files
-        <span class="cov0" title="0">pattern := filepath.Join(inputDir, "*.json.gz")
-        files, err := filepath.Glob(pattern)
-        if err != nil </span><span class="cov0" title="0">{
-                log.Fatalf("Failed to find files: %v", err)
-        }</span>
-
-        <span class="cov0" title="0">if len(files) == 0 </span><span class="cov0" title="0">{
-                fmt.Printf("No .json.gz files found in %s\n", inputDir)
-                os.Exit(1)
-        }</span>
-
-        <span class="cov0" title="0">totalTweets := 0
-        totalSkipped := 0
-
-        for _, gzFile := range files </span><span class="cov0" title="0">{
-                baseName := filepath.Base(gzFile)
-                csvFile := filepath.Join(outputDir, strings.Replace(baseName, ".json.gz", ".csv", 1))
-
-                tweets, skipped, err := processJSONFile(gzFile, csvFile)
-                if err != nil </span><span class="cov0" title="0">{
-                        fmt.Printf("Failed to process %s: %v\n", gzFile, err)
-                        continue</span>
-                }
-
-                <span class="cov0" title="0">totalTweets += tweets
-                totalSkipped += skipped</span>
-        }
-
-        <span class="cov0" title="0">fmt.Printf("Total: %d tweets, %d skipped\n", totalTweets, totalSkipped)</span>
-}
-</pre>
-		
-		<pre class="file" id="file2" style="display: none">package filter
+		<pre class="file" id="file0" style="display: none">package filter
 
 import (
         "bufio"
@@ -631,764 +174,7 @@ func (wf *WordFilter) RemoveWord(word string) <span class="cov8" title="1">{
 }</span>
 </pre>
 		
-		<pre class="file" id="file3" style="display: none">package main
-
-import (
-        "encoding/csv"
-        "flag"
-        "fmt"
-        "log"
-        "math"
-        "os"
-        "path/filepath"
-        "regexp"
-        "strings"
-        "sync"
-        "time"
-
-        "cursor-twitter/src/filter"
-        "cursor-twitter/src/pipeline"
-        "cursor-twitter/src/tweets"
-        "log/slog"
-
-        amqp "github.com/rabbitmq/amqp091-go"
-        "gopkg.in/yaml.v3"
-)
-
-// Config struct for YAML config file (add log_dir)
-type Config struct {
-        Mode       string `yaml:"mode"`
-        InputDir   string `yaml:"input"`
-        MQHost     string `yaml:"mq_host"`
-        MQPort     int    `yaml:"mq_port"`
-        MQQueue    string `yaml:"mq_queue"`
-        WindowSize int    `yaml:"window"`
-        BatchSize  int    `yaml:"batch"`
-
-        Verbose     bool    `yaml:"verbose"`
-        LogDir      string  `yaml:"log_dir"`
-        FreqClasses int     `yaml:"freq_classes"`
-        BWArrayLen  int     `yaml:"bw_array_len"`
-        ZScore      float64 `yaml:"z_score"`
-
-        Filter struct {
-                Enabled    bool   `yaml:"enabled"`
-                FilterFile string `yaml:"filter_file"`
-        } `yaml:"filter"`
-
-        Persistence struct {
-                StateDir string `yaml:"state_dir"`
-        } `yaml:"persistence"`
-
-        Sender struct {
-                StatusFile string `yaml:"status_file"`
-        } `yaml:"sender"`
-}
-
-// GlobalTokenCounter keeps track of token counts in the current window.
-var GlobalTokenCounter = pipeline.NewTokenCounter()
-
-// Global stats counters
-var (
-        TotalTweetsRead    int
-        TotalTokensCounted int
-        lastStatsTime      time.Time
-        lastTweetCount     int
-        freqClasses        int // Number of frequency classes from config
-
-)
-
-// Global mappings for token &lt;-&gt; ThreePartKey relationships
-var (
-        tokenToThreePK  map[string]tweets.ThreePartKey
-        threePKToToken  map[tweets.ThreePartKey]string
-        tokenMappingsMu sync.RWMutex
-)
-
-// Sliding window management
-var (
-        tweetQueue   []*tweets.Tweet // Queue of tweets in the current window
-        tweetQueueMu sync.RWMutex    // Mutex for thread-safe access to tweet queue
-)
-
-// Add a global variable to hold the stats CSV file path
-var statsCSVPath string
-
-// Global Bloom filters
-var (
-        GlobalFilters []pipeline.FreqClassFilter
-)
-
-// Global FCT and queues
-var (
-        inboundTokenQueue  *pipeline.TokenQueue
-        oldTokenQueue      *pipeline.TokenQueue
-        fct                *pipeline.FrequencyComputationThread
-        freqClassProcessor *pipeline.FrequencyClassProcessor
-)
-
-// Global word filter
-var globalWordFilter *filter.WordFilter
-
-func main() <span class="cov0" title="0">{
-        // Add a command line flag to control printing of tweets
-        printTweets := flag.Bool("print-tweets", true, "Print each parsed tweet to the console")
-        configPath := flag.String("config", "../config/config.yaml", "Path to YAML config file")
-        flag.Parse()
-
-        // Load config from YAML file.
-
-        cfg, err := loadConfig(*configPath)
-        if err != nil </span><span class="cov0" title="0">{
-                log.Fatalf("Failed to load config: %v", err)
-        }</span>
-
-        // Require log_dir to be present and non-empty
-        <span class="cov0" title="0">if cfg.LogDir == "" </span><span class="cov0" title="0">{
-                fmt.Fprintln(os.Stderr, "ERROR: 'log_dir' must be defined in the config file and cannot be empty.")
-                os.Exit(1)
-        }</span>
-
-        // Set up slog logger to write to a file in the specified log_dir
-        <span class="cov0" title="0">logger, logFile, err := setupLogger(cfg.LogDir)
-        if err != nil </span><span class="cov0" title="0">{
-                log.Fatalf("Failed to set up logger: %v", err)
-        }</span>
-        <span class="cov0" title="0">defer logFile.Close()
-        slog.SetDefault(logger)
-
-        // Set up stats CSV file path
-        statsCSVPath = filepath.Join(cfg.LogDir, "stats.csv")
-        ensureStatsCSVHeader(statsCSVPath)
-
-        slog.Info("Starting simple RabbitMQ consumer")
-
-        // Start periodic stats printer (prints every 30 seconds)
-        startStatsPrinter()
-
-        // Initialize global token mappings
-        tokenToThreePK = make(map[string]tweets.ThreePartKey)
-        threePKToToken = make(map[tweets.ThreePartKey]string)
-
-        // Initialize word filter if enabled
-        if cfg.Filter.Enabled </span><span class="cov0" title="0">{
-                globalWordFilter = filter.NewWordFilter()
-                if err := globalWordFilter.LoadFromFile(cfg.Filter.FilterFile); err != nil </span><span class="cov0" title="0">{
-                        slog.Error("Failed to load word filter", "error", err, "file", cfg.Filter.FilterFile)
-                        return
-                }</span>
-                <span class="cov0" title="0">slog.Info("Word filter initialized", "filtered_words_count", globalWordFilter.GetFilteredCount(), "file", cfg.Filter.FilterFile)</span>
-        } else<span class="cov0" title="0"> {
-                slog.Info("Word filtering disabled")
-        }</span>
-
-        // Set global array length for 3PK generation
-        <span class="cov0" title="0">pipeline.SetGlobalArrayLen(cfg.BWArrayLen)
-
-        // Create the token queues and FCT
-        inboundTokenQueue = pipeline.NewTokenQueue()
-        oldTokenQueue = pipeline.NewTokenQueue()
-
-        // Create FCT with configuration
-        freqClasses = cfg.FreqClasses
-        if freqClasses &lt;= 0 </span><span class="cov0" title="0">{
-                slog.Error("Main: freq_classes must be &gt; 0 in config, got", "value", freqClasses)
-                os.Exit(1)
-        }</span>
-
-        <span class="cov0" title="0">fct = pipeline.NewFrequencyComputationThread(
-                GlobalTokenCounter,
-                inboundTokenQueue,
-                oldTokenQueue,
-                0, // Not used - frequency rebuilds happen based on window size
-                freqClasses,
-        )
-
-        // Start the FCT
-        fct.Start()
-        defer fct.Stop()
-
-        slog.Info("FCT created and started",
-                "freq_classes", freqClasses)
-
-        // Create and start the frequency class processor
-        freqClassProcessor = pipeline.NewFrequencyClassProcessor(freqClasses, cfg.BWArrayLen, float64(cfg.ZScore))
-        freqClassProcessor.SetGlobalTokenMappingForAll(threePKToToken, &amp;tokenMappingsMu)
-        freqClassProcessor.Start()
-        defer freqClassProcessor.Stop()
-
-        slog.Info("FrequencyClassProcessor created and started",
-                "num_classes", freqClasses,
-                "bw_array_len", cfg.BWArrayLen,
-                "z_score_threshold", cfg.ZScore)
-
-        // Connect to RabbitMQ
-        conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
-        if err != nil </span><span class="cov0" title="0">{
-                slog.Error("Failed to connect to RabbitMQ", "error", err)
-                return
-        }</span>
-        <span class="cov0" title="0">defer conn.Close()
-
-        // Create channel
-        ch, err := conn.Channel()
-        if err != nil </span><span class="cov0" title="0">{
-                slog.Error("Failed to open channel", "error", err)
-                return
-        }</span>
-        <span class="cov0" title="0">defer ch.Close()
-
-        // Declare queue
-        q, err := ch.QueueDeclare(
-                "tweet_in", // name
-                true,       // durable
-                false,      // delete when unused
-                false,      // exclusive
-                false,      // no-wait
-                nil,        // arguments
-        )
-        if err != nil </span><span class="cov0" title="0">{
-                slog.Error("Failed to declare queue", "error", err)
-                return
-        }</span>
-
-        <span class="cov0" title="0">slog.Info("Connected to RabbitMQ. Waiting for messages...", "queue", q.Name)
-
-        // Start blocking consumer
-        msgs, err := ch.Consume(
-                q.Name, // queue
-                "",     // consumer
-                true,   // auto-ack
-                false,  // exclusive
-                false,  // no-local
-                false,  // no-wait
-                nil,    // args
-        )
-        if err != nil </span><span class="cov0" title="0">{
-                slog.Error("Failed to register a consumer", "error", err)
-                return
-        }</span>
-        // TODO:Add Global stats including tweet count, token count, distinct token count
-        //     (available from map size),
-        //    number of W window cycles, number of pipeline cycles, etc.
-        //
-        // TODO: Nothing like maxRebuildTime should exist. Check that this does not exist.
-
-        // TODO: Create the TweetWindowQueue      This will not be allowed to grow beyond WindowSize
-        // TODO: Create the InboundTokenQueue
-        // TODO: Create the OldTokenQueue
-        // TODO: Create the InboundTweetQueue
-
-        // TODO: Create a FrequencyComputationThread
-        //       THE FCT take tokens from the InboundTokenQueue and register them in
-        //       the CountMap.
-        //       It also takes tokens from the OldTokenQueue and decrements the counts in the CountMap.
-        //       It also checks a flag to see if it should stop taking tokens and
-        //       compute the frequency class filters.  If so,
-        //             it copies the CountMap to a new array
-        //             clears the existing CountMap.
-        //       It also sets the flag to resume taking tokens.
-        //       It also copies the CountMap to a new array and clears the CountMap.
-        //       It also sets the flag to resume taking tokens.
-        //       It also sets the flag to resume taking tokens.
-        //       It also sets the flag to resume taking tokens.
-
-        // Main loop runs forever
-        <span class="cov0" title="0">for msg := range msgs </span><span class="cov0" title="0">{
-
-                tweet, err := parseCSVToTweet(string(msg.Body))
-                if err != nil </span><span class="cov0" title="0">{
-                        //slog.Warn("Failed to parse tweet", "error", err, "raw_row", string(msg.Body))
-                        //fmt.Printf("[PARSE ERROR] %v\nRaw: %s\n", err, string(msg.Body))
-                        continue</span>
-                }
-                // Only print the tweet if the flag is set
-                <span class="cov0" title="0">if *printTweets </span><span class="cov0" title="0">{
-                        fmt.Printf("Parsed Tweet: %+v\n", tweet)
-                }</span>
-
-                // Always add new tweet tokens to the inbound queue for FCT to build frequency filters
-                <span class="cov0" title="0">if len(tweet.Tokens) &gt; 0 </span><span class="cov0" title="0">{
-                        inboundTokenQueue.Enqueue(tweet.Tokens)
-                        slog.Info("Added tokens to InboundTokenQueue",
-                                "tweet_id", tweet.IDStr,
-                                "token_count", len(tweet.Tokens),
-                                "queue_size_after", inboundTokenQueue.Len())
-
-                        // Route each token to its appropriate frequency class (only if filters are available)
-                        filters := pipeline.GetGlobalFilters()
-                        if len(filters) &gt; 0 </span><span class="cov0" title="0">{
-                                // Debug: Log when filters are available
-                                if TotalTweetsRead%10000 == 0 </span><span class="cov0" title="0">{
-                                        slog.Info("Filters are available for token routing",
-                                                "tweet_count", TotalTweetsRead,
-                                                "num_filters", len(filters))
-                                        fmt.Printf("*** TOKEN ROUTING ACTIVE: %d filters available ***\n", len(filters))
-                                }</span>
-
-                                // Route tokens to frequency classes
-                                <span class="cov0" title="0">for _, token := range tweet.Tokens </span><span class="cov0" title="0">{
-                                        // Find which frequency class this token belongs to
-                                        freqClass := -1
-                                        for i, filter := range filters </span><span class="cov0" title="0">{
-                                                if filter.Contains(token) </span><span class="cov0" title="0">{
-                                                        freqClass = i
-                                                        break</span>
-                                                }
-                                        }
-
-                                        <span class="cov0" title="0">if freqClass &gt;= 0 </span><span class="cov0" title="0">{
-                                                // Generate or get the 3pk for this token
-                                                tokenMappingsMu.RLock()
-                                                threePK, exists := tokenToThreePK[token]
-                                                tokenMappingsMu.RUnlock()
-
-                                                if !exists </span><span class="cov0" title="0">{
-                                                        // Generate new ThreePartKey and store in mappings
-                                                        threePK = pipeline.GenerateThreePartKey(token)
-                                                        tokenMappingsMu.Lock()
-                                                        tokenToThreePK[token] = threePK
-                                                        threePKToToken[threePK] = token
-                                                        tokenMappingsMu.Unlock()
-                                                }</span>
-
-                                                // Enqueue to appropriate frequency class
-                                                <span class="cov0" title="0">freqClassProcessor.EnqueueToFrequencyClass(freqClass, threePK)</span>
-                                        } else<span class="cov0" title="0"> {
-                                                // Token not in any frequency class (shouldn't happen with proper filters)
-                                                slog.Warn("Token not found in any frequency class filter", "token", token)
-                                        }</span>
-                                }
-                        } else<span class="cov0" title="0"> {
-                                // No filters available yet - log occasionally
-                                if TotalTweetsRead%10000 == 0 </span><span class="cov0" title="0">{
-                                        slog.Info("No frequency class filters available yet",
-                                                "tweet_count", TotalTweetsRead)
-                                        fmt.Printf("*** NO FILTERS AVAILABLE: waiting for first rebuild ***\n")
-                                }</span>
-                        }
-                }
-
-                // Manage the sliding window - add new tweet and remove old ones
-                // TODO: This is wrong. WindowSize is a constant set in configuration. A queue called
-                // Inbound Tweet structs are stored on a Queue called TweetWindowQueue.
-                // The new inbound tweet's tokens are placed on an InboundTokenQueue.
-                // if the TweetWindowQueue reaches WindowSize, the oldest tweet is removed and
-                // it's tokens are placed on an OldTokenQueue.
-
-                <span class="cov0" title="0">if cfg.WindowSize &lt;= 0 </span><span class="cov0" title="0">{
-                        slog.Error("Main: window must be &gt; 0 in config, got", "value", cfg.WindowSize)
-                        os.Exit(1)
-                }</span>
-                <span class="cov0" title="0">manageSlidingWindow(tweet, cfg.WindowSize)
-
-                // Frequency class rebuilding - happens every time we cross the window boundary
-                // When we've processed window-size tweets, we rebuild the frequency classes
-                // NOTE: TotalTweetsRead is incremented in parseCSVToTweet, so we check after parsing
-
-                // Check if we've crossed a window boundary
-                currentWindow := TotalTweetsRead / cfg.WindowSize
-
-                // Debug: Log every 1000 tweets to see what's happening
-                if TotalTweetsRead%1000 == 0 </span><span class="cov0" title="0">{
-                        slog.Info("Main: Window boundary debug",
-                                "tweet_count", TotalTweetsRead,
-                                "window_size", cfg.WindowSize,
-                                "current_window", currentWindow,
-                                "modulo_check", TotalTweetsRead%cfg.WindowSize)
-                }</span>
-
-                // Debug: Always log the window boundary check
-                <span class="cov0" title="0">if TotalTweetsRead%10000 == 0 </span><span class="cov0" title="0">{
-                        slog.Info("Main: Window boundary check",
-                                "tweet_count", TotalTweetsRead,
-                                "window_size", cfg.WindowSize,
-                                "current_window", currentWindow,
-                                "modulo_result", TotalTweetsRead%cfg.WindowSize,
-                                "should_trigger", TotalTweetsRead%cfg.WindowSize == 0 &amp;&amp; TotalTweetsRead &gt; 0)
-                }</span>
-
-                // Check if we should trigger a rebuild (window boundary crossed)
-                <span class="cov0" title="0">if TotalTweetsRead%cfg.WindowSize == 0 &amp;&amp; TotalTweetsRead &gt; 0 </span><span class="cov0" title="0">{
-                        // We've crossed into a new window, give FCT permission to rebuild
-                        rebuildStartTime := time.Now()
-                        fmt.Printf("*** WINDOW BOUNDARY CROSSED: Tweet %d, Window %d at %s ***\n",
-                                TotalTweetsRead, currentWindow, rebuildStartTime.Format("15:04:05"))
-                        slog.Info("Main: Window boundary crossed, giving FCT permission to rebuild",
-                                "tweet_count", TotalTweetsRead,
-                                "window_size", cfg.WindowSize,
-                                "current_window", currentWindow,
-                                "rebuild_start_time", rebuildStartTime.Format("15:04:05"))
-
-                        if fct == nil </span><span class="cov0" title="0">{
-                                slog.Error("Main: FCT is nil! Cannot trigger rebuild")
-                        }</span> else<span class="cov0" title="0"> {
-                                slog.Info("Main: About to call fct.TriggerRebuild()")
-                                fct.TriggerRebuild()
-                                slog.Info("Main: fct.TriggerRebuild() completed")
-                        }</span>
-                        <span class="cov0" title="0">fmt.Printf("*** REBUILD FLAG SET at %s ***\n", rebuildStartTime.Format("15:04:05"))
-                        slog.Info("Main: Rebuild flag set for FCT",
-                                "tweet_count", TotalTweetsRead,
-                                "window_size", cfg.WindowSize,
-                                "current_window", currentWindow,
-                                "rebuild_start_time", rebuildStartTime.Format("15:04:05"))</span>
-                }
-
-                // Send termination signals to busy word processors every batch number of tweets
-                // Only send if frequency class filters are available
-                <span class="cov0" title="0">if TotalTweetsRead%cfg.BatchSize == 0 &amp;&amp; TotalTweetsRead &gt; 0 </span><span class="cov0" title="0">{
-                        filters := pipeline.GetGlobalFilters()
-                        if len(filters) &gt; 0 </span><span class="cov0" title="0">{
-                                terminationSignal := tweets.ThreePartKey{Part1: -1, Part2: -1, Part3: -1}
-
-                                // Send termination signal to all frequency class processors
-                                for i := 0; i &lt; freqClasses; i++ </span><span class="cov0" title="0">{
-                                        freqClassProcessor.EnqueueToFrequencyClass(i, terminationSignal)
-                                }</span>
-
-                                <span class="cov0" title="0">fmt.Printf("*** BATCH BOUNDARY: Sent termination signals to all %d busy word processors at tweet %d ***\n",
-                                        freqClasses, TotalTweetsRead)
-                                slog.Info("Main: Sent termination signals to busy word processors",
-                                        "tweet_count", TotalTweetsRead,
-                                        "batch_size", cfg.BatchSize,
-                                        "num_freq_classes", freqClasses)</span>
-                        } else<span class="cov0" title="0"> {
-                                // No filters available yet - log occasionally
-                                if TotalTweetsRead%10000 == 0 </span><span class="cov0" title="0">{
-                                        slog.Info("Skipping batch termination - no frequency class filters available yet",
-                                                "tweet_count", TotalTweetsRead,
-                                                "batch_size", cfg.BatchSize)
-                                }</span>
-                        }
-                }
-        }
-}
-
-// loadConfig loads the YAML config file into a Config struct.
-func loadConfig(path string) (*Config, error) <span class="cov8" title="1">{
-        data, err := os.ReadFile(path)
-        if err != nil </span><span class="cov8" title="1">{
-                return nil, err
-        }</span>
-        <span class="cov8" title="1">var cfg Config
-        if err := yaml.Unmarshal(data, &amp;cfg); err != nil </span><span class="cov8" title="1">{
-                return nil, err
-        }</span>
-        <span class="cov8" title="1">return &amp;cfg, nil</span>
-}
-
-// setupLogger creates the log directory if needed and returns a slog.Logger that writes to a file.
-func setupLogger(logDir string) (*slog.Logger, *os.File, error) <span class="cov0" title="0">{
-        // No default! logDir must be set by config and checked in main()
-        if logDir == "" </span><span class="cov0" title="0">{
-                return nil, nil, fmt.Errorf("logDir must be set in config; refusing to use a default")
-        }</span>
-        <span class="cov0" title="0">if err := os.MkdirAll(logDir, 0755); err != nil </span><span class="cov0" title="0">{
-                return nil, nil, err
-        }</span>
-        <span class="cov0" title="0">logPath := filepath.Join(logDir, "pipeline.log")
-        logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-        if err != nil </span><span class="cov0" title="0">{
-                return nil, nil, err
-        }</span>
-        <span class="cov0" title="0">logger := slog.New(slog.NewTextHandler(logFile, nil))
-        return logger, logFile, nil</span>
-}
-
-// startStatsPrinter launches a goroutine that prints stats every 30 seconds.
-func startStatsPrinter() <span class="cov0" title="0">{
-        lastStatsTime = time.Now()
-        lastTweetCount = 0
-        ticker := time.NewTicker(30 * time.Second)
-        go func() </span><span class="cov0" title="0">{
-                for range ticker.C </span><span class="cov0" title="0">{
-                        printStats()
-                }</span>
-        }()
-}
-
-// ensureStatsCSVHeader creates the stats CSV file and writes the header if it doesn't exist.
-func ensureStatsCSVHeader(path string) <span class="cov0" title="0">{
-        if _, err := os.Stat(path); os.IsNotExist(err) </span><span class="cov0" title="0">{
-                f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-                if err != nil </span><span class="cov0" title="0">{
-                        log.Printf("Failed to create stats CSV: %v", err)
-                        return
-                }</span>
-                <span class="cov0" title="0">defer f.Close()
-                writer := csv.NewWriter(f)
-                writer.Write([]string{"timestamp", "total_tweets", "total_tokens", "distinct_tokens"})
-                writer.Flush()</span>
-        }
-}
-
-// printStats prints the current pipeline statistics and logs them as CSV.
-func printStats() <span class="cov0" title="0">{
-        now := time.Now()
-        timestamp := now.Format(time.RFC3339)
-        totalTweets := TotalTweetsRead
-        totalTokens := TotalTokensCounted
-        distinctTokens := len(GlobalTokenCounter.Counts())
-
-        // Calculate processing rate
-        timeDiff := now.Sub(lastStatsTime).Seconds()
-        tweetDiff := totalTweets - lastTweetCount
-        processingRate := float64(tweetDiff) / timeDiff
-
-        // Get sliding window stats
-        tweetQueueMu.RLock()
-        windowSize := len(tweetQueue)
-        tweetQueueMu.RUnlock()
-
-        // Get queue lengths
-        inboundQueueSize := inboundTokenQueue.Len()
-        oldQueueSize := oldTokenQueue.Len()
-
-        // Get frequency class stats
-        freqClassQueueStats := freqClassProcessor.GetQueueStats()
-        freqClassProcessorStats := freqClassProcessor.GetProcessorStats()
-
-        fmt.Printf("\n--- Pipeline Stats ---\n")
-        fmt.Printf("Total tweets read: %d\n", totalTweets)
-        fmt.Printf("Total tokens counted: %d\n", totalTokens)
-        fmt.Printf("Distinct tokens: %d\n", distinctTokens)
-        fmt.Printf("Tweets in current window: %d\n", windowSize)
-        fmt.Printf("Inbound token queue size: %d\n", inboundQueueSize)
-        fmt.Printf("Old token queue size: %d\n", oldQueueSize)
-        fmt.Printf("Processing rate: %.2f tweets/sec\n", processingRate)
-
-        // Print frequency class stats
-        fmt.Printf("--- Frequency Class Stats ---\n")
-        for i := 0; i &lt; freqClasses; i++ </span><span class="cov0" title="0">{
-                queueKey := fmt.Sprintf("freq_class_%d_queue_size", i)
-                processorKey := fmt.Sprintf("freq_class_%d_tokens_processed", i)
-                queueSize := freqClassQueueStats[queueKey]
-                tokensProcessed := freqClassProcessorStats[processorKey]
-                fmt.Printf("Class %d: Queue=%d, Processed=%d\n", i, queueSize, tokensProcessed)
-        }</span>
-        <span class="cov0" title="0">fmt.Printf("----------------------\n")
-        // Also log to slog
-        slog.Info("Pipeline stats",
-                "tweets", totalTweets,
-                "tokens", totalTokens,
-                "distinct", distinctTokens,
-                "window_size", windowSize,
-                "inbound_queue_size", inboundQueueSize,
-                "old_queue_size", oldQueueSize,
-                "processing_rate_tweets_per_sec", processingRate)
-
-        // Update for next calculation
-        lastStatsTime = now
-        lastTweetCount = totalTweets
-
-        // Log as CSV for machine consumption
-        f, err := os.OpenFile(statsCSVPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-        if err != nil </span><span class="cov0" title="0">{
-                log.Printf("Failed to open stats CSV: %v", err)
-                return
-        }</span>
-        <span class="cov0" title="0">defer f.Close()
-        writer := csv.NewWriter(f)
-        writer.Write([]string{
-                timestamp,
-                fmt.Sprintf("%d", totalTweets),
-                fmt.Sprintf("%d", totalTokens),
-                fmt.Sprintf("%d", distinctTokens),
-        })
-        writer.Flush()</span>
-}
-
-// parseCSVToTweet parses a CSV row string into a Tweet struct,
-// tokenizes the text, generates ThreePartKeys, and updates the global
-// token counter.
-func parseCSVToTweet(row string) (*tweets.Tweet, error) <span class="cov8" title="1">{
-        reader := csv.NewReader(strings.NewReader(row))
-        reader.FieldsPerRecord = -1
-        record, err := reader.Read()
-        if err != nil </span><span class="cov8" title="1">{
-                return nil, err
-        }</span>
-        <span class="cov8" title="1">if len(record) &lt; 10 </span><span class="cov8" title="1">{
-                return nil, fmt.Errorf("expected at least 10 fields, got %d", len(record))
-        }</span>
-        // Skip header rows
-        <span class="cov8" title="1">if record[0] == "id_str" || record[1] == "created_at" </span><span class="cov8" title="1">{
-                return nil, fmt.Errorf("header row detected, skipping")
-        }</span>
-
-        // Normalize all whitespace to a single space
-        <span class="cov8" title="1">cleanTime := normalizeWhitespace(record[1])
-
-        createdAt, err := time.Parse("Mon Jan 2 15:04:05 -0700 2006", cleanTime)
-        if err != nil </span><span class="cov8" title="1">{
-                return nil, fmt.Errorf("failed to parse CreatedAt: %v", err)
-        }</span>
-
-        // Create the Tweet struct and fill in the basic fields from the CSV
-        <span class="cov8" title="1">tweet := &amp;tweets.Tweet{
-                IDStr:        record[0],
-                Unix:         createdAt.Unix(),
-                UserIDStr:    record[2],
-                Text:         record[4],
-                Retweeted:    record[5] == "True",
-                RetweetCount: 0,   // TODO: parse record[3] as int
-                Tokens:       nil, // We'll fill this in below
-        }
-
-        // --- BEGINNER-FRIENDLY COMMENTS BELOW ---
-
-        // Step 1: Tokenize the tweet text.
-        // - Convert to lowercase
-        // - Remove punctuation
-        // - Remove apostrophes and what follows
-        // - Split on whitespace
-        tokens := simpleTokenize(tweet.Text)
-        tweet.Tokens = tokens // Store tokens in the Tweet struct
-
-        // Generate ThreePartKeys and store in global mappings
-        var threePKs []tweets.ThreePartKey
-        for _, token := range tokens </span><span class="cov8" title="1">{
-                // Check if we already have a mapping for this token
-                tokenMappingsMu.RLock()
-                threePK, exists := tokenToThreePK[token]
-                tokenMappingsMu.RUnlock()
-
-                if !exists </span><span class="cov8" title="1">{
-                        // Generate new ThreePartKey and store in mappings
-                        threePK = pipeline.GenerateThreePartKey(token)
-                        tokenMappingsMu.Lock()
-                        tokenToThreePK[token] = threePK
-                        threePKToToken[threePK] = token
-                        tokenMappingsMu.Unlock()
-                }</span>
-
-                <span class="cov8" title="1">threePKs = append(threePKs, threePK)</span>
-        }
-        // Note: ThreePKs not stored in Tweet struct but still generated for other uses
-
-        // Step 3: Update global stats counters (token counting is now handled by FCT)
-        <span class="cov8" title="1">TotalTweetsRead++
-        TotalTokensCounted += len(tokens)
-
-        // Step 5: Manage the sliding window (remove old tweets and decrement their tokens)
-        // Note: We'll call this after parsing, but we need to pass the window size
-        // For now, we'll use a default of 15 minutes if not configured
-
-        return tweet, nil</span>
-}
-
-// simpleTokenize splits text into tokens for this project.
-// - Converts to lowercase
-// - Removes punctuation
-// - Removes apostrophes and what follows
-// - Splits on whitespace
-// - Filters out offensive words if word filtering is enabled
-func simpleTokenize(text string) []string <span class="cov8" title="1">{
-        // Convert to lowercase
-        text = strings.ToLower(text)
-
-        // Remove apostrophes and what follows (e.g., "don't" -&gt; "don")
-        apostropheRe := regexp.MustCompile(`'\w*`)
-        text = apostropheRe.ReplaceAllString(text, "")
-
-        // Remove all punctuation (except spaces)
-        punctRe := regexp.MustCompile(`[^a-z0-9 ]`)
-        text = punctRe.ReplaceAllString(text, "")
-
-        // Split on whitespace
-        tokens := strings.Fields(text)
-
-        // Filter out offensive words if word filtering is enabled
-        if globalWordFilter != nil </span><span class="cov0" title="0">{
-                var filteredTokens []string
-                for _, token := range tokens </span><span class="cov0" title="0">{
-                        if !globalWordFilter.IsFiltered(token) </span><span class="cov0" title="0">{
-                                filteredTokens = append(filteredTokens, token)
-                        }</span>
-                }
-                <span class="cov0" title="0">return filteredTokens</span>
-        }
-
-        <span class="cov8" title="1">return tokens</span>
-}
-
-// Normalize all whitespace to a single space
-func normalizeWhitespace(s string) string <span class="cov8" title="1">{
-        return strings.Join(strings.Fields(s), " ")
-}</span>
-
-// manageSlidingWindow adds a new tweet to the queue and removes old tweets that fall outside the window
-func manageSlidingWindow(tweet *tweets.Tweet, windowSize int) <span class="cov0" title="0">{
-        tweetQueueMu.Lock()
-        defer tweetQueueMu.Unlock()
-
-        // Add the new tweet to the queue
-        tweetQueue = append(tweetQueue, tweet)
-
-        // Keep only the most recent windowSize tweets
-        if len(tweetQueue) &gt; windowSize </span><span class="cov0" title="0">{
-                removedCount := len(tweetQueue) - windowSize
-                oldTweets := tweetQueue[:removedCount]
-                tweetQueue = tweetQueue[removedCount:]
-
-                // Add old tweet tokens to the old token queue for FCT to process
-                for _, oldTweet := range oldTweets </span><span class="cov0" title="0">{
-                        if len(oldTweet.Tokens) &gt; 0 </span><span class="cov0" title="0">{
-                                oldTokenQueue.Enqueue(oldTweet.Tokens)
-                                slog.Info("Added old tokens to OldTokenQueue",
-                                        "tweet_id", oldTweet.IDStr,
-                                        "token_count", len(oldTweet.Tokens),
-                                        "queue_size_after", oldTokenQueue.Len())
-                        }</span>
-                }
-
-                // Log window management stats
-                <span class="cov0" title="0">if removedCount &gt; 0 </span><span class="cov0" title="0">{
-                        slog.Info("Sliding window management",
-                                "tweets_removed", removedCount,
-                                "queue_size", len(tweetQueue),
-                                "window_size", windowSize)
-                }</span>
-        }
-}
-
-// setupBloomFilterParams returns the expected number of tokens and number of hashes for each frequency class.
-// This allows for different Bloom filter sizes based on the expected number of tokens in each class.
-func setupBloomFilterParams(numClasses int) ([]int, []uint) <span class="cov0" title="0">{
-        // Expected number of tokens in each frequency class (from most frequent to least frequent)
-        // Based on actual data showing exponential growth: 15, 90, 576, 6076, 60373 for 5 classes
-        expectedTokens := make([]int, numClasses)
-        hashCounts := make([]uint, numClasses)
-
-        // Use exponential growth based on actual data pattern
-        // For 5 classes: 15, 90, 576, 6076, 60373
-        // Growth factor is approximately 6x per class
-        baseTokens := 15
-        growthFactor := 6.0
-
-        for i := 0; i &lt; numClasses; i++ </span><span class="cov0" title="0">{
-                expectedTokens[i] = int(float64(baseTokens) * math.Pow(growthFactor, float64(i)))
-
-                // Number of hash functions - higher counts for larger filters to maintain low false positive rate
-                if expectedTokens[i] &lt; 100 </span><span class="cov0" title="0">{
-                        hashCounts[i] = 7
-                }</span> else<span class="cov0" title="0"> if expectedTokens[i] &lt; 1000 </span><span class="cov0" title="0">{
-                        hashCounts[i] = 8
-                }</span> else<span class="cov0" title="0"> if expectedTokens[i] &lt; 10000 </span><span class="cov0" title="0">{
-                        hashCounts[i] = 10
-                }</span> else<span class="cov0" title="0"> if expectedTokens[i] &lt; 100000 </span><span class="cov0" title="0">{
-                        hashCounts[i] = 12
-                }</span> else<span class="cov0" title="0"> {
-                        hashCounts[i] = 14
-                }</span>
-        }
-
-        <span class="cov0" title="0">return expectedTokens, hashCounts</span>
-}
-</pre>
-		
-		<pre class="file" id="file4" style="display: none">package pipeline
+		<pre class="file" id="file1" style="display: none">package pipeline
 
 import (
         "fmt"
@@ -2101,7 +887,7 @@ func (fcp *FrequencyClassProcessor) SetGlobalTokenMappingForAll(mapping map[twee
 }
 </pre>
 		
-		<pre class="file" id="file5" style="display: none">package pipeline
+		<pre class="file" id="file2" style="display: none">package pipeline
 
 import (
         "encoding/gob"
@@ -2602,16 +1388,23 @@ func GetTokenFrequencyClass(token string) int <span class="cov0" title="0">{
 }
 </pre>
 		
-		<pre class="file" id="file6" style="display: none">package pipeline
+		<pre class="file" id="file3" style="display: none">package pipeline
 
 import (
+        "cursor-twitter/src/tweets"
+        "encoding/gob"
         "fmt"
+        "os"
+        "path/filepath"
         "sync"
         "sync/atomic"
         "time"
 
         "log/slog"
 )
+
+// Global flag to track when persistence is in progress
+var persistenceInProgress int32 // Atomic flag: 0 = not in progress, 1 = in progress
 
 // FrequencyComputationThread (FCT) manages token counting and frequency calculations
 // in a separate goroutine to avoid blocking the main tweet processing pipeline.
@@ -2868,6 +1661,9 @@ func (fct *FrequencyComputationThread) performRebuild() <span class="cov8" title
         SetGlobalFilters(result.Filters)
         fmt.Printf("*** FILTERS INSTALLED GLOBALLY ***\n")
 
+        // Save the data structures to files
+        savePersistedState(result, tokenCounts)
+
         duration := time.Since(startTime)
         completionTime := time.Now()
         slog.Info("Frequency class rebuild completed",
@@ -2957,9 +1753,94 @@ func (fct *FrequencyComputationThread) consumeAllAccumulatedTokens() <span class
                 "inbound_queue_size_after", fct.inboundTokenQueue.Len(),
                 "old_queue_size_after", fct.oldTokenQueue.Len())</span>
 }
+
+// savePersistedState saves the data structures to files
+func savePersistedState(result FreqClassResult, tokenCounts map[string]int) <span class="cov8" title="1">{
+        // Set persistence flag
+        atomic.StoreInt32(&amp;persistenceInProgress, 1)
+        defer atomic.StoreInt32(&amp;persistenceInProgress, 0)
+
+        slog.Info("Starting to save persisted state")
+        fmt.Printf("*** SAVING PERSISTED STATE ***\n")
+        saveStartTime := time.Now()
+
+        // Get the state directory from config (hardcoded for now, could be made configurable)
+        stateDir := "../data/state"
+
+        // Save TokenCounter
+        tokenCounter := NewTokenCounter()
+        for token, count := range tokenCounts </span><span class="cov8" title="1">{
+                for i := 0; i &lt; count; i++ </span><span class="cov8" title="1">{
+                        tokenCounter.IncrementTokens([]string{token})
+                }</span>
+        }
+        <span class="cov8" title="1">tokenCounterPath := filepath.Join(stateDir, "token_counter.json")
+        if err := tokenCounter.SaveToFile(tokenCounterPath); err != nil </span><span class="cov0" title="0">{
+                slog.Error("Failed to save TokenCounter", "error", err, "path", tokenCounterPath)
+        }</span> else<span class="cov8" title="1"> {
+                fmt.Printf("TokenCounter saved: %d total tokens (%d distinct tokens)\n", len(tokenCounts), len(tokenCounts))
+        }</span>
+
+        // Save FrequencyClassResult
+        <span class="cov8" title="1">freqClassPath := filepath.Join(stateDir, "frequency_classes.json")
+        if err := result.SaveToFile(freqClassPath); err != nil </span><span class="cov0" title="0">{
+                slog.Error("Failed to save FrequencyClassResult", "error", err, "path", freqClassPath)
+        }</span> else<span class="cov8" title="1"> {
+                fmt.Printf("FrequencyClassResult saved: %d classes\n", len(result.Filters))
+        }</span>
+
+        // Save ThreePartKey mappings
+        <span class="cov8" title="1">threePKPath := filepath.Join(stateDir, "threepartkey_mappings.json")
+        if err := saveThreePartKeyMappingsToFile(threePKPath, TokenTo3PK); err != nil </span><span class="cov0" title="0">{
+                slog.Error("Failed to save ThreePartKey mappings", "error", err, "path", threePKPath)
+        }</span> else<span class="cov8" title="1"> {
+                fmt.Printf("ThreePartKey mappings saved: %d mappings\n", len(TokenTo3PK))
+        }</span>
+
+        <span class="cov8" title="1">saveDuration := time.Since(saveStartTime)
+        slog.Info("Persisted state saving completed", "duration", saveDuration.String())
+        fmt.Printf("*** PERSISTED STATE SAVED in %v ***\n", saveDuration)
+
+        fmt.Println("=== PERSISTED STATE SAVED ===")</span>
+}
+
+// IsPersistenceInProgress returns true if persistence operations are currently running
+func IsPersistenceInProgress() bool <span class="cov0" title="0">{
+        return atomic.LoadInt32(&amp;persistenceInProgress) == 1
+}</span>
+
+// saveThreePartKeyMappingsToFile saves ThreePartKey mappings to a file
+func saveThreePartKeyMappingsToFile(filename string, mapping map[string]tweets.ThreePartKey) error <span class="cov8" title="1">{
+        token3PKMutex.RLock()
+        snapshot := make(map[string]tweets.ThreePartKey, len(mapping))
+        for k, v := range mapping </span><span class="cov0" title="0">{
+                snapshot[k] = v
+        }</span>
+        <span class="cov8" title="1">token3PKMutex.RUnlock()
+        // Ensure the directory exists
+        dir := filepath.Dir(filename)
+        if err := os.MkdirAll(dir, 0755); err != nil </span><span class="cov0" title="0">{
+                return fmt.Errorf("failed to create directory %s: %v", dir, err)
+        }</span>
+
+        // Create the file
+        <span class="cov8" title="1">file, err := os.Create(filename)
+        if err != nil </span><span class="cov0" title="0">{
+                return fmt.Errorf("failed to create file %s: %v", filename, err)
+        }</span>
+        <span class="cov8" title="1">defer file.Close()
+
+        // Encode and write to file (use the snapshot, not the live map)
+        encoder := gob.NewEncoder(file)
+        if err := encoder.Encode(snapshot); err != nil </span><span class="cov0" title="0">{
+                return fmt.Errorf("failed to encode mappings to %s: %v", filename, err)
+        }</span>
+
+        <span class="cov8" title="1">return nil</span>
+}
 </pre>
 		
-		<pre class="file" id="file7" style="display: none">package pipeline
+		<pre class="file" id="file4" style="display: none">package pipeline
 
 import (
         "sync"
@@ -3019,16 +1900,18 @@ func (tq *TokenQueue) Clear() <span class="cov0" title="0">{
 }</span>
 </pre>
 		
-		<pre class="file" id="file8" style="display: none">package pipeline
+		<pre class="file" id="file5" style="display: none">package pipeline
 
 import (
         "crypto/md5"
         "cursor-twitter/src/tweets"
         "encoding/binary"
+        "sync"
 )
 
 var TokenTo3PK = make(map[string]tweets.ThreePartKey)
 var ThreePKToToken = make(map[tweets.ThreePartKey]string)
+var token3PKMutex sync.RWMutex
 
 // Global array length for 3PK generation (set from main.go)
 var GlobalArrayLen int = 1000 // Default, will be set from config
@@ -3039,9 +1922,14 @@ func GenerateThreePartKey(token string) tweets.ThreePartKey <span class="cov0" t
         c := hashWithSuffix(token, "__THR33__", GlobalArrayLen)
         key := tweets.ThreePartKey{Part1: a, Part2: b, Part3: c}
         // Store in global maps if not already present
-        if _, exists := TokenTo3PK[token]; !exists </span><span class="cov0" title="0">{
+        token3PKMutex.RLock()
+        _, exists := TokenTo3PK[token]
+        token3PKMutex.RUnlock()
+        if !exists </span><span class="cov0" title="0">{
+                token3PKMutex.Lock()
                 TokenTo3PK[token] = key
                 ThreePKToToken[key] = token
+                token3PKMutex.Unlock()
         }</span>
         <span class="cov0" title="0">return key</span>
 }
@@ -3057,7 +1945,7 @@ func SetGlobalArrayLen(arrayLen int) <span class="cov0" title="0">{
 }</span>
 </pre>
 		
-		<pre class="file" id="file9" style="display: none">package pipeline
+		<pre class="file" id="file6" style="display: none">package pipeline
 
 import (
         "encoding/gob"
@@ -3201,111 +2089,6 @@ func (tc *TokenCounter) LoadFromFile(filename string) error <span class="cov8" t
         tc.counts = counts
 
         return nil</span>
-}
-</pre>
-		
-		<pre class="file" id="file10" style="display: none">package main
-
-import (
-        "fmt"
-
-        amqp "github.com/rabbitmq/amqp091-go"
-)
-
-// RabbitMQConfig holds RabbitMQ connection configuration
-type RabbitMQConfig struct {
-        Host     string
-        Port     int
-        Username string
-        Password string
-        Queue    string
-        Exchange string
-}
-
-// RabbitMQ implements the MessageQueue interface using RabbitMQ
-type RabbitMQ struct {
-        conn    *amqp.Connection
-        channel *amqp.Channel
-        queue   amqp.Queue
-        config  RabbitMQConfig
-}
-
-// NewRabbitMQ creates a new RabbitMQ connection
-func NewRabbitMQ(config RabbitMQConfig) (*RabbitMQ, error) <span class="cov0" title="0">{
-        // Build connection URL
-        url := fmt.Sprintf("amqp://%s:%s@%s:%d/", config.Username, config.Password, config.Host, config.Port)
-
-        // Connect to RabbitMQ
-        conn, err := amqp.Dial(url)
-        if err != nil </span><span class="cov0" title="0">{
-                return nil, fmt.Errorf("failed to connect to RabbitMQ: %w", err)
-        }</span>
-
-        // Create channel
-        <span class="cov0" title="0">ch, err := conn.Channel()
-        if err != nil </span><span class="cov0" title="0">{
-                conn.Close()
-                return nil, fmt.Errorf("failed to open channel: %w", err)
-        }</span>
-
-        // Declare queue
-        <span class="cov0" title="0">q, err := ch.QueueDeclare(
-                config.Queue, // name
-                true,         // durable
-                false,        // delete when unused
-                false,        // exclusive
-                false,        // no-wait
-                nil,          // arguments
-        )
-        if err != nil </span><span class="cov0" title="0">{
-                ch.Close()
-                conn.Close()
-                return nil, fmt.Errorf("failed to declare queue: %w", err)
-        }</span>
-
-        // Set QoS for fair dispatch
-        <span class="cov0" title="0">err = ch.Qos(
-                1,     // prefetch count
-                0,     // prefetch size
-                false, // global
-        )
-        if err != nil </span><span class="cov0" title="0">{
-                ch.Close()
-                conn.Close()
-                return nil, fmt.Errorf("failed to set QoS: %w", err)
-        }</span>
-
-        <span class="cov0" title="0">return &amp;RabbitMQ{
-                conn:    conn,
-                channel: ch,
-                queue:   q,
-                config:  config,
-        }, nil</span>
-}
-
-// Close closes the RabbitMQ connection
-func (r *RabbitMQ) Close() error <span class="cov0" title="0">{
-        if r.channel != nil </span><span class="cov0" title="0">{
-                r.channel.Close()
-        }</span>
-        <span class="cov0" title="0">if r.conn != nil </span><span class="cov0" title="0">{
-                return r.conn.Close()
-        }</span>
-        <span class="cov0" title="0">return nil</span>
-}
-
-// GetQueueInfo returns information about the queue
-func (r *RabbitMQ) GetQueueInfo() (map[string]interface{}, error) <span class="cov0" title="0">{
-        queue, err := r.channel.QueueInspect(r.config.Queue)
-        if err != nil </span><span class="cov0" title="0">{
-                return nil, fmt.Errorf("failed to inspect queue: %w", err)
-        }</span>
-
-        <span class="cov0" title="0">return map[string]interface{}{
-                "name":      queue.Name,
-                "messages":  queue.Messages,
-                "consumers": queue.Consumers,
-        }, nil</span>
 }
 </pre>
 		
