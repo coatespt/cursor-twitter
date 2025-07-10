@@ -1,7 +1,11 @@
 package pipeline
 
 import (
+	"cursor-twitter/src/tweets"
+	"encoding/gob"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -264,6 +268,9 @@ func (fct *FrequencyComputationThread) performRebuild() {
 	SetGlobalFilters(result.Filters)
 	fmt.Printf("*** FILTERS INSTALLED GLOBALLY ***\n")
 
+	// Save the data structures to files
+	savePersistedState(result, tokenCounts)
+
 	duration := time.Since(startTime)
 	completionTime := time.Now()
 	slog.Info("Frequency class rebuild completed",
@@ -352,4 +359,72 @@ func (fct *FrequencyComputationThread) consumeAllAccumulatedTokens() {
 		"old_processed", oldProcessed,
 		"inbound_queue_size_after", fct.inboundTokenQueue.Len(),
 		"old_queue_size_after", fct.oldTokenQueue.Len())
+}
+
+// savePersistedState saves the data structures to files
+func savePersistedState(result FreqClassResult, tokenCounts map[string]int) {
+	// Get the state directory from config (hardcoded for now, could be made configurable)
+	stateDir := "../data/state"
+
+	// Save TokenCounter
+	tokenCounter := NewTokenCounter()
+	for token, count := range tokenCounts {
+		for i := 0; i < count; i++ {
+			tokenCounter.IncrementTokens([]string{token})
+		}
+	}
+	tokenCounterPath := filepath.Join(stateDir, "token_counter.json")
+	if err := tokenCounter.SaveToFile(tokenCounterPath); err != nil {
+		slog.Error("Failed to save TokenCounter", "error", err, "path", tokenCounterPath)
+	} else {
+		fmt.Printf("TokenCounter saved: %d total tokens (%d distinct tokens)\n", len(tokenCounts), len(tokenCounts))
+	}
+
+	// Save FrequencyClassResult
+	freqClassPath := filepath.Join(stateDir, "frequency_classes.json")
+	if err := result.SaveToFile(freqClassPath); err != nil {
+		slog.Error("Failed to save FrequencyClassResult", "error", err, "path", freqClassPath)
+	} else {
+		fmt.Printf("FrequencyClassResult saved: %d classes\n", len(result.Filters))
+	}
+
+	// Save ThreePartKey mappings
+	threePKPath := filepath.Join(stateDir, "threepartkey_mappings.json")
+	if err := saveThreePartKeyMappingsToFile(threePKPath, TokenTo3PK); err != nil {
+		slog.Error("Failed to save ThreePartKey mappings", "error", err, "path", threePKPath)
+	} else {
+		fmt.Printf("ThreePartKey mappings saved: %d mappings\n", len(TokenTo3PK))
+	}
+
+	fmt.Println("=== PERSISTED STATE SAVED ===")
+}
+
+// saveThreePartKeyMappingsToFile saves ThreePartKey mappings to a file
+func saveThreePartKeyMappingsToFile(filename string, mapping map[string]tweets.ThreePartKey) error {
+	token3PKMutex.RLock()
+	snapshot := make(map[string]tweets.ThreePartKey, len(mapping))
+	for k, v := range mapping {
+		snapshot[k] = v
+	}
+	token3PKMutex.RUnlock()
+	// Ensure the directory exists
+	dir := filepath.Dir(filename)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %v", dir, err)
+	}
+
+	// Create the file
+	file, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("failed to create file %s: %v", filename, err)
+	}
+	defer file.Close()
+
+	// Encode and write to file (use the snapshot, not the live map)
+	encoder := gob.NewEncoder(file)
+	if err := encoder.Encode(snapshot); err != nil {
+		return fmt.Errorf("failed to encode mappings to %s: %v", filename, err)
+	}
+
+	return nil
 }

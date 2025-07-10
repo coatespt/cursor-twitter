@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/csv"
+	"encoding/gob"
 	"flag"
 	"fmt"
 	"log"
@@ -101,6 +102,7 @@ func main() {
 	// Add a command line flag to control printing of tweets
 	printTweets := flag.Bool("print-tweets", true, "Print each parsed tweet to the console")
 	configPath := flag.String("config", "../config/config.yaml", "Path to YAML config file")
+	loadState := flag.Bool("load-state", false, "Load persisted state from files on startup")
 	flag.Parse()
 
 	// Load config from YAML file.
@@ -127,6 +129,11 @@ func main() {
 	// Set up stats CSV file path
 	statsCSVPath = filepath.Join(cfg.LogDir, "stats.csv")
 	ensureStatsCSVHeader(statsCSVPath)
+
+	// Load persisted state if requested
+	if *loadState {
+		loadPersistedState(cfg.Persistence.StateDir)
+	}
 
 	slog.Info("Starting simple RabbitMQ consumer")
 
@@ -752,4 +759,84 @@ func setupBloomFilterParams(numClasses int) ([]int, []uint) {
 	}
 
 	return expectedTokens, hashCounts
+}
+
+// loadPersistedState loads the persisted data structures from files and logs statistics
+func loadPersistedState(stateDir string) {
+	fmt.Println("=== LOADING PERSISTED STATE ===")
+
+	// Check if any of the files exist
+	tokenCounterPath := filepath.Join(stateDir, "token_counter.json")
+	freqClassPath := filepath.Join(stateDir, "frequency_classes.json")
+	threePKPath := filepath.Join(stateDir, "threepartkey_mappings.json")
+
+	// If none of the files exist, just return and let the normal program run
+	_, err1 := os.Stat(tokenCounterPath)
+	_, err2 := os.Stat(freqClassPath)
+	_, err3 := os.Stat(threePKPath)
+	if os.IsNotExist(err1) && os.IsNotExist(err2) && os.IsNotExist(err3) {
+		fmt.Println("No persisted state files found. Starting fresh.")
+		fmt.Println("=== PERSISTED STATE LOADING COMPLETE ===")
+		return
+	}
+
+	// Load TokenCounter if it exists
+	tempTokenCounter := pipeline.NewTokenCounter()
+	if err := tempTokenCounter.LoadFromFile(tokenCounterPath); err != nil {
+		if strings.Contains(err.Error(), "no such file or directory") {
+			fmt.Printf("TokenCounter file not found: %s\n", tokenCounterPath)
+		} else {
+			fmt.Printf("Failed to load TokenCounter: %v\n", err)
+		}
+	} else {
+		counts := tempTokenCounter.Counts()
+		totalTokens := 0
+		for _, count := range counts {
+			totalTokens += count
+		}
+		fmt.Printf("TokenCounter loaded: %d total tokens (%d distinct tokens)\n", totalTokens, len(counts))
+	}
+
+	// Load FrequencyClassResult if it exists
+	var tempFreqClassResult pipeline.FreqClassResult
+	if err := tempFreqClassResult.LoadFromFile(freqClassPath); err != nil {
+		if strings.Contains(err.Error(), "no such file or directory") {
+			fmt.Printf("FrequencyClassResult file not found: %s\n", freqClassPath)
+		} else {
+			fmt.Printf("Failed to load FrequencyClassResult: %v\n", err)
+		}
+	} else {
+		classes := len(tempFreqClassResult.Filters)
+		fmt.Printf("FrequencyClassResult loaded: %d classes\n", classes)
+	}
+
+	// Load ThreePartKey mappings if they exist
+	// TODO: Implement ThreePartKey mapping loading when needed
+	fmt.Printf("ThreePartKey mappings loading not yet implemented\n")
+
+	fmt.Println("=== PERSISTED STATE LOADING COMPLETE ===")
+}
+
+// loadThreePartKeyMappingsFromFile loads ThreePartKey mappings from a file
+func loadThreePartKeyMappingsFromFile(filename string, mappings map[string]tweets.ThreePartKey) error {
+	// Open the file
+	file, err := os.Open(filename)
+	if err != nil {
+		return fmt.Errorf("failed to open file %s: %v", filename, err)
+	}
+	defer file.Close()
+
+	// Decode into a temporary map first
+	var tempMappings map[string]tweets.ThreePartKey
+	decoder := gob.NewDecoder(file)
+	if err := decoder.Decode(&tempMappings); err != nil {
+		return fmt.Errorf("failed to decode mappings from %s: %v", filename, err)
+	}
+
+	// Copy the data to the target map
+	for k, v := range tempMappings {
+		mappings[k] = v
+	}
+
+	return nil
 }

@@ -369,7 +369,12 @@ Right now it's something like 300k. It should probably be in the millions. Howev
       - If they are present,it means that the FCT will be spending some time loading the datastructures, and therefore it could delay for some number of seconds before sending anything.
       - If they are not present, it means nothing can happen until the processor receives millions of Tweets, so start sending ASAP.
 
-
+## Features of new Window Processing implented
+- Sender logging latest file processed is working
+- We have a function to write out the data structures to disk.
+- We have a function to read the data structures from disk.
+- The above are about to be tested with a command line flag to turn on a test.
+- 
 
 ## Notes On Dealing with Cursor
 - If you start a new session, paste relevant parts of this file into the chat to restore context for the AI assistant.
@@ -438,8 +443,8 @@ Running the actual software assumes you have a directory of CSV files of Tweets,
 
 ##  Build and run the main program
 
-cd /Users/petercoates/python-work/cursor-twitter/src
-go build -o process main.go
+cd /Users/petercoates/python-work/cursor-twitter
+go build -o main src/main.go
 ./process  -config ../config.yaml -print-tweets=false
 
 

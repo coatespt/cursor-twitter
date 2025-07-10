@@ -8,7 +8,7 @@ mq_queue: tweet_in
 
 # The number of tweets to keep in memory
 # Also the set of tweets over which global frequency classes are computed
-window: 15000
+window: 300000
 
 # The number of tweets to process in each batch
 batch: 5000
@@ -36,7 +36,7 @@ filter:
   # Enable word filtering
   enabled: true
   # Path to file containing words to filter out
-  filter_file: "../config/filter_lists/test_filters.txt"
+  filter_file: "./config/filter_lists/test_filters.txt"
 
 # Persistence configuration
 persistence:
@@ -46,7 +46,7 @@ persistence:
 # Sender status tracking
 sender:
   # File to track the last processed CSV file
-  status_file: "../data/sender_status.txt"
+  status_file: "../data/sender/sender_status.txt"
 
 
 
