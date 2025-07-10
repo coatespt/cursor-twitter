@@ -8,7 +8,7 @@ mq_queue: tweet_in
 
 # The number of tweets to keep in memory
 # Also the set of tweets over which global frequency classes are computed
-window: 300000
+window: 50000
 
 # The number of tweets to process in each batch
 batch: 5000
@@ -29,7 +29,7 @@ freq_classes: 7
 bw_array_len: 1000
 
 # List of frequency classes (1-based) to skip for busy word detection. E.g., [1, 2] skips the most frequent and second most frequent classes.
-skip_frequency_classes: []
+skip_frequency_classes: [1]
 
 # Word filtering configuration
 filter:
@@ -46,7 +46,10 @@ persistence:
 # Sender status tracking
 sender:
   # File to track the last processed CSV file
-  status_file: "../data/sender/sender_status.txt"
+  status_file: "../../data/sender/sender_status.txt"
 
+# The minimum length of a token to be considered
+min_token_len: 2
 
+ 
 

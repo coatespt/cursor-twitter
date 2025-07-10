@@ -13,6 +13,9 @@ import (
 	"log/slog"
 )
 
+// Global flag to track when persistence is in progress
+var persistenceInProgress int32 // Atomic flag: 0 = not in progress, 1 = in progress
+
 // FrequencyComputationThread (FCT) manages token counting and frequency calculations
 // in a separate goroutine to avoid blocking the main tweet processing pipeline.
 type FrequencyComputationThread struct {
@@ -363,6 +366,14 @@ func (fct *FrequencyComputationThread) consumeAllAccumulatedTokens() {
 
 // savePersistedState saves the data structures to files
 func savePersistedState(result FreqClassResult, tokenCounts map[string]int) {
+	// Set persistence flag
+	atomic.StoreInt32(&persistenceInProgress, 1)
+	defer atomic.StoreInt32(&persistenceInProgress, 0)
+
+	slog.Info("Starting to save persisted state")
+	fmt.Printf("*** SAVING PERSISTED STATE ***\n")
+	saveStartTime := time.Now()
+
 	// Get the state directory from config (hardcoded for now, could be made configurable)
 	stateDir := "../data/state"
 
@@ -396,7 +407,16 @@ func savePersistedState(result FreqClassResult, tokenCounts map[string]int) {
 		fmt.Printf("ThreePartKey mappings saved: %d mappings\n", len(TokenTo3PK))
 	}
 
+	saveDuration := time.Since(saveStartTime)
+	slog.Info("Persisted state saving completed", "duration", saveDuration.String())
+	fmt.Printf("*** PERSISTED STATE SAVED in %v ***\n", saveDuration)
+
 	fmt.Println("=== PERSISTED STATE SAVED ===")
+}
+
+// IsPersistenceInProgress returns true if persistence operations are currently running
+func IsPersistenceInProgress() bool {
+	return atomic.LoadInt32(&persistenceInProgress) == 1
 }
 
 // saveThreePartKeyMappingsToFile saves ThreePartKey mappings to a file

@@ -19,6 +19,9 @@ import (
 	"cursor-twitter/src/tweets"
 	"log/slog"
 
+	"os/signal"
+	"syscall"
+
 	amqp "github.com/rabbitmq/amqp091-go"
 	"gopkg.in/yaml.v3"
 )
@@ -38,6 +41,7 @@ type Config struct {
 	FreqClasses int     `yaml:"freq_classes"`
 	BWArrayLen  int     `yaml:"bw_array_len"`
 	ZScore      float64 `yaml:"z_score"`
+	MinTokenLen int     `yaml:"min_token_len"`
 
 	Filter struct {
 		Enabled    bool   `yaml:"enabled"`
@@ -132,7 +136,15 @@ func main() {
 
 	// Load persisted state if requested
 	if *loadState {
+		slog.Info("Starting to load persisted state")
+		fmt.Printf("*** LOADING PERSISTED STATE ***\n")
+		loadStartTime := time.Now()
+
 		loadPersistedState(cfg.Persistence.StateDir)
+
+		loadDuration := time.Since(loadStartTime)
+		slog.Info("Persisted state loading completed", "duration", loadDuration.String())
+		fmt.Printf("*** PERSISTED STATE LOADED in %v ***\n", loadDuration)
 	}
 
 	slog.Info("Starting simple RabbitMQ consumer")
@@ -228,6 +240,36 @@ func main() {
 
 	slog.Info("Connected to RabbitMQ. Waiting for messages...", "queue", q.Name)
 
+	// Set up signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start shutdown handler in background
+	go func() {
+		sig := <-sigChan
+		slog.Info("Received shutdown signal", "signal", sig.String())
+		fmt.Printf("\n*** RECEIVED SHUTDOWN SIGNAL: %s ***\n", sig.String())
+
+		// Check if persistence is in progress
+		if pipeline.IsPersistenceInProgress() {
+			fmt.Printf("*** PERSISTENCE IN PROGRESS - WAITING FOR COMPLETION ***\n")
+			slog.Info("Persistence in progress, waiting for completion")
+
+			// Wait for persistence to complete
+			for pipeline.IsPersistenceInProgress() {
+				time.Sleep(100 * time.Millisecond)
+			}
+
+			fmt.Printf("*** PERSISTENCE COMPLETED - EXITING ***\n")
+			slog.Info("Persistence completed, exiting")
+		} else {
+			fmt.Printf("*** NO PERSISTENCE IN PROGRESS - EXITING IMMEDIATELY ***\n")
+			slog.Info("No persistence in progress, exiting immediately")
+		}
+
+		os.Exit(0)
+	}()
+
 	// Start blocking consumer
 	msgs, err := ch.Consume(
 		q.Name, // queue
@@ -270,7 +312,7 @@ func main() {
 	// Main loop runs forever
 	for msg := range msgs {
 
-		tweet, err := parseCSVToTweet(string(msg.Body))
+		tweet, err := parseCSVToTweet(string(msg.Body), cfg)
 		if err != nil {
 			//slog.Warn("Failed to parse tweet", "error", err, "raw_row", string(msg.Body))
 			//fmt.Printf("[PARSE ERROR] %v\nRaw: %s\n", err, string(msg.Body))
@@ -466,7 +508,9 @@ func setupLogger(logDir string) (*slog.Logger, *os.File, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	logger := slog.New(slog.NewTextHandler(logFile, nil))
+	logger := slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
 	return logger, logFile, nil
 }
 
@@ -576,7 +620,7 @@ func printStats() {
 // parseCSVToTweet parses a CSV row string into a Tweet struct,
 // tokenizes the text, generates ThreePartKeys, and updates the global
 // token counter.
-func parseCSVToTweet(row string) (*tweets.Tweet, error) {
+func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
 	reader := csv.NewReader(strings.NewReader(row))
 	reader.FieldsPerRecord = -1
 	record, err := reader.Read()
@@ -617,7 +661,7 @@ func parseCSVToTweet(row string) (*tweets.Tweet, error) {
 	// - Remove punctuation
 	// - Remove apostrophes and what follows
 	// - Split on whitespace
-	tokens := simpleTokenize(tweet.Text)
+	tokens := simpleTokenize(tweet.Text, cfg)
 	tweet.Tokens = tokens // Store tokens in the Tweet struct
 
 	// Generate ThreePartKeys and store in global mappings
@@ -658,7 +702,8 @@ func parseCSVToTweet(row string) (*tweets.Tweet, error) {
 // - Removes apostrophes and what follows
 // - Splits on whitespace
 // - Filters out offensive words if word filtering is enabled
-func simpleTokenize(text string) []string {
+// - Filters out tokens shorter than min_token_len if specified
+func simpleTokenize(text string, cfg *Config) []string {
 	// Convert to lowercase
 	text = strings.ToLower(text)
 
@@ -673,18 +718,23 @@ func simpleTokenize(text string) []string {
 	// Split on whitespace
 	tokens := strings.Fields(text)
 
-	// Filter out offensive words if word filtering is enabled
-	if globalWordFilter != nil {
-		var filteredTokens []string
-		for _, token := range tokens {
-			if !globalWordFilter.IsFiltered(token) {
-				filteredTokens = append(filteredTokens, token)
-			}
+	// Filter out tokens shorter than min_token_len if specified
+	var filteredTokens []string
+	for _, token := range tokens {
+		// Skip tokens that are too short
+		if cfg.MinTokenLen > 0 && len(token) < cfg.MinTokenLen {
+			continue
 		}
-		return filteredTokens
+
+		// Filter out offensive words if word filtering is enabled
+		if globalWordFilter != nil && globalWordFilter.IsFiltered(token) {
+			continue
+		}
+
+		filteredTokens = append(filteredTokens, token)
 	}
 
-	return tokens
+	return filteredTokens
 }
 
 // Normalize all whitespace to a single space

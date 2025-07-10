@@ -8,3 +8,11 @@ analyze_tokens
 coverage.out
 converage.html
 sender_status.txt
+main
+
+# Python bytecode and cache files
+*.pyc
+*.pyo
+__pycache__/
+*.py[cod]
+*$py.class

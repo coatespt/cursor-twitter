@@ -274,6 +274,7 @@ go run tests/csv_tweet_parse_test.go <path_to_your_csv_file>
 Let's make a practice of saying what each module does
 at the top of the file.  Comment as if I'm an idiot.
   
+- orderly shutdown.  Perhaps a command.
 
 - Check that 'sorted order' for the file names is the same as the order given by the times embeddede in the file names.
 
@@ -281,12 +282,7 @@ at the top of the file.  Comment as if I'm an idiot.
 
 - Make tests around everything.
 
-- Build out the offensive word detection mechanism. It should
-  - Read in a file of words to ignore. Niggah, niggaaazz, etc.
-  - Build a set of these words.
-  - Main could check each token for presence in that set before passing the token to the busy word processor queues.
-
-- Find the right data structure to output the set of busy words. It need the words by frequency class and the ID's of the Tweets.  Or some way to identify the Tweets that the batch of words pertains to. 
+- Build out the offensive word detection mechanism. Check. This is in the tokenizer. There is a file of explicit words. There is also some generic activities, like a minimum token length in config.yaml. 
 
 - Find the Tweets that the set of busy words applies to and do the clustering.
 
