@@ -36,17 +36,32 @@ type Config struct {
 	WindowSize int    `yaml:"window"`
 	BatchSize  int    `yaml:"batch"`
 
-	Verbose     bool    `yaml:"verbose"`
-	LogDir      string  `yaml:"log_dir"`
-	FreqClasses int     `yaml:"freq_classes"`
-	BWArrayLen  int     `yaml:"bw_array_len"`
-	ZScore      float64 `yaml:"z_score"`
-	MinTokenLen int     `yaml:"min_token_len"`
+	Verbose              bool    `yaml:"verbose"`
+	LogDir               string  `yaml:"log_dir"`
+	FreqClasses          int     `yaml:"freq_classes"`
+	BWArrayLen           int     `yaml:"bw_array_len"`
+	ZScore               float64 `yaml:"z_score"`
+	MinTokenLen          int     `yaml:"min_token_len"`
+	SkipFrequencyClasses []int   `yaml:"skip_frequency_classes"`
 
 	Filter struct {
 		Enabled    bool   `yaml:"enabled"`
 		FilterFile string `yaml:"filter_file"`
 	} `yaml:"filter"`
+
+	TokenFilters struct {
+		Enabled                         bool    `yaml:"enabled"`
+		MaxLength                       int     `yaml:"max_length"`
+		MinCharacterDiversity           float64 `yaml:"min_character_diversity"`
+		MinCharacterDiversityLowerLimit int     `yaml:"min_character_diversity_lower_limit"`
+		MaxCharacterRepetition          float64 `yaml:"max_character_repetition"`
+		MaxCaseAlternations             float64 `yaml:"max_case_alternations"`
+		MaxNumberLetterMix              float64 `yaml:"max_number_letter_mix"`
+		RejectHashtags                  bool    `yaml:"reject_hashtags"`
+		RejectUrls                      bool    `yaml:"reject_urls"`
+		RejectAllCapsLong               bool    `yaml:"reject_all_caps_long"`
+		AllCapsLowerLimit               int     `yaml:"all_caps_lower_limit"`
+	} `yaml:"token_filters"`
 
 	Persistence struct {
 		StateDir          string `yaml:"state_dir"`
@@ -70,6 +85,20 @@ var (
 	lastTweetCount     int
 	freqClasses        int // Number of frequency classes from config
 
+	// Token filter rejection statistics
+	TokenFilterStats struct {
+		TotalTokensProcessed int
+		TotalTokensRejected  int
+		RejectedByMaxLength  int
+		RejectedByDiversity  int
+		RejectedByRepetition int
+		RejectedByCaseAlt    int
+		RejectedByNumberMix  int
+		RejectedByHashtag    int
+		RejectedByUrl        int
+		RejectedByAllCaps    int
+		mu                   sync.RWMutex
+	}
 )
 
 // Global mappings for token <-> ThreePartKey relationships
@@ -104,25 +133,43 @@ var (
 // Global word filter
 var globalWordFilter *filter.WordFilter
 
+// getCurrentWorkingDir returns the current working directory for debugging
+func getCurrentWorkingDir() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "unknown"
+	}
+	return dir
+}
+
 func main() {
+	fmt.Printf("*** MAIN FUNCTION STARTED ***\n")
+
 	// Add a command line flag to control printing of tweets
 	printTweets := flag.Bool("print-tweets", true, "Print each parsed tweet to the console")
 	configPath := flag.String("config", "../config/config.yaml", "Path to YAML config file")
 	loadState := flag.Bool("load-state", false, "Load persisted state from files on startup")
 	flag.Parse()
 
+	fmt.Printf("*** FLAGS PARSED: config=%s, print-tweets=%v, load-state=%v ***\n", *configPath, *printTweets, *loadState)
+
 	// Load config from YAML file.
+	fmt.Printf("*** LOADING CONFIG FROM: %s ***\n", *configPath)
 
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	fmt.Printf("*** CONFIG LOADED SUCCESSFULLY ***\n")
+
 	// Require log_dir to be present and non-empty
 	if cfg.LogDir == "" {
 		fmt.Fprintln(os.Stderr, "ERROR: 'log_dir' must be defined in the config file and cannot be empty.")
 		os.Exit(1)
 	}
+
+	fmt.Printf("*** SETTING UP LOGGER IN: %s ***\n", cfg.LogDir)
 
 	// Set up slog logger to write to a file in the specified log_dir
 	logger, logFile, err := setupLogger(cfg.LogDir)
@@ -132,9 +179,12 @@ func main() {
 	defer logFile.Close()
 	slog.SetDefault(logger)
 
+	fmt.Printf("*** LOGGER SETUP COMPLETE ***\n")
+
 	// Set up stats CSV file path
 	statsCSVPath = filepath.Join(cfg.LogDir, "stats.csv")
 	ensureStatsCSVHeader(statsCSVPath)
+	fmt.Printf("*** STATS CSV SETUP COMPLETE ***\n")
 
 	// Load persisted state if requested
 	if *loadState {
@@ -149,25 +199,39 @@ func main() {
 		fmt.Printf("*** PERSISTED STATE LOADED in %v ***\n", loadDuration)
 	}
 
+	fmt.Printf("*** ABOUT TO START STATS PRINTER ***\n")
+
 	slog.Info("Starting simple RabbitMQ consumer")
 
 	// Start periodic stats printer (prints every 30 seconds)
 	startStatsPrinter()
+	fmt.Printf("*** STATS PRINTER STARTED ***\n")
 
 	// Initialize global token mappings
+	fmt.Printf("*** INITIALIZING GLOBAL TOKEN MAPPINGS ***\n")
 	tokenToThreePK = make(map[string]tweets.ThreePartKey)
 	threePKToToken = make(map[tweets.ThreePartKey]string)
+	fmt.Printf("*** GLOBAL TOKEN MAPPINGS INITIALIZED ***\n")
 
 	// Initialize word filter if enabled
+	fmt.Printf("*** CHECKING WORD FILTER CONFIG ***\n")
 	if cfg.Filter.Enabled {
+		fmt.Printf("*** LOADING WORD FILTER FROM: %s ***\n", cfg.Filter.FilterFile)
 		globalWordFilter = filter.NewWordFilter()
+		fmt.Printf("*** ATTEMPTING TO LOAD WORD FILTER ***\n")
 		if err := globalWordFilter.LoadFromFile(cfg.Filter.FilterFile); err != nil {
+			fmt.Printf("*** FATAL ERROR: Failed to load word filter ***\n")
+			fmt.Printf("*** Error: %v ***\n", err)
+			fmt.Printf("*** File: %s ***\n", cfg.Filter.FilterFile)
+			fmt.Printf("*** Current working directory: %s ***\n", getCurrentWorkingDir())
 			slog.Error("Failed to load word filter", "error", err, "file", cfg.Filter.FilterFile)
 			os.Exit(1)
 		}
 		slog.Info("Word filter initialized", "filtered_words_count", globalWordFilter.GetFilteredCount(), "file", cfg.Filter.FilterFile)
+		fmt.Printf("*** WORD FILTER LOADED SUCCESSFULLY ***\n")
 	} else {
 		slog.Info("Word filtering disabled")
+		fmt.Printf("*** WORD FILTERING DISABLED ***\n")
 	}
 
 	// Set global array length for 3PK generation
@@ -190,6 +254,7 @@ func main() {
 		oldTokenQueue,
 		0, // Not used - frequency rebuilds happen based on window size
 		freqClasses,
+		cfg.WindowSize, // Pass window size for autonomous rebuild triggering
 	)
 
 	// Start the FCT
@@ -200,15 +265,20 @@ func main() {
 		"freq_classes", freqClasses)
 
 	// Create and start the frequency class processor
-	freqClassProcessor = pipeline.NewFrequencyClassProcessor(freqClasses, cfg.BWArrayLen, float64(cfg.ZScore))
+	fmt.Printf("*** Creating FrequencyClassProcessor with %d classes, skipping %v ***\n", freqClasses, cfg.SkipFrequencyClasses)
+	freqClassProcessor = pipeline.NewFrequencyClassProcessor(freqClasses, cfg.BWArrayLen, float64(cfg.ZScore), cfg.SkipFrequencyClasses)
+	fmt.Printf("*** FrequencyClassProcessor created successfully ***\n")
 	freqClassProcessor.SetGlobalTokenMappingForAll(threePKToToken, &tokenMappingsMu)
+	fmt.Printf("*** Global token mapping set ***\n")
 	freqClassProcessor.Start()
+	fmt.Printf("*** FrequencyClassProcessor started ***\n")
 	defer freqClassProcessor.Stop()
 
 	slog.Info("FrequencyClassProcessor created and started",
 		"num_classes", freqClasses,
 		"bw_array_len", cfg.BWArrayLen,
-		"z_score_threshold", cfg.ZScore)
+		"z_score_threshold", cfg.ZScore,
+		"skip_classes", cfg.SkipFrequencyClasses)
 
 	// Connect to RabbitMQ
 	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
@@ -356,6 +426,12 @@ func main() {
 					}
 
 					if freqClass >= 0 {
+						// Check if this frequency class is active (not skipped)
+						if !freqClassProcessor.IsClassActive(freqClass) {
+							// Skip tokens for inactive classes
+							continue
+						}
+
 						// Generate or get the 3pk for this token
 						tokenMappingsMu.RLock()
 						threePK, exists := tokenToThreePK[token]
@@ -460,17 +536,22 @@ func main() {
 			if len(filters) > 0 {
 				terminationSignal := tweets.ThreePartKey{Part1: -1, Part2: -1, Part3: -1}
 
-				// Send termination signal to all frequency class processors
+				// Send termination signal to active frequency class processors only
+				activeCount := 0
 				for i := 0; i < freqClasses; i++ {
-					freqClassProcessor.EnqueueToFrequencyClass(i, terminationSignal)
+					if freqClassProcessor.IsClassActive(i) {
+						freqClassProcessor.EnqueueToFrequencyClass(i, terminationSignal)
+						activeCount++
+					}
 				}
 
-				fmt.Printf("*** BATCH BOUNDARY: Sent termination signals to all %d busy word processors at tweet %d ***\n",
-					freqClasses, TotalTweetsRead)
+				fmt.Printf("*** BATCH BOUNDARY: Sent termination signals to %d active busy word processors at tweet %d ***\n",
+					activeCount, TotalTweetsRead)
 				slog.Info("Main: Sent termination signals to busy word processors",
 					"tweet_count", TotalTweetsRead,
 					"batch_size", cfg.BatchSize,
-					"num_freq_classes", freqClasses)
+					"total_freq_classes", freqClasses,
+					"active_freq_classes", activeCount)
 			} else {
 				// No filters available yet - log occasionally
 				if TotalTweetsRead%10000 == 0 {
@@ -569,6 +650,26 @@ func printStats() {
 	freqClassQueueStats := freqClassProcessor.GetQueueStats()
 	freqClassProcessorStats := freqClassProcessor.GetProcessorStats()
 
+	// Get token filter statistics
+	TokenFilterStats.mu.RLock()
+	totalProcessed := TokenFilterStats.TotalTokensProcessed
+	totalRejected := TokenFilterStats.TotalTokensRejected
+	rejectionRate := 0.0
+	if totalProcessed > 0 {
+		rejectionRate = float64(totalRejected) / float64(totalProcessed) * 100.0
+	}
+
+	// Get breakdown by filter type
+	rejectedByMaxLength := TokenFilterStats.RejectedByMaxLength
+	rejectedByDiversity := TokenFilterStats.RejectedByDiversity
+	rejectedByRepetition := TokenFilterStats.RejectedByRepetition
+	rejectedByCaseAlt := TokenFilterStats.RejectedByCaseAlt
+	rejectedByNumberMix := TokenFilterStats.RejectedByNumberMix
+	rejectedByHashtag := TokenFilterStats.RejectedByHashtag
+	rejectedByUrl := TokenFilterStats.RejectedByUrl
+	rejectedByAllCaps := TokenFilterStats.RejectedByAllCaps
+	TokenFilterStats.mu.RUnlock()
+
 	fmt.Printf("\n--- Pipeline Stats ---\n")
 	fmt.Printf("Total tweets read: %d\n", totalTweets)
 	fmt.Printf("Total tokens counted: %d\n", totalTokens)
@@ -577,6 +678,20 @@ func printStats() {
 	fmt.Printf("Inbound token queue size: %d\n", inboundQueueSize)
 	fmt.Printf("Old token queue size: %d\n", oldQueueSize)
 	fmt.Printf("Processing rate: %.2f tweets/sec\n", processingRate)
+	fmt.Printf("--- Token Filter Stats ---\n")
+	fmt.Printf("Tokens processed: %d\n", totalProcessed)
+	fmt.Printf("Tokens rejected: %d\n", totalRejected)
+	fmt.Printf("Rejection rate: %.2f%%\n", rejectionRate)
+	if totalRejected > 0 {
+		fmt.Printf("  Rejected by max length: %d (%.1f%%)\n", rejectedByMaxLength, float64(rejectedByMaxLength)/float64(totalRejected)*100)
+		fmt.Printf("  Rejected by diversity: %d (%.1f%%)\n", rejectedByDiversity, float64(rejectedByDiversity)/float64(totalRejected)*100)
+		fmt.Printf("  Rejected by repetition: %d (%.1f%%)\n", rejectedByRepetition, float64(rejectedByRepetition)/float64(totalRejected)*100)
+		fmt.Printf("  Rejected by case alternation: %d (%.1f%%)\n", rejectedByCaseAlt, float64(rejectedByCaseAlt)/float64(totalRejected)*100)
+		fmt.Printf("  Rejected by number mix: %d (%.1f%%)\n", rejectedByNumberMix, float64(rejectedByNumberMix)/float64(totalRejected)*100)
+		fmt.Printf("  Rejected by hashtag: %d (%.1f%%)\n", rejectedByHashtag, float64(rejectedByHashtag)/float64(totalRejected)*100)
+		fmt.Printf("  Rejected by URL: %d (%.1f%%)\n", rejectedByUrl, float64(rejectedByUrl)/float64(totalRejected)*100)
+		fmt.Printf("  Rejected by all caps: %d (%.1f%%)\n", rejectedByAllCaps, float64(rejectedByAllCaps)/float64(totalRejected)*100)
+	}
 
 	// Print frequency class stats
 	fmt.Printf("--- Frequency Class Stats ---\n")
@@ -596,7 +711,10 @@ func printStats() {
 		"window_size", windowSize,
 		"inbound_queue_size", inboundQueueSize,
 		"old_queue_size", oldQueueSize,
-		"processing_rate_tweets_per_sec", processingRate)
+		"processing_rate_tweets_per_sec", processingRate,
+		"tokens_processed", totalProcessed,
+		"tokens_rejected", totalRejected,
+		"rejection_rate_pct", fmt.Sprintf("%.2f", rejectionRate))
 
 	// Update for next calculation
 	lastStatsTime = now
@@ -720,7 +838,7 @@ func simpleTokenize(text string, cfg *Config) []string {
 	// Split on whitespace
 	tokens := strings.Fields(text)
 
-	// Filter out tokens shorter than min_token_len if specified
+	// Filter out tokens based on various criteria
 	var filteredTokens []string
 	for _, token := range tokens {
 		// Skip tokens that are too short
@@ -733,6 +851,11 @@ func simpleTokenize(text string, cfg *Config) []string {
 			continue
 		}
 
+		// Apply token filters if enabled
+		if shouldFilterToken(token, cfg) {
+			continue
+		}
+
 		filteredTokens = append(filteredTokens, token)
 	}
 
@@ -742,6 +865,136 @@ func simpleTokenize(text string, cfg *Config) []string {
 // Normalize all whitespace to a single space
 func normalizeWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// shouldFilterToken applies all configured token filters and tracks rejection statistics
+func shouldFilterToken(token string, cfg *Config) bool {
+	if !cfg.TokenFilters.Enabled {
+		return false
+	}
+
+	// Track that we're processing a token
+	TokenFilterStats.mu.Lock()
+	TokenFilterStats.TotalTokensProcessed++
+	TokenFilterStats.mu.Unlock()
+
+	// Max length filter
+	if cfg.TokenFilters.MaxLength > 0 && len(token) > cfg.TokenFilters.MaxLength {
+		TokenFilterStats.mu.Lock()
+		TokenFilterStats.TotalTokensRejected++
+		TokenFilterStats.RejectedByMaxLength++
+		TokenFilterStats.mu.Unlock()
+		return true
+	}
+
+	// Character diversity filter (only for long tokens)
+	if len(token) >= cfg.TokenFilters.MinCharacterDiversityLowerLimit && cfg.TokenFilters.MinCharacterDiversity > 0 {
+		uniqueChars := make(map[rune]bool)
+		for _, char := range token {
+			uniqueChars[char] = true
+		}
+		diversity := float64(len(uniqueChars)) / float64(len(token))
+		if diversity < cfg.TokenFilters.MinCharacterDiversity {
+			TokenFilterStats.mu.Lock()
+			TokenFilterStats.TotalTokensRejected++
+			TokenFilterStats.RejectedByDiversity++
+			TokenFilterStats.mu.Unlock()
+			return true
+		}
+	}
+
+	// Character repetition filter
+	if cfg.TokenFilters.MaxCharacterRepetition > 0 {
+		repetitionCount := 0
+		for i := 1; i < len(token); i++ {
+			if token[i] == token[i-1] {
+				repetitionCount++
+			}
+		}
+		repetitionRatio := float64(repetitionCount) / float64(len(token))
+		if repetitionRatio > cfg.TokenFilters.MaxCharacterRepetition {
+			TokenFilterStats.mu.Lock()
+			TokenFilterStats.TotalTokensRejected++
+			TokenFilterStats.RejectedByRepetition++
+			TokenFilterStats.mu.Unlock()
+			return true
+		}
+	}
+
+	// Case alternation filter
+	if cfg.TokenFilters.MaxCaseAlternations > 0 {
+		caseChanges := 0
+		for i := 1; i < len(token); i++ {
+			if (token[i] >= 'A' && token[i] <= 'Z' && token[i-1] >= 'a' && token[i-1] <= 'z') ||
+				(token[i] >= 'a' && token[i] <= 'z' && token[i-1] >= 'A' && token[i-1] <= 'Z') {
+				caseChanges++
+			}
+		}
+		caseChangeRatio := float64(caseChanges) / float64(len(token))
+		if caseChangeRatio > cfg.TokenFilters.MaxCaseAlternations {
+			TokenFilterStats.mu.Lock()
+			TokenFilterStats.TotalTokensRejected++
+			TokenFilterStats.RejectedByCaseAlt++
+			TokenFilterStats.mu.Unlock()
+			return true
+		}
+	}
+
+	// Number-letter mixing filter
+	if cfg.TokenFilters.MaxNumberLetterMix > 0 {
+		digitCount := 0
+		for _, char := range token {
+			if char >= '0' && char <= '9' {
+				digitCount++
+			}
+		}
+		digitRatio := float64(digitCount) / float64(len(token))
+		if digitRatio > cfg.TokenFilters.MaxNumberLetterMix {
+			TokenFilterStats.mu.Lock()
+			TokenFilterStats.TotalTokensRejected++
+			TokenFilterStats.RejectedByNumberMix++
+			TokenFilterStats.mu.Unlock()
+			return true
+		}
+	}
+
+	// Hashtag filter
+	if cfg.TokenFilters.RejectHashtags && strings.HasPrefix(token, "#") {
+		TokenFilterStats.mu.Lock()
+		TokenFilterStats.TotalTokensRejected++
+		TokenFilterStats.RejectedByHashtag++
+		TokenFilterStats.mu.Unlock()
+		return true
+	}
+
+	// URL filter
+	if cfg.TokenFilters.RejectUrls && (strings.HasPrefix(token, "http") || strings.HasPrefix(token, "www")) {
+		TokenFilterStats.mu.Lock()
+		TokenFilterStats.TotalTokensRejected++
+		TokenFilterStats.RejectedByUrl++
+		TokenFilterStats.mu.Unlock()
+		return true
+	}
+
+	// All caps long filter
+	if cfg.TokenFilters.RejectAllCapsLong && len(token) >= cfg.TokenFilters.AllCapsLowerLimit {
+		allCaps := true
+		for _, char := range token {
+			if char < 'A' || char > 'Z' {
+				allCaps = false
+				break
+			}
+		}
+		if allCaps {
+			TokenFilterStats.mu.Lock()
+			TokenFilterStats.TotalTokensRejected++
+			TokenFilterStats.RejectedByAllCaps++
+			TokenFilterStats.mu.Unlock()
+			return true
+		}
+	}
+
+	return false
 }
 
 // manageSlidingWindow adds a new tweet to the queue and removes old tweets that fall outside the window

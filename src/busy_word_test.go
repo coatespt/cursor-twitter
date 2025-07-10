@@ -14,7 +14,7 @@ import (
 func TestBusyWordProcessorCreation(t *testing.T) {
 	// Create a test processor
 	queue := pipeline.NewThreePartKeyQueue()
-	fcp := pipeline.NewFrequencyClassProcessor(3, 10, 2.0)
+	fcp := pipeline.NewFrequencyClassProcessor(3, 10, 2.0, []int{})
 	processor := pipeline.NewBusyWordProcessor(0, queue, 10, 2.0, fcp)
 
 	// Test initial token count
@@ -88,7 +88,7 @@ func TestBusyWordThreePartKeyQueueOperations(t *testing.T) {
 // This test ensures proper queue management and statistics collection.
 func TestFrequencyClassProcessorOperations(t *testing.T) {
 	// Create a frequency class processor
-	fcp := pipeline.NewFrequencyClassProcessor(3, 10, 2.0)
+	fcp := pipeline.NewFrequencyClassProcessor(3, 10, 2.0, []int{})
 
 	// Test initial state
 	stats := fcp.GetQueueStats()
@@ -136,6 +136,51 @@ func TestFrequencyClassProcessorOperations(t *testing.T) {
 	processorStats := fcp.GetProcessorStats()
 	if len(processorStats) != 3 {
 		t.Errorf("Expected 3 processor stats, got %d", len(processorStats))
+	}
+}
+
+// TestFrequencyClassProcessorSkipClasses tests that skipped frequency classes are properly handled
+func TestFrequencyClassProcessorSkipClasses(t *testing.T) {
+	// Create a frequency class processor with classes 1 and 2 skipped
+	fcp := pipeline.NewFrequencyClassProcessor(4, 10, 2.0, []int{1, 2})
+
+	// Test that skipped classes are not active
+	if fcp.IsClassActive(0) != true {
+		t.Error("Expected class 0 to be active")
+	}
+	if fcp.IsClassActive(1) != false {
+		t.Error("Expected class 1 to be inactive (skipped)")
+	}
+	if fcp.IsClassActive(2) != false {
+		t.Error("Expected class 2 to be inactive (skipped)")
+	}
+	if fcp.IsClassActive(3) != true {
+		t.Error("Expected class 3 to be active")
+	}
+
+	// Test that enqueuing to skipped classes is ignored
+	key := tweets.ThreePartKey{Part1: 1, Part2: 2, Part3: 3}
+
+	// Enqueue to active class - should work
+	fcp.EnqueueToFrequencyClass(0, key)
+	stats := fcp.GetQueueStats()
+	if stats["freq_class_0_queue_size"] != 1 {
+		t.Errorf("Expected class 0 queue size 1, got %d", stats["freq_class_0_queue_size"])
+	}
+
+	// Enqueue to skipped class - should be ignored
+	fcp.EnqueueToFrequencyClass(1, key)
+	stats = fcp.GetQueueStats()
+	if stats["freq_class_1_queue_size"] != 0 {
+		t.Errorf("Expected class 1 queue size 0 (skipped), got %d", stats["freq_class_1_queue_size"])
+	}
+
+	// Test invalid class indices
+	if fcp.IsClassActive(-1) != false {
+		t.Error("Expected invalid class -1 to be inactive")
+	}
+	if fcp.IsClassActive(10) != false {
+		t.Error("Expected invalid class 10 to be inactive")
 	}
 }
 
@@ -194,7 +239,7 @@ func TestBarrierSynchronization(t *testing.T) {
 func TestGlobalTokenMapping(t *testing.T) {
 	// Create a test processor
 	queue := pipeline.NewThreePartKeyQueue()
-	fcp := pipeline.NewFrequencyClassProcessor(1, 10, 2.0)
+	fcp := pipeline.NewFrequencyClassProcessor(1, 10, 2.0, []int{})
 	processor := pipeline.NewBusyWordProcessor(0, queue, 10, 2.0, fcp)
 
 	// Set up global token mapping
@@ -239,7 +284,7 @@ func TestBusyWordProcessorConfiguration(t *testing.T) {
 
 	for _, tc := range testCases {
 		queue := pipeline.NewThreePartKeyQueue()
-		fcp := pipeline.NewFrequencyClassProcessor(tc.numClasses, tc.arrayLen, tc.zScoreThreshold)
+		fcp := pipeline.NewFrequencyClassProcessor(tc.numClasses, tc.arrayLen, tc.zScoreThreshold, []int{})
 		processor := pipeline.NewBusyWordProcessor(0, queue, tc.arrayLen, tc.zScoreThreshold, fcp)
 
 		// Verify processor was created

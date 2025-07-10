@@ -77,11 +77,12 @@ type BatchSummary struct {
 
 // FrequencyClassProcessor manages queues and processors for each frequency class
 type FrequencyClassProcessor struct {
-	queues     []*ThreePartKeyQueue
-	processors []*BusyWordProcessor
-	numClasses int
-	stopChan   chan struct{}
-	wg         sync.WaitGroup
+	queues      []*ThreePartKeyQueue
+	processors  []*BusyWordProcessor
+	numClasses  int
+	skipClasses map[int]bool
+	stopChan    chan struct{}
+	wg          sync.WaitGroup
 
 	// Batch coordination
 	batchResults chan BatchResult
@@ -167,14 +168,21 @@ type BusyWordProcessor struct {
 }
 
 // NewFrequencyClassProcessor creates a new processor with the specified number of classes
-func NewFrequencyClassProcessor(numClasses int, arrayLen int, zScoreThreshold float64) *FrequencyClassProcessor {
+func NewFrequencyClassProcessor(numClasses int, arrayLen int, zScoreThreshold float64, skipClasses []int) *FrequencyClassProcessor {
 	queues := make([]*ThreePartKeyQueue, numClasses)
 	processors := make([]*BusyWordProcessor, numClasses)
+
+	// Create a map for quick lookup of skipped classes
+	skipMap := make(map[int]bool)
+	for _, class := range skipClasses {
+		skipMap[class] = true
+	}
 
 	fcp := &FrequencyClassProcessor{
 		queues:       queues,
 		processors:   processors,
 		numClasses:   numClasses,
+		skipClasses:  skipMap,
 		stopChan:     make(chan struct{}),
 		batchResults: make(chan BatchResult, numClasses), // Buffer for all processors
 		batchBarrier: NewBarrier(numClasses),
@@ -211,15 +219,20 @@ func NewBusyWordProcessor(classIndex int, queue *ThreePartKeyQueue, arrayLen int
 
 // Start begins all the busy word processors
 func (fcp *FrequencyClassProcessor) Start() {
-	slog.Info("Starting FrequencyClassProcessor", "num_classes", fcp.numClasses)
+	slog.Info("Starting FrequencyClassProcessor", "num_classes", fcp.numClasses, "skip_classes", fcp.skipClasses)
 
 	for i, processor := range fcp.processors {
-		fcp.wg.Add(1)
-		go func(p *BusyWordProcessor, classIdx int) {
-			defer fcp.wg.Done()
-			p.run()
-		}(processor, i)
-		slog.Info("Started BusyWordProcessor", "class_index", i)
+		// Only start processors for active (non-skipped) classes
+		if fcp.IsClassActive(i) {
+			fcp.wg.Add(1)
+			go func(p *BusyWordProcessor, classIdx int) {
+				defer fcp.wg.Done()
+				p.run()
+			}(processor, i)
+			slog.Info("Started BusyWordProcessor", "class_index", i)
+		} else {
+			slog.Info("Skipping BusyWordProcessor", "class_index", i)
+		}
 	}
 
 	// Start the batch result collector
@@ -261,8 +274,9 @@ func (fcp *FrequencyClassProcessor) collectBatchResults() {
 			// Immediate feedback for this class (simplified)
 			fmt.Printf("Class %d: %d busy words\n", result.ClassIndex, len(busyWords))
 
-			// Check if all classes have reported
-			if resultsReceived == fcp.numClasses {
+			// Check if all active classes have reported
+			activeClassCount := fcp.numClasses - len(fcp.skipClasses)
+			if resultsReceived == activeClassCount {
 				// Print batch summary
 				fcp.printBatchSummary(currentBatch)
 
@@ -364,6 +378,14 @@ func (fcp *FrequencyClassProcessor) GetQueueStats() map[string]int {
 		stats[fmt.Sprintf("freq_class_%d_queue_size", i)] = queue.Len()
 	}
 	return stats
+}
+
+// IsClassActive returns true if the specified frequency class is not skipped
+func (fcp *FrequencyClassProcessor) IsClassActive(classIndex int) bool {
+	if classIndex < 0 || classIndex >= fcp.numClasses {
+		return false
+	}
+	return !fcp.skipClasses[classIndex]
 }
 
 // GetProcessorStats returns statistics about all busy word processors

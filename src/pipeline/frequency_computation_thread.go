@@ -34,6 +34,7 @@ type FrequencyComputationThread struct {
 	// Configuration
 	freqClassInterval time.Duration
 	freqClasses       int
+	windowSize        int // Number of tokens to process before triggering rebuild
 
 	// Current filters (thread-safe access)
 	currentFilters []FreqClassFilter
@@ -51,6 +52,7 @@ func NewFrequencyComputationThread(
 	oldTokenQueue *TokenQueue,
 	freqClassIntervalTweets int,
 	freqClasses int,
+	windowSize int,
 ) *FrequencyComputationThread {
 	return &FrequencyComputationThread{
 		tokenCounter:      tokenCounter,
@@ -59,6 +61,7 @@ func NewFrequencyComputationThread(
 		stopChan:          make(chan struct{}),
 		freqClassInterval: time.Duration(freqClassIntervalTweets) * time.Second, // Not used in current implementation
 		freqClasses:       freqClasses,
+		windowSize:        windowSize,
 	}
 }
 
@@ -172,6 +175,16 @@ func (fct *FrequencyComputationThread) run() {
 
 			// Process a small amount of tokens (main loop body - always happens)
 			fct.processTokens()
+
+			// Check if we should trigger a rebuild based on token count or file count
+			// This is the FCT's autonomous rebuild triggering logic
+			tokensProcessed := fct.tokenCounter.GetTotalTokens()
+			if tokensProcessed >= fct.windowSize && atomic.LoadInt32(&fct.shouldRebuild) == 0 {
+				slog.Info("FCT: Autonomous rebuild trigger - token count threshold reached",
+					"tokens_processed", tokensProcessed,
+					"window_size", fct.windowSize)
+				fct.TriggerRebuild()
+			}
 
 			// Add a small delay when no tokens are being processed to prevent CPU spinning
 			inboundSize := fct.inboundTokenQueue.Len()

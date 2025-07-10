@@ -9,15 +9,14 @@ func TestFrequencyComputationThread(t *testing.T) {
 	// Create test components
 	tokenCounter := NewTokenCounter()
 	inboundQueue := NewTokenQueue()
-	oldQueue := NewTokenQueue()
+	// oldQueue := NewTokenQueue() // Remove oldQueue
 
 	// Create FCT
 	fct := NewFrequencyComputationThread(
 		tokenCounter,
 		inboundQueue,
-		oldQueue,
-		1, // 1 minute interval
-		3, // 3 frequency classes
+		1000, // window size
+		3,    // frequency classes
 	)
 
 	// Start FCT
@@ -51,7 +50,7 @@ func TestFrequencyComputationThread(t *testing.T) {
 	// Test 2: Process old tokens (decrement)
 	t.Run("ProcessOldTokens", func(t *testing.T) {
 		// Add tokens to old queue
-		oldQueue.Enqueue([]string{"hello", "world"})
+		// oldQueue.Enqueue([]string{"hello", "world"}) // This line is removed
 
 		// Give FCT time to process
 		time.Sleep(200 * time.Millisecond)
@@ -105,14 +104,13 @@ func TestFrequencyComputationThreadConcurrency(t *testing.T) {
 	// Test that FCT can handle concurrent token additions
 	tokenCounter := NewTokenCounter()
 	inboundQueue := NewTokenQueue()
-	oldQueue := NewTokenQueue()
+	// oldQueue := NewTokenQueue() // Remove oldQueue
 
 	fct := NewFrequencyComputationThread(
 		tokenCounter,
 		inboundQueue,
-		oldQueue,
-		1,
-		3,
+		1000, // window size
+		3,    // frequency classes
 	)
 
 	fct.Start()
@@ -130,7 +128,7 @@ func TestFrequencyComputationThreadConcurrency(t *testing.T) {
 
 	go func() {
 		for i := 0; i < 50; i++ {
-			oldQueue.Enqueue([]string{"concurrent", "test"})
+			// oldQueue.Enqueue([]string{"concurrent", "test"}) // This line is removed
 		}
 	}()
 
@@ -139,7 +137,7 @@ func TestFrequencyComputationThreadConcurrency(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	// Wait for queues to be empty to ensure all processing is done
-	for inboundQueue.Len() > 0 || oldQueue.Len() > 0 {
+	for inboundQueue.Len() > 0 { // This line is changed
 		time.Sleep(100 * time.Millisecond)
 	}
 
@@ -156,15 +154,14 @@ func TestFrequencyComputationThreadTokenProcessing(t *testing.T) {
 	// Create test components
 	tokenCounter := NewTokenCounter()
 	inboundQueue := NewTokenQueue()
-	oldQueue := NewTokenQueue()
+	// oldQueue := NewTokenQueue() // Remove oldQueue
 
 	// Create FCT
 	fct := NewFrequencyComputationThread(
 		tokenCounter,
 		inboundQueue,
-		oldQueue,
-		1, // 1 minute interval
-		3, // 3 frequency classes
+		1000, // window size
+		3,    // frequency classes
 	)
 
 	// Start FCT
@@ -205,15 +202,14 @@ func TestFrequencyComputationThreadRunLoop(t *testing.T) {
 	// Create test components
 	tokenCounter := NewTokenCounter()
 	inboundQueue := NewTokenQueue()
-	oldQueue := NewTokenQueue()
+	// oldQueue := NewTokenQueue() // Remove oldQueue
 
 	// Create FCT
 	fct := NewFrequencyComputationThread(
 		tokenCounter,
 		inboundQueue,
-		oldQueue,
-		1, // 1 minute interval
-		3, // 3 frequency classes
+		1000, // window size
+		3,    // frequency classes
 	)
 
 	// Start FCT

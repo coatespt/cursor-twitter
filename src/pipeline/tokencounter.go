@@ -93,6 +93,17 @@ func (tc *TokenCounter) Clear() {
 	tc.counts = make(map[string]int)
 }
 
+// GetTotalTokens returns the total number of token occurrences (sum of all counts)
+func (tc *TokenCounter) GetTotalTokens() int {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+	total := 0
+	for _, count := range tc.counts {
+		total += count
+	}
+	return total
+}
+
 // SaveToFile saves the current token counts to a file using gob encoding
 func (tc *TokenCounter) SaveToFile(filename string) error {
 	// Ensure the directory exists

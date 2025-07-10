@@ -8,6 +8,19 @@ import (
 	"time"
 )
 
+// testConfig creates a minimal config for testing
+func testConfig() *Config {
+	return &Config{
+		MinTokenLen: 2,
+		Filter: struct {
+			Enabled    bool   `yaml:"enabled"`
+			FilterFile string `yaml:"filter_file"`
+		}{
+			Enabled: false,
+		},
+	}
+}
+
 // TestParseCSVToTweetValid tests parsing valid CSV tweet data.
 //
 // Rationale: This is the happy path test that ensures the core CSV parsing functionality
@@ -22,7 +35,8 @@ func TestParseCSVToTweetValid(t *testing.T) {
 	// Valid CSV row with all required fields (10 fields: id_str, created_at, user_id_str, retweet_count, text, retweeted, at, http, hashtag, words)
 	validCSV := `"123456789","Mon Jan 2 15:04:05 -0700 2006","user123","0","This is a test tweet with some interesting words","False","0","0","0","this is a test tweet with some interesting words"`
 
-	tweet, err := parseCSVToTweet(validCSV)
+	cfg := testConfig()
+	tweet, err := parseCSVToTweet(validCSV, cfg)
 	if err != nil {
 		t.Fatalf("Expected no error parsing valid CSV, got: %v", err)
 	}
@@ -89,7 +103,8 @@ func TestParseCSVToTweetInvalidFieldCount(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseCSVToTweet(tc.csvData)
+			cfg := testConfig()
+			_, err := parseCSVToTweet(tc.csvData, cfg)
 			if err == nil {
 				t.Errorf("Expected error containing '%s', got nil", tc.expected)
 				return
@@ -116,7 +131,8 @@ func TestParseCSVToTweetHeaderRow(t *testing.T) {
 
 	for i, headerRow := range headerRows {
 		t.Run(fmt.Sprintf("HeaderRow_%d", i), func(t *testing.T) {
-			_, err := parseCSVToTweet(headerRow)
+			cfg := testConfig()
+			_, err := parseCSVToTweet(headerRow, cfg)
 			if err == nil {
 				t.Error("Expected error for header row, got nil")
 				return
@@ -136,7 +152,8 @@ func TestParseCSVToTweetHeaderRow(t *testing.T) {
 func TestParseCSVToTweetInvalidDate(t *testing.T) {
 	invalidDateCSV := `"123456789","invalid-date-string","user123","0","test tweet","False","0","0","0","test tweet"`
 
-	_, err := parseCSVToTweet(invalidDateCSV)
+	cfg := testConfig()
+	_, err := parseCSVToTweet(invalidDateCSV, cfg)
 	if err == nil {
 		t.Error("Expected error for invalid date, got nil")
 		return
@@ -175,7 +192,8 @@ func TestSimpleTokenizeBasic(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.input, func(t *testing.T) {
-			result := simpleTokenize(tc.input)
+			cfg := testConfig()
+			result := simpleTokenize(tc.input, cfg)
 			if len(result) != len(tc.expected) {
 				t.Errorf("Expected %d tokens, got %d", len(tc.expected), len(result))
 				return
@@ -215,7 +233,8 @@ func TestSimpleTokenizeApostrophes(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.input, func(t *testing.T) {
-			result := simpleTokenize(tc.input)
+			cfg := testConfig()
+			result := simpleTokenize(tc.input, cfg)
 			if len(result) != len(tc.expected) {
 				t.Errorf("Expected %d tokens, got %d", len(tc.expected), len(result))
 				return
@@ -263,7 +282,8 @@ func TestSimpleTokenizePunctuation(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.input, func(t *testing.T) {
-			result := simpleTokenize(tc.input)
+			cfg := testConfig()
+			result := simpleTokenize(tc.input, cfg)
 			if len(result) != len(tc.expected) {
 				t.Errorf("Expected %d tokens, got %d", len(tc.expected), len(result))
 				return
@@ -311,7 +331,8 @@ func TestSimpleTokenizeWhitespace(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(fmt.Sprintf("Whitespace_%d", len(tc.input)), func(t *testing.T) {
-			result := simpleTokenize(tc.input)
+			cfg := testConfig()
+			result := simpleTokenize(tc.input, cfg)
 			if len(result) != len(tc.expected) {
 				t.Errorf("Expected %d tokens, got %d", len(tc.expected), len(result))
 				return
@@ -394,7 +415,8 @@ func TestParseCSVToTweetRetweetedField(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			tweet, err := parseCSVToTweet(tc.csvData)
+			cfg := testConfig()
+			tweet, err := parseCSVToTweet(tc.csvData, cfg)
 			if err != nil {
 				t.Fatalf("Expected no error, got: %v", err)
 			}
