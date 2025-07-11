@@ -18,6 +18,8 @@ For each code change, we run the tests!
 
 When a test doesn't pass, we have to look at why before changing anything. No removing tests because they don't pass!
 
+If any changes seem to involve multiple threads, be sure to get my agreement before doing anything. Anytime there thread safety constructs like mutex, etc., always check. We keep getting into trouble with unnecessary and incorrect thread complexity.
+
 
 
 ### Goal

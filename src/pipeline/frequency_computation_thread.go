@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"bufio"
-	"cursor-twitter/src/tweets"
 	"encoding/gob"
 	"fmt"
 	"os"
@@ -453,13 +452,13 @@ func savePersistedState(result FreqClassResult, tokenCounts map[string]int) {
 		slog.Info("FrequencyClassResult saved", "num_classes", len(result.Filters))
 	}
 
-	// Save ThreePartKey mappings
-	threePKPath := filepath.Join(stateDir, "threepartkey_mappings.json")
-	if err := saveThreePartKeyMappingsToFile(threePKPath, TokenTo3PK); err != nil {
-		slog.Error("Failed to save ThreePartKey mappings", "error", err, "path", threePKPath)
-	} else {
-		slog.Info("ThreePartKey mappings saved", "num_mappings", len(TokenTo3PK))
-	}
+	// Save ThreePartKey mappings - COMMENTED OUT for on-the-fly generation test
+	// threePKPath := filepath.Join(stateDir, "threepartkey_mappings.json")
+	// if err := saveThreePartKeyMappingsToFile(threePKPath, TokenTo3PK); err != nil {
+	// 	slog.Error("Failed to save ThreePartKey mappings", "error", err, "path", threePKPath)
+	// } else {
+	// 	slog.Info("ThreePartKey mappings saved", "num_mappings", len(TokenTo3PK))
+	// }
 
 	saveDuration := time.Since(saveStartTime)
 	slog.Info("Persisted state saving completed", "duration", saveDuration.String())
@@ -489,36 +488,6 @@ func saveTokenCountsToFile(filename string, counts map[string]int) error {
 	encoder := gob.NewEncoder(file)
 	if err := encoder.Encode(counts); err != nil {
 		return fmt.Errorf("failed to encode counts to %s: %v", filename, err)
-	}
-
-	return nil
-}
-
-// saveThreePartKeyMappingsToFile saves ThreePartKey mappings to a file
-func saveThreePartKeyMappingsToFile(filename string, mapping map[string]tweets.ThreePartKey) error {
-	token3PKMutex.RLock()
-	snapshot := make(map[string]tweets.ThreePartKey, len(mapping))
-	for k, v := range mapping {
-		snapshot[k] = v
-	}
-	token3PKMutex.RUnlock()
-	// Ensure the directory exists
-	dir := filepath.Dir(filename)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %v", dir, err)
-	}
-
-	// Create the file
-	file, err := os.Create(filename)
-	if err != nil {
-		return fmt.Errorf("failed to create file %s: %v", filename, err)
-	}
-	defer file.Close()
-
-	// Encode and write to file (use the snapshot, not the live map)
-	encoder := gob.NewEncoder(file)
-	if err := encoder.Encode(snapshot); err != nil {
-		return fmt.Errorf("failed to encode mappings to %s: %v", filename, err)
 	}
 
 	return nil

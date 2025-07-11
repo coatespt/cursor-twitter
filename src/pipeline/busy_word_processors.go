@@ -1,8 +1,11 @@
 package pipeline
 
 import (
+	"encoding/csv"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -94,6 +97,13 @@ type FrequencyClassProcessor struct {
 	// Global token mapping reference (set from main.go)
 	globalTokenMapping map[tweets.ThreePartKey]string
 	globalMappingMutex *sync.RWMutex
+
+	// CSV logging
+	csvWriter *csv.Writer
+	csvFile   *os.File
+	startTime time.Time
+	zScoreMin float64
+	logDir    string
 }
 
 // Barrier implements thread coordination barrier pattern
@@ -168,7 +178,7 @@ type BusyWordProcessor struct {
 }
 
 // NewFrequencyClassProcessor creates a new processor with the specified number of classes
-func NewFrequencyClassProcessor(numClasses int, arrayLen int, zScoreThreshold float64, skipClasses []int) *FrequencyClassProcessor {
+func NewFrequencyClassProcessor(numClasses int, arrayLen int, zScoreThreshold float64, skipClasses []int, logDir string) *FrequencyClassProcessor {
 	queues := make([]*ThreePartKeyQueue, numClasses)
 	processors := make([]*BusyWordProcessor, numClasses)
 
@@ -189,6 +199,9 @@ func NewFrequencyClassProcessor(numClasses int, arrayLen int, zScoreThreshold fl
 		stopChan:     make(chan struct{}),
 		batchResults: make(chan BatchResult, numClasses), // Buffer for all processors
 		batchBarrier: NewBarrier(activeClassCount),       // Only wait for active classes
+		startTime:    time.Now(),
+		zScoreMin:    zScoreThreshold,
+		logDir:       logDir,
 	}
 
 	for i := 0; i < numClasses; i++ {
@@ -224,6 +237,11 @@ func NewBusyWordProcessor(classIndex int, queue *ThreePartKeyQueue, arrayLen int
 func (fcp *FrequencyClassProcessor) Start() {
 	slog.Info("Starting FrequencyClassProcessor", "num_classes", fcp.numClasses, "skip_classes", fcp.skipClasses)
 
+	// Create CSV file for busy word logging
+	if err := fcp.createCSVFile(); err != nil {
+		slog.Error("Failed to create CSV file for busy words", "error", err)
+	}
+
 	for i, processor := range fcp.processors {
 		// Only start processors for active (non-skipped) classes
 		if fcp.IsClassActive(i) {
@@ -246,7 +264,70 @@ func (fcp *FrequencyClassProcessor) Start() {
 func (fcp *FrequencyClassProcessor) Stop() {
 	close(fcp.stopChan)
 	fcp.wg.Wait()
+
+	// Close CSV file
+	if fcp.csvFile != nil {
+		fcp.csvFile.Close()
+	}
+
 	slog.Info("FrequencyClassProcessor stopped")
+}
+
+// createCSVFile creates a CSV file for logging busy words
+func (fcp *FrequencyClassProcessor) createCSVFile() error {
+	// Create filename with timestamp and z-score
+	timestamp := fcp.startTime.Format("20060102_150405")
+	filename := fmt.Sprintf("bw_%s_%.1f.csv", timestamp, fcp.zScoreMin)
+	filepath := filepath.Join(fcp.logDir, filename)
+
+	// Create the file
+	file, err := os.Create(filepath)
+	if err != nil {
+		return fmt.Errorf("failed to create CSV file %s: %v", filepath, err)
+	}
+
+	fcp.csvFile = file
+	fcp.csvWriter = csv.NewWriter(file)
+
+	// Write header
+	header := []string{"Batch"}
+	for i := 0; i < fcp.numClasses; i++ {
+		header = append(header, fmt.Sprintf("Class-%d", i))
+	}
+
+	if err := fcp.csvWriter.Write(header); err != nil {
+		return fmt.Errorf("failed to write CSV header: %v", err)
+	}
+	fcp.csvWriter.Flush()
+
+	slog.Info("Created busy word CSV file", "file", filepath)
+	return nil
+}
+
+// writeToCSV writes busy word results to the CSV file
+func (fcp *FrequencyClassProcessor) writeToCSV(classResults map[int][]string) {
+	if fcp.csvWriter == nil {
+		return
+	}
+
+	// Create CSV row: Batch, Class-0, Class-1, ..., Class-N
+	row := []string{fmt.Sprintf("%d", fcp.batchNumber)}
+
+	for i := 0; i < fcp.numClasses; i++ {
+		if words, exists := classResults[i]; exists && len(words) > 0 {
+			// Join words with semicolon for CSV
+			row = append(row, strings.Join(words, ";"))
+		} else {
+			row = append(row, "")
+		}
+	}
+
+	if err := fcp.csvWriter.Write(row); err != nil {
+		slog.Error("Failed to write to CSV", "error", err)
+		return
+	}
+
+	fcp.csvWriter.Flush()
 }
 
 // collectBatchResults collects and merges results from all processors
@@ -323,6 +404,9 @@ func (fcp *FrequencyClassProcessor) printBatchSummary(classResults map[int][]str
 		"batch", fcp.batchNumber,
 		"num_classes", fcp.numClasses,
 		"total_busy_words", totalBusyWords)
+
+	// Write to CSV file
+	fcp.writeToCSV(classResults)
 }
 
 // convert3PKsToWords converts ThreePartKeys back to actual word strings
@@ -339,18 +423,16 @@ func (fcp *FrequencyClassProcessor) convert3PKsToWords(threePKs []tweets.ThreePa
 	return words
 }
 
-// getWordFrom3PK safely retrieves a word from the global token mapping
+// getWordFrom3PK retrieves a word from the pipeline's global 3PK mapping
 func (fcp *FrequencyClassProcessor) getWordFrom3PK(threePK tweets.ThreePartKey) (string, bool) {
-	if fcp.globalMappingMutex == nil || fcp.globalTokenMapping == nil {
-		// Fallback to placeholder if mapping not available
-		return fmt.Sprintf("word_%d_%d_%d", threePK.Part1, threePK.Part2, threePK.Part3), true
+	token3PKMutex.RLock()
+	word, exists := ThreePKToToken[threePK]
+	token3PKMutex.RUnlock()
+	if exists {
+		return word, true
 	}
-
-	fcp.globalMappingMutex.RLock()
-	defer fcp.globalMappingMutex.RUnlock()
-
-	word, exists := fcp.globalTokenMapping[threePK]
-	return word, exists
+	// Fallback to 3PK representation if not found
+	return fmt.Sprintf("3PK(%d,%d,%d)", threePK.Part1, threePK.Part2, threePK.Part3), true
 }
 
 // EnqueueToFrequencyClass routes a ThreePartKey to the appropriate frequency class queue
@@ -700,27 +782,10 @@ func (bwp *BusyWordProcessor) SetGlobalTokenMapping(mapping map[tweets.ThreePart
 	bwp.globalMappingMutex = mutex
 }
 
-// existsInGlobalTokenMapping checks if a ThreePartKey exists in the global token mapping table
+// existsInGlobalTokenMapping checks if a ThreePartKey exists in the pipeline's global mapping
 func (bwp *BusyWordProcessor) existsInGlobalTokenMapping(key tweets.ThreePartKey) bool {
-	if bwp.globalMappingMutex == nil || bwp.globalTokenMapping == nil {
-		return false
-	}
-
-	bwp.globalMappingMutex.RLock()
-	defer bwp.globalMappingMutex.RUnlock()
-
-	_, exists := bwp.globalTokenMapping[key]
+	token3PKMutex.RLock()
+	_, exists := ThreePKToToken[key]
+	token3PKMutex.RUnlock()
 	return exists
-}
-
-// SetGlobalTokenMappingForAll sets the global token mapping for all busy word processors
-func (fcp *FrequencyClassProcessor) SetGlobalTokenMappingForAll(mapping map[tweets.ThreePartKey]string, mutex *sync.RWMutex) {
-	// Set the mapping in the FrequencyClassProcessor itself
-	fcp.globalTokenMapping = mapping
-	fcp.globalMappingMutex = mutex
-
-	// Also set it in all individual processors
-	for _, processor := range fcp.processors {
-		processor.SetGlobalTokenMapping(mapping, mutex)
-	}
 }

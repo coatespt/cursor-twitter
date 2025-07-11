@@ -14,7 +14,7 @@ import (
 func TestBusyWordProcessorCreation(t *testing.T) {
 	// Create a test processor
 	queue := pipeline.NewThreePartKeyQueue()
-	fcp := pipeline.NewFrequencyClassProcessor(3, 10, 2.0, []int{})
+	fcp := pipeline.NewFrequencyClassProcessor(3, 10, 2.0, []int{}, "test_logs")
 	processor := pipeline.NewBusyWordProcessor(0, queue, 10, 2.0, fcp)
 
 	// Test initial token count
@@ -88,7 +88,7 @@ func TestBusyWordThreePartKeyQueueOperations(t *testing.T) {
 // This test ensures proper queue management and statistics collection.
 func TestFrequencyClassProcessorOperations(t *testing.T) {
 	// Create a frequency class processor
-	fcp := pipeline.NewFrequencyClassProcessor(3, 10, 2.0, []int{})
+	fcp := pipeline.NewFrequencyClassProcessor(3, 10, 2.0, []int{}, "test_logs")
 
 	// Test initial state
 	stats := fcp.GetQueueStats()

@@ -102,12 +102,12 @@ var (
 	}
 )
 
-// Global mappings for token <-> ThreePartKey relationships
-var (
-	tokenToThreePK  map[string]tweets.ThreePartKey
-	threePKToToken  map[tweets.ThreePartKey]string
-	tokenMappingsMu sync.RWMutex
-)
+// Global mappings for token <-> ThreePartKey relationships - COMMENTED OUT for on-the-fly generation test
+// var (
+// 	tokenToThreePK  map[string]tweets.ThreePartKey
+// 	threePKToToken  map[tweets.ThreePartKey]string
+// 	tokenMappingsMu sync.RWMutex
+// )
 
 // Add a global variable to hold the stats CSV file path
 var statsCSVPath string
@@ -203,10 +203,10 @@ func setupRabbitMQ(cfg *Config) (*amqp.Connection, *amqp.Channel, amqp.Queue, er
 	return conn, ch, q, nil
 }
 
-// Helper: Initialize global variables and mappings
+// Helper: Initialize global variables and mappings - COMMENTED OUT for on-the-fly generation test
 func initializeGlobalState() {
-	tokenToThreePK = make(map[string]tweets.ThreePartKey)
-	threePKToToken = make(map[tweets.ThreePartKey]string)
+	// tokenToThreePK = make(map[string]tweets.ThreePartKey)
+	// threePKToToken = make(map[tweets.ThreePartKey]string)
 }
 
 // Helper: Initialize pipeline components
@@ -231,8 +231,8 @@ func initializePipeline(cfg *Config) error {
 	)
 	fct.Start()
 
-	freqClassProcessor = pipeline.NewFrequencyClassProcessor(freqClasses, cfg.BWArrayLen, float64(cfg.ZScore), cfg.SkipFrequencyClasses)
-	freqClassProcessor.SetGlobalTokenMappingForAll(threePKToToken, &tokenMappingsMu)
+	freqClassProcessor = pipeline.NewFrequencyClassProcessor(freqClasses, cfg.BWArrayLen, float64(cfg.ZScore), cfg.SkipFrequencyClasses, cfg.LogDir)
+	// freqClassProcessor.SetGlobalTokenMappingForAll(threePKToToken, &tokenMappingsMu) - COMMENTED OUT for on-the-fly generation test
 	freqClassProcessor.Start()
 
 	return nil
@@ -386,18 +386,8 @@ func main() {
 						}
 					}
 
-					// Generate or get the 3pk for this token
-					tokenMappingsMu.RLock()
-					threePK, exists := tokenToThreePK[token]
-					tokenMappingsMu.RUnlock()
-
-					if !exists {
-						threePK = pipeline.GenerateThreePartKey(token)
-						tokenMappingsMu.Lock()
-						tokenToThreePK[token] = threePK
-						threePKToToken[threePK] = token
-						tokenMappingsMu.Unlock()
-					}
+					// Generate 3pk for this token on-the-fly (no persistence)
+					threePK := pipeline.GenerateThreePartKey(token)
 
 					// Enqueue to appropriate frequency class
 					freqClassProcessor.EnqueueToFrequencyClass(freqClass, threePK)
@@ -659,23 +649,10 @@ func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
 	tokens := simpleTokenize(tweet.Text, cfg)
 	tweet.Tokens = tokens // Store tokens in the Tweet struct
 
-	// Generate ThreePartKeys and store in global mappings
+	// Generate ThreePartKeys on-the-fly (no global mappings)
 	var threePKs []tweets.ThreePartKey
 	for _, token := range tokens {
-		// Check if we already have a mapping for this token
-		tokenMappingsMu.RLock()
-		threePK, exists := tokenToThreePK[token]
-		tokenMappingsMu.RUnlock()
-
-		if !exists {
-			// Generate new ThreePartKey and store in mappings
-			threePK = pipeline.GenerateThreePartKey(token)
-			tokenMappingsMu.Lock()
-			tokenToThreePK[token] = threePK
-			threePKToToken[threePK] = token
-			tokenMappingsMu.Unlock()
-		}
-
+		threePK := pipeline.GenerateThreePartKey(token)
 		threePKs = append(threePKs, threePK)
 	}
 	// Note: ThreePKs not stored in Tweet struct but still generated for other uses
