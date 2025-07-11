@@ -26,7 +26,10 @@ token_persist_files: 20
 rebuild_every_files: 10
 
 # The number of tweets to process in each busy-word process cycle
-batch: 10000
+batch: 15000
+
+# Number of batches to keep in the sliding tweet window
+window_batches: 3
 
 # Whether to log to the console
 verbose: true 

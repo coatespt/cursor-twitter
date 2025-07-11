@@ -28,13 +28,14 @@ import (
 
 // Config struct for YAML config file (add log_dir)
 type Config struct {
-	Mode       string `yaml:"mode"`
-	InputDir   string `yaml:"input"`
-	MQHost     string `yaml:"mq_host"`
-	MQPort     int    `yaml:"mq_port"`
-	MQQueue    string `yaml:"mq_queue"`
-	WindowSize int    `yaml:"window"`
-	BatchSize  int    `yaml:"batch"`
+	Mode          string `yaml:"mode"`
+	InputDir      string `yaml:"input"`
+	MQHost        string `yaml:"mq_host"`
+	MQPort        int    `yaml:"mq_port"`
+	MQQueue       string `yaml:"mq_queue"`
+	WindowSize    int    `yaml:"window"`
+	BatchSize     int    `yaml:"batch"`
+	WindowBatches int    `yaml:"window_batches"` // Number of batches to keep in tweet window
 
 	Verbose              bool    `yaml:"verbose"`
 	LogDir               string  `yaml:"log_dir"`
@@ -127,6 +128,53 @@ var (
 
 // Global word filter
 var globalWordFilter *filter.WordFilter
+
+// Global recent tweet window
+var recentTweetWindow *RecentTweetWindow
+
+// RecentTweetWindow is a thread-safe, fixed-size queue for recent tweets
+// Holds up to maxSize tweets; oldest are removed as new ones arrive
+// Provides thread-safe Add, GetAll, and Len methods
+
+type RecentTweetWindow struct {
+	mu      sync.RWMutex
+	tweets  []*tweets.Tweet
+	maxSize int
+}
+
+func NewRecentTweetWindow(maxSize int) *RecentTweetWindow {
+	return &RecentTweetWindow{
+		tweets:  make([]*tweets.Tweet, 0, maxSize),
+		maxSize: maxSize,
+	}
+}
+
+// Add adds a tweet to the window, removing the oldest if over capacity
+func (w *RecentTweetWindow) Add(tweet *tweets.Tweet) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.tweets) >= w.maxSize {
+		// Remove oldest (front)
+		w.tweets = w.tweets[1:]
+	}
+	w.tweets = append(w.tweets, tweet)
+}
+
+// GetAll returns a copy of all tweets in the window
+func (w *RecentTweetWindow) GetAll() []*tweets.Tweet {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	copyTweets := make([]*tweets.Tweet, len(w.tweets))
+	copy(copyTweets, w.tweets)
+	return copyTweets
+}
+
+// Len returns the number of tweets in the window
+func (w *RecentTweetWindow) Len() int {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return len(w.tweets)
+}
 
 // getCurrentWorkingDir returns the current working directory for debugging
 func getCurrentWorkingDir() string {
@@ -310,6 +358,10 @@ func main() {
 		log.Fatalf("Failed to load word filter: %v", err)
 	}
 
+	// Initialize the recent tweet window
+	windowSize := cfg.WindowBatches * cfg.BatchSize
+	recentTweetWindow = NewRecentTweetWindow(windowSize)
+
 	// Load persisted state if requested
 	if *loadState {
 		loadPersistedState(cfg.Persistence.StateDir, cfg.FreqClasses, cfg)
@@ -353,6 +405,12 @@ func main() {
 		// Only print the tweet if the flag is set
 		if *printTweets {
 			fmt.Printf("Parsed Tweet: %+v\n", tweet)
+		}
+
+		// Add tweet to recent tweet window
+		recentTweetWindow.Add(tweet)
+		if TotalTweetsRead%10000 == 0 {
+			fmt.Printf("[DEBUG] Recent tweet window size: %d (max: %d)\n", recentTweetWindow.Len(), windowSize)
 		}
 
 		// Always add new tweet tokens to the inbound queue for FCT to build frequency filters
