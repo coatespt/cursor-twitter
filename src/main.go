@@ -203,6 +203,74 @@ func setupRabbitMQ(cfg *Config) (*amqp.Connection, *amqp.Channel, amqp.Queue, er
 	return conn, ch, q, nil
 }
 
+// Helper: Initialize global variables and mappings
+func initializeGlobalState() {
+	tokenToThreePK = make(map[string]tweets.ThreePartKey)
+	threePKToToken = make(map[tweets.ThreePartKey]string)
+}
+
+// Helper: Initialize pipeline components
+func initializePipeline(cfg *Config) error {
+	pipeline.SetGlobalArrayLen(cfg.BWArrayLen)
+
+	inboundTokenQueue = pipeline.NewTokenQueue()
+
+	freqClasses = cfg.FreqClasses
+	if freqClasses <= 0 {
+		return fmt.Errorf("freq_classes must be > 0 in config, got %d", freqClasses)
+	}
+
+	fct = pipeline.NewFrequencyComputationThread(
+		GlobalTokenCounter,
+		inboundTokenQueue,
+		freqClasses,
+		cfg.WindowSize,
+		cfg.TokenPersistFiles,
+		cfg.RebuildEveryFiles,
+		cfg.Persistence.StateDir,
+	)
+	fct.Start()
+
+	freqClassProcessor = pipeline.NewFrequencyClassProcessor(freqClasses, cfg.BWArrayLen, float64(cfg.ZScore), cfg.SkipFrequencyClasses)
+	freqClassProcessor.SetGlobalTokenMappingForAll(threePKToToken, &tokenMappingsMu)
+	freqClassProcessor.Start()
+
+	return nil
+}
+
+// Helper: Setup signal handling
+func setupSignalHandling() {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigChan
+		slog.Info("Received shutdown signal", "signal", sig.String())
+		if pipeline.IsPersistenceInProgress() {
+			for pipeline.IsPersistenceInProgress() {
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+		os.Exit(0)
+	}()
+}
+
+// Helper: Setup RabbitMQ consumer
+func setupRabbitMQConsumer(ch *amqp.Channel, q amqp.Queue) (<-chan amqp.Delivery, error) {
+	msgs, err := ch.Consume(
+		q.Name, // queue
+		"",     // consumer
+		true,   // auto-ack
+		false,  // exclusive
+		false,  // no-local
+		false,  // no-wait
+		nil,    // args
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to register a consumer: %w", err)
+	}
+	return msgs, nil
+}
+
 func main() {
 	fmt.Printf("*** MAIN FUNCTION STARTED ***\n")
 
@@ -238,35 +306,16 @@ func main() {
 		log.Fatalf("Failed to load word filter: %v", err)
 	}
 
-	tokenToThreePK = make(map[string]tweets.ThreePartKey)
-	threePKToToken = make(map[tweets.ThreePartKey]string)
+	initializeGlobalState()
 
-	pipeline.SetGlobalArrayLen(cfg.BWArrayLen)
-
-	inboundTokenQueue = pipeline.NewTokenQueue()
-
-	freqClasses = cfg.FreqClasses
-	if freqClasses <= 0 {
-		slog.Error("Main: freq_classes must be > 0 in config, got", "value", freqClasses)
-		os.Exit(1)
+	err = initializePipeline(cfg)
+	if err != nil {
+		log.Fatalf("Failed to initialize pipeline: %v", err)
 	}
-
-	fct = pipeline.NewFrequencyComputationThread(
-		GlobalTokenCounter,
-		inboundTokenQueue,
-		freqClasses,
-		cfg.WindowSize,
-		cfg.TokenPersistFiles,
-		cfg.RebuildEveryFiles,
-		cfg.Persistence.StateDir,
-	)
-	fct.Start()
 	defer fct.Stop()
-
-	freqClassProcessor = pipeline.NewFrequencyClassProcessor(freqClasses, cfg.BWArrayLen, float64(cfg.ZScore), cfg.SkipFrequencyClasses)
-	freqClassProcessor.SetGlobalTokenMappingForAll(threePKToToken, &tokenMappingsMu)
-	freqClassProcessor.Start()
 	defer freqClassProcessor.Stop()
+
+	setupSignalHandling()
 
 	conn, ch, q, err := setupRabbitMQ(cfg)
 	if err != nil {
@@ -276,30 +325,9 @@ func main() {
 	defer conn.Close()
 	defer ch.Close()
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigChan
-		slog.Info("Received shutdown signal", "signal", sig.String())
-		if pipeline.IsPersistenceInProgress() {
-			for pipeline.IsPersistenceInProgress() {
-				time.Sleep(100 * time.Millisecond)
-			}
-		}
-		os.Exit(0)
-	}()
-
-	msgs, err := ch.Consume(
-		q.Name, // queue
-		"",     // consumer
-		true,   // auto-ack
-		false,  // exclusive
-		false,  // no-local
-		false,  // no-wait
-		nil,    // args
-	)
+	msgs, err := setupRabbitMQConsumer(ch, q)
 	if err != nil {
-		slog.Error("Failed to register a consumer", "error", err)
+		slog.Error("Failed to set up RabbitMQ consumer", "error", err)
 		os.Exit(1)
 	}
 
