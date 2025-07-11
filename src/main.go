@@ -43,6 +43,7 @@ type Config struct {
 	ZScore               float64 `yaml:"z_score"`
 	MinTokenLen          int     `yaml:"min_token_len"`
 	SkipFrequencyClasses []int   `yaml:"skip_frequency_classes"`
+	TokenPersistFiles    int     `yaml:"token_persist_files"`
 
 	Filter struct {
 		Enabled    bool   `yaml:"enabled"`
@@ -61,12 +62,11 @@ type Config struct {
 		RejectUrls                      bool    `yaml:"reject_urls"`
 		RejectAllCapsLong               bool    `yaml:"reject_all_caps_long"`
 		AllCapsLowerLimit               int     `yaml:"all_caps_lower_limit"`
+		RemoveUrls                      bool    `yaml:"remove_urls"`
 	} `yaml:"token_filters"`
 
 	Persistence struct {
-		StateDir          string `yaml:"state_dir"`
-		TokenBatchPersist int    `yaml:"token_batch_persist"`
-		TokenPersistFiles int    `yaml:"token_persist_files"`
+		StateDir string `yaml:"state_dir"`
 	} `yaml:"persistence"`
 
 	Sender struct {
@@ -125,7 +125,6 @@ var (
 // Global FCT and queues
 var (
 	inboundTokenQueue  *pipeline.TokenQueue
-	oldTokenQueue      *pipeline.TokenQueue
 	fct                *pipeline.FrequencyComputationThread
 	freqClassProcessor *pipeline.FrequencyClassProcessor
 )
@@ -147,7 +146,7 @@ func main() {
 
 	// Add a command line flag to control printing of tweets
 	printTweets := flag.Bool("print-tweets", true, "Print each parsed tweet to the console")
-	configPath := flag.String("config", "../config/config.yaml", "Path to YAML config file")
+	configPath := flag.String("config", "config/config.yaml", "Path to YAML config file")
 	loadState := flag.Bool("load-state", false, "Load persisted state from files on startup")
 	flag.Parse()
 
@@ -239,7 +238,6 @@ func main() {
 
 	// Create the token queues and FCT
 	inboundTokenQueue = pipeline.NewTokenQueue()
-	oldTokenQueue = pipeline.NewTokenQueue()
 
 	// Create FCT with configuration
 	freqClasses = cfg.FreqClasses
@@ -251,10 +249,10 @@ func main() {
 	fct = pipeline.NewFrequencyComputationThread(
 		GlobalTokenCounter,
 		inboundTokenQueue,
-		oldTokenQueue,
-		0, // Not used - frequency rebuilds happen based on window size
 		freqClasses,
-		cfg.WindowSize, // Pass window size for autonomous rebuild triggering
+		cfg.WindowSize,        // Pass window size for autonomous rebuild triggering
+		cfg.TokenPersistFiles, // Now from top-level config
+		cfg.Persistence.StateDir,
 	)
 
 	// Start the FCT
@@ -364,7 +362,6 @@ func main() {
 
 	// TODO: Create the TweetWindowQueue      This will not be allowed to grow beyond WindowSize
 	// TODO: Create the InboundTokenQueue
-	// TODO: Create the OldTokenQueue
 	// TODO: Create the InboundTweetQueue
 
 	// TODO: Create a FrequencyComputationThread
@@ -463,71 +460,16 @@ func main() {
 			}
 		}
 
-		// Manage the sliding window - add new tweet and remove old ones
-		// TODO: This is wrong. WindowSize is a constant set in configuration. A queue called
-		// Inbound Tweet structs are stored on a Queue called TweetWindowQueue.
-		// The new inbound tweet's tokens are placed on an InboundTokenQueue.
-		// if the TweetWindowQueue reaches WindowSize, the oldest tweet is removed and
-		// it's tokens are placed on an OldTokenQueue.
-
+		// Manage sliding window (remove old tweets when window is full)
 		if cfg.WindowSize <= 0 {
 			slog.Error("Main: window must be > 0 in config, got", "value", cfg.WindowSize)
 			os.Exit(1)
 		}
 		manageSlidingWindow(tweet, cfg.WindowSize)
 
-		// Frequency class rebuilding - happens every time we cross the window boundary
-		// When we've processed window-size tweets, we rebuild the frequency classes
-		// NOTE: TotalTweetsRead is incremented in parseCSVToTweet, so we check after parsing
-
-		// Check if we've crossed a window boundary
-		currentWindow := TotalTweetsRead / cfg.WindowSize
-
-		// Debug: Log every 1000 tweets to see what's happening
-		if TotalTweetsRead%1000 == 0 {
-			slog.Info("Main: Window boundary debug",
-				"tweet_count", TotalTweetsRead,
-				"window_size", cfg.WindowSize,
-				"current_window", currentWindow,
-				"modulo_check", TotalTweetsRead%cfg.WindowSize)
-		}
-
-		// Debug: Always log the window boundary check
-		if TotalTweetsRead%10000 == 0 {
-			slog.Info("Main: Window boundary check",
-				"tweet_count", TotalTweetsRead,
-				"window_size", cfg.WindowSize,
-				"current_window", currentWindow,
-				"modulo_result", TotalTweetsRead%cfg.WindowSize,
-				"should_trigger", TotalTweetsRead%cfg.WindowSize == 0 && TotalTweetsRead > 0)
-		}
-
-		// Check if we should trigger a rebuild (window boundary crossed)
-		if TotalTweetsRead%cfg.WindowSize == 0 && TotalTweetsRead > 0 {
-			// We've crossed into a new window, give FCT permission to rebuild
-			rebuildStartTime := time.Now()
-			fmt.Printf("*** WINDOW BOUNDARY CROSSED: Tweet %d, Window %d at %s ***\n",
-				TotalTweetsRead, currentWindow, rebuildStartTime.Format("15:04:05"))
-			slog.Info("Main: Window boundary crossed, giving FCT permission to rebuild",
-				"tweet_count", TotalTweetsRead,
-				"window_size", cfg.WindowSize,
-				"current_window", currentWindow,
-				"rebuild_start_time", rebuildStartTime.Format("15:04:05"))
-
-			if fct == nil {
-				slog.Error("Main: FCT is nil! Cannot trigger rebuild")
-			} else {
-				slog.Info("Main: About to call fct.TriggerRebuild()")
-				fct.TriggerRebuild()
-				slog.Info("Main: fct.TriggerRebuild() completed")
-			}
-			fmt.Printf("*** REBUILD FLAG SET at %s ***\n", rebuildStartTime.Format("15:04:05"))
-			slog.Info("Main: Rebuild flag set for FCT",
-				"tweet_count", TotalTweetsRead,
-				"window_size", cfg.WindowSize,
-				"current_window", currentWindow,
-				"rebuild_start_time", rebuildStartTime.Format("15:04:05"))
-		}
+		// NOTE: Main has no concept of time or rebuilds
+		// FCT is completely autonomous and triggers its own rebuilds based on token count
+		// Main only puts tokens on the inbound queue - FCT handles everything else
 
 		// Send termination signals to busy word processors every batch number of tweets
 		// Only send if frequency class filters are available
@@ -644,7 +586,6 @@ func printStats() {
 
 	// Get queue lengths
 	inboundQueueSize := inboundTokenQueue.Len()
-	oldQueueSize := oldTokenQueue.Len()
 
 	// Get frequency class stats
 	freqClassQueueStats := freqClassProcessor.GetQueueStats()
@@ -676,7 +617,6 @@ func printStats() {
 	fmt.Printf("Distinct tokens: %d\n", distinctTokens)
 	fmt.Printf("Tweets in current window: %d\n", windowSize)
 	fmt.Printf("Inbound token queue size: %d\n", inboundQueueSize)
-	fmt.Printf("Old token queue size: %d\n", oldQueueSize)
 	fmt.Printf("Processing rate: %.2f tweets/sec\n", processingRate)
 	fmt.Printf("--- Token Filter Stats ---\n")
 	fmt.Printf("Tokens processed: %d\n", totalProcessed)
@@ -710,7 +650,6 @@ func printStats() {
 		"distinct", distinctTokens,
 		"window_size", windowSize,
 		"inbound_queue_size", inboundQueueSize,
-		"old_queue_size", oldQueueSize,
 		"processing_rate_tweets_per_sec", processingRate,
 		"tokens_processed", totalProcessed,
 		"tokens_rejected", totalRejected,
@@ -824,42 +763,68 @@ func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
 // - Filters out offensive words if word filtering is enabled
 // - Filters out tokens shorter than min_token_len if specified
 func simpleTokenize(text string, cfg *Config) []string {
-	// Convert to lowercase
-	text = strings.ToLower(text)
-
-	// Remove apostrophes and what follows (e.g., "don't" -> "don")
-	apostropheRe := regexp.MustCompile(`'\w*`)
-	text = apostropheRe.ReplaceAllString(text, "")
-
-	// Remove all punctuation (except spaces)
-	punctRe := regexp.MustCompile(`[^a-z0-9 ]`)
-	text = punctRe.ReplaceAllString(text, "")
-
-	// Split on whitespace
+	// Use strings.Fields() to get a slice of substrings
 	tokens := strings.Fields(text)
 
-	// Filter out tokens based on various criteria
-	var filteredTokens []string
+	// Process each token individually
+	var processedTokens []string
 	for _, token := range tokens {
+		// Remove URLs from this token if enabled
+		if cfg.TokenFilters.RemoveUrls {
+			urlRe := regexp.MustCompile(`(https?://[^\s]+|www\.[^\s]+)`)
+			token = urlRe.ReplaceAllString(token, "")
+			if token == "" {
+				continue
+			}
+		}
+
+		// Remove apostrophes and what follows (e.g., "don't" -> "don", "Harry's" -> "Harry")
+		apostropheRe := regexp.MustCompile(`'.*`)
+		token = apostropheRe.ReplaceAllString(token, "")
+		if token == "" {
+			continue
+		}
+
+		// Remove punctuation from the token
+		cleanToken := removePunctuation(token)
+
+		// Skip empty tokens after punctuation removal
+		if cleanToken == "" {
+			continue
+		}
+
 		// Skip tokens that are too short
-		if cfg.MinTokenLen > 0 && len(token) < cfg.MinTokenLen {
+		if cfg.MinTokenLen > 0 && len(cleanToken) < cfg.MinTokenLen {
 			continue
 		}
 
 		// Filter out offensive words if word filtering is enabled
-		if globalWordFilter != nil && globalWordFilter.IsFiltered(token) {
+		if globalWordFilter != nil && globalWordFilter.IsFiltered(cleanToken) {
 			continue
 		}
 
 		// Apply token filters if enabled
-		if shouldFilterToken(token, cfg) {
+		if shouldFilterToken(cleanToken, cfg) {
 			continue
 		}
 
-		filteredTokens = append(filteredTokens, token)
+		// Convert to lowercase for final output
+		cleanToken = strings.ToLower(cleanToken)
+		processedTokens = append(processedTokens, cleanToken)
 	}
 
-	return filteredTokens
+	return processedTokens
+}
+
+// removePunctuation removes punctuation from a token while preserving alphanumeric characters
+func removePunctuation(token string) string {
+	var result strings.Builder
+	for _, char := range token {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') {
+			result.WriteRune(char)
+		}
+	}
+	return result.String()
 }
 
 // Normalize all whitespace to a single space
@@ -1008,19 +973,7 @@ func manageSlidingWindow(tweet *tweets.Tweet, windowSize int) {
 	// Keep only the most recent windowSize tweets
 	if len(tweetQueue) > windowSize {
 		removedCount := len(tweetQueue) - windowSize
-		oldTweets := tweetQueue[:removedCount]
 		tweetQueue = tweetQueue[removedCount:]
-
-		// Add old tweet tokens to the old token queue for FCT to process
-		for _, oldTweet := range oldTweets {
-			if len(oldTweet.Tokens) > 0 {
-				oldTokenQueue.Enqueue(oldTweet.Tokens)
-				slog.Info("Added old tokens to OldTokenQueue",
-					"tweet_id", oldTweet.IDStr,
-					"token_count", len(oldTweet.Tokens),
-					"queue_size_after", oldTokenQueue.Len())
-			}
-		}
 
 		// Log window management stats
 		if removedCount > 0 {

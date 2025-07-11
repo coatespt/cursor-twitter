@@ -1,11 +1,14 @@
 package pipeline
 
 import (
+	"bufio"
 	"cursor-twitter/src/tweets"
 	"encoding/gob"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,7 +25,6 @@ type FrequencyComputationThread struct {
 	// Token processing
 	tokenCounter      *TokenCounter
 	inboundTokenQueue *TokenQueue
-	oldTokenQueue     *TokenQueue
 
 	// Frequency calculation control
 	shouldRebuild int32 // Atomic boolean (0 = false, 1 = true)
@@ -32,9 +34,8 @@ type FrequencyComputationThread struct {
 	wg       sync.WaitGroup
 
 	// Configuration
-	freqClassInterval time.Duration
-	freqClasses       int
-	windowSize        int // Number of tokens to process before triggering rebuild
+	freqClasses int
+	windowSize  int // Number of tokens to process before triggering rebuild
 
 	// Current filters (thread-safe access)
 	currentFilters []FreqClassFilter
@@ -43,25 +44,38 @@ type FrequencyComputationThread struct {
 	// Debug: Track rebuild count
 	rebuildCount      int
 	rebuildCountMutex sync.Mutex
+
+	// Token file rotation
+	tokenBatchSize       int      // window / token_persist_files
+	tokenPersistFiles    int      // Number of token files to keep
+	tokensSinceLastWrite int      // Tokens processed since last file write
+	tokenFileCounter     int      // Counter for token file naming
+	stateDir             string   // Directory for token files
+	accumulatedTokens    []string // Tokens accumulated since last file write
 }
 
 // NewFrequencyComputationThread creates a new FCT with the specified configuration
 func NewFrequencyComputationThread(
 	tokenCounter *TokenCounter,
 	inboundTokenQueue *TokenQueue,
-	oldTokenQueue *TokenQueue,
-	freqClassIntervalTweets int,
 	freqClasses int,
 	windowSize int,
+	tokenPersistFiles int,
+	stateDir string,
 ) *FrequencyComputationThread {
+	tokenBatchSize := windowSize / tokenPersistFiles
+	if tokenBatchSize < 1 {
+		tokenBatchSize = 1 // Ensure at least 1 token per batch
+	}
 	return &FrequencyComputationThread{
 		tokenCounter:      tokenCounter,
 		inboundTokenQueue: inboundTokenQueue,
-		oldTokenQueue:     oldTokenQueue,
 		stopChan:          make(chan struct{}),
-		freqClassInterval: time.Duration(freqClassIntervalTweets) * time.Second, // Not used in current implementation
 		freqClasses:       freqClasses,
 		windowSize:        windowSize,
+		tokenBatchSize:    tokenBatchSize,
+		tokenPersistFiles: tokenPersistFiles,
+		stateDir:          stateDir,
 	}
 }
 
@@ -72,8 +86,10 @@ func (fct *FrequencyComputationThread) Start() {
 	go fct.run()
 	slog.Info("FCT goroutine launched")
 	slog.Info("FrequencyComputationThread started",
-		"freq_class_interval_tweets", fct.freqClassInterval.Seconds(),
-		"freq_classes", fct.freqClasses)
+		"freq_classes", fct.freqClasses,
+		"token_batch_size", fct.tokenBatchSize,
+		"token_persist_files", fct.tokenPersistFiles,
+		"state_dir", fct.stateDir)
 }
 
 // Stop gracefully stops the FCT goroutine
@@ -165,11 +181,9 @@ func (fct *FrequencyComputationThread) run() {
 
 				// Debug: Log queue sizes after rebuild
 				inboundSizeAfter := fct.inboundTokenQueue.Len()
-				oldSizeAfter := fct.oldTokenQueue.Len()
 				slog.Info("FCT: Queue sizes after rebuild",
 					"rebuild_count", currentRebuildCount,
-					"inbound_queue_size", inboundSizeAfter,
-					"old_queue_size", oldSizeAfter)
+					"inbound_queue_size", inboundSizeAfter)
 
 			}
 
@@ -188,17 +202,15 @@ func (fct *FrequencyComputationThread) run() {
 
 			// Add a small delay when no tokens are being processed to prevent CPU spinning
 			inboundSize := fct.inboundTokenQueue.Len()
-			oldSize := fct.oldTokenQueue.Len()
-			if inboundSize == 0 && oldSize == 0 {
+			if inboundSize == 0 {
 				time.Sleep(1 * time.Millisecond)
 			}
 
 			// Debug: Log when queues are empty
-			if loopCount%1000 == 0 && inboundSize == 0 && oldSize == 0 {
+			if loopCount%1000 == 0 && inboundSize == 0 {
 				slog.Debug("FCT: No tokens to process, waiting...",
 					"loop_count", loopCount,
-					"inbound_queue_size", inboundSize,
-					"old_queue_size", oldSize)
+					"inbound_queue_size", inboundSize)
 			}
 		}
 	}
@@ -208,6 +220,7 @@ func (fct *FrequencyComputationThread) run() {
 func (fct *FrequencyComputationThread) processTokens() {
 	// Only log when we actually process tokens or when queues have significant backlog
 	inboundProcessed := 0
+
 	for {
 		tokens := fct.inboundTokenQueue.Dequeue()
 		if tokens == nil {
@@ -215,40 +228,62 @@ func (fct *FrequencyComputationThread) processTokens() {
 		}
 		fct.tokenCounter.IncrementTokens(tokens)
 		inboundProcessed += len(tokens)
+
+		// Collect tokens for potential file writing
+		fct.accumulatedTokens = append(fct.accumulatedTokens, tokens...)
 	}
 
-	// Process old tokens (decrement counts)
-	oldProcessed := 0
-	for {
-		tokens := fct.oldTokenQueue.Dequeue()
-		if tokens == nil {
-			break // Queue is empty
+	// Update token count for file rotation
+	fct.tokensSinceLastWrite += inboundProcessed
+
+	// Check if we need to write a token file
+	if fct.tokensSinceLastWrite >= fct.tokenBatchSize {
+		// Write tokens to file (only the batch size worth)
+		tokensForFile := fct.accumulatedTokens[:fct.tokenBatchSize]
+		if err := fct.writeTokenFile(tokensForFile); err != nil {
+			slog.Error("Failed to write token file", "error", err)
+		} else {
+			slog.Info("Token file written successfully",
+				"tokens_written", len(tokensForFile),
+				"file_counter", fct.tokenFileCounter-1)
 		}
-		fct.tokenCounter.DecrementTokens(tokens)
-		oldProcessed += len(tokens)
+
+		// Reset counter and remaining tokens
+		fct.tokensSinceLastWrite = 0
+		fct.accumulatedTokens = fct.accumulatedTokens[fct.tokenBatchSize:]
+
+		// If we have remaining tokens, write them too (should be rare)
+		for len(fct.accumulatedTokens) >= fct.tokenBatchSize {
+			tokensForFile = fct.accumulatedTokens[:fct.tokenBatchSize]
+			if err := fct.writeTokenFile(tokensForFile); err != nil {
+				slog.Error("Failed to write additional token file", "error", err)
+			} else {
+				slog.Info("Additional token file written successfully",
+					"tokens_written", len(tokensForFile),
+					"file_counter", fct.tokenFileCounter-1)
+			}
+			fct.accumulatedTokens = fct.accumulatedTokens[fct.tokenBatchSize:]
+		}
+
+		// Update counter for any remaining tokens
+		fct.tokensSinceLastWrite = len(fct.accumulatedTokens)
 	}
 
 	// Only log if we processed tokens or if queues are getting backed up
-	if inboundProcessed > 0 || oldProcessed > 0 {
+	if inboundProcessed > 0 {
 		slog.Info("FCT processed tokens",
 			"inbound_processed", inboundProcessed,
-			"old_processed", oldProcessed,
 			"inbound_queue_size_after", fct.inboundTokenQueue.Len(),
-			"old_queue_size_after", fct.oldTokenQueue.Len())
+			"tokens_since_last_write", fct.tokensSinceLastWrite,
+			"token_batch_size", fct.tokenBatchSize)
 	} else {
 		// Check if queues are getting backed up but we didn't process anything
 		currentInboundSize := fct.inboundTokenQueue.Len()
-		currentOldSize := fct.oldTokenQueue.Len()
-		if currentInboundSize > 100 || currentOldSize > 100 {
-			slog.Warn("FCT queues have backlog but processed no tokens",
-				"inbound_queue_size", currentInboundSize,
-				"old_queue_size", currentOldSize)
+		if currentInboundSize > 100 {
+			slog.Warn("FCT inbound queue has backlog but processed no tokens",
+				"inbound_queue_size", currentInboundSize)
 		}
 	}
-
-	// Debug: Log every 1000 calls to processTokens to confirm it's being called
-	// Note: This is a simple counter for debugging - in production this would be removed
-	// or made thread-safe if needed
 }
 
 // checkForRebuild method removed - rebuild logic now integrated into main loop
@@ -318,7 +353,6 @@ func (fct *FrequencyComputationThread) performRebuild() {
 func (fct *FrequencyComputationThread) GetQueueStats() map[string]int {
 	return map[string]int{
 		"inbound_token_queue_size": fct.inboundTokenQueue.Len(),
-		"old_token_queue_size":     fct.oldTokenQueue.Len(),
 		"distinct_tokens":          len(fct.tokenCounter.Counts()),
 	}
 }
@@ -341,14 +375,11 @@ func (fct *FrequencyComputationThread) GetRebuildCount() int {
 func (fct *FrequencyComputationThread) consumeAllAccumulatedTokens() {
 	// Get current queue sizes (snapshot to prevent infinite catch-up)
 	inboundQueueSize := fct.inboundTokenQueue.Len()
-	oldQueueSize := fct.oldTokenQueue.Len()
 
 	slog.Info("FCT: Starting token consumption with queue snapshot",
-		"inbound_queue_size", inboundQueueSize,
-		"old_queue_size", oldQueueSize)
+		"inbound_queue_size", inboundQueueSize)
 
 	inboundProcessed := 0
-	oldProcessed := 0
 
 	// Process exactly inboundQueueSize tokens from inbound queue
 	for i := 0; i < inboundQueueSize; i++ {
@@ -360,21 +391,9 @@ func (fct *FrequencyComputationThread) consumeAllAccumulatedTokens() {
 		inboundProcessed += len(tokens)
 	}
 
-	// Process exactly oldQueueSize tokens from old queue
-	for i := 0; i < oldQueueSize; i++ {
-		tokens := fct.oldTokenQueue.Dequeue()
-		if tokens == nil {
-			break // Queue is empty (shouldn't happen given our size check)
-		}
-		fct.tokenCounter.DecrementTokens(tokens)
-		oldProcessed += len(tokens)
-	}
-
 	slog.Info("FCT: Consumed tokens using queue snapshot",
 		"inbound_processed", inboundProcessed,
-		"old_processed", oldProcessed,
-		"inbound_queue_size_after", fct.inboundTokenQueue.Len(),
-		"old_queue_size_after", fct.oldTokenQueue.Len())
+		"inbound_queue_size_after", fct.inboundTokenQueue.Len())
 }
 
 // savePersistedState saves the data structures to files
@@ -459,5 +478,113 @@ func saveThreePartKeyMappingsToFile(filename string, mapping map[string]tweets.T
 		return fmt.Errorf("failed to encode mappings to %s: %v", filename, err)
 	}
 
+	return nil
+}
+
+// writeTokenFile writes a batch of tokens to a file and manages rotation
+func (fct *FrequencyComputationThread) writeTokenFile(tokens []string) error {
+	// Create filename with counter
+	filename := filepath.Join(fct.stateDir, fmt.Sprintf("token_batch_%06d.txt", fct.tokenFileCounter))
+
+	// Ensure directory exists
+	if err := os.MkdirAll(fct.stateDir, 0755); err != nil {
+		return fmt.Errorf("failed to create token file directory: %v", err)
+	}
+
+	// Write tokens to file
+	file, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("failed to create token file %s: %v", filename, err)
+	}
+	defer file.Close()
+
+	// Debug: Print first few tokens being written
+	if len(tokens) > 0 {
+		firstTokens := tokens
+		if len(tokens) > 5 {
+			firstTokens = tokens[:5]
+		}
+		fmt.Printf("DEBUG: Writing %d tokens to file. First 5 tokens:\n", len(tokens))
+		for i, token := range firstTokens {
+			fmt.Printf("  [%d] '%s'\n", i, token)
+		}
+	}
+
+	// Write tokens as text, one per line
+	for _, token := range tokens {
+		if _, err := fmt.Fprintln(file, token); err != nil {
+			return fmt.Errorf("failed to write token to %s: %v", filename, err)
+		}
+	}
+
+	slog.Info("Token file written", "filename", filename, "token_count", len(tokens))
+
+	// Increment file counter
+	fct.tokenFileCounter++
+
+	// Check if we need to rotate files
+	return fct.rotateTokenFiles()
+}
+
+// rotateTokenFiles manages the rolling window of token files
+func (fct *FrequencyComputationThread) rotateTokenFiles() error {
+	// Get list of existing token files
+	files, err := filepath.Glob(filepath.Join(fct.stateDir, "token_batch_*.txt"))
+	if err != nil {
+		return fmt.Errorf("failed to list token files: %v", err)
+	}
+
+	// If we have more files than allowed, delete the oldest
+	if len(files) > fct.tokenPersistFiles {
+		// Sort files by name (which includes the counter, so oldest first)
+		sort.Strings(files)
+
+		// Delete the oldest file(s) to get back to the limit
+		filesToDelete := len(files) - fct.tokenPersistFiles
+		for i := 0; i < filesToDelete; i++ {
+			oldestFile := files[i]
+
+			// Read tokens from the oldest file and decrement counters
+			if err := fct.decrementTokensFromFile(oldestFile); err != nil {
+				slog.Error("Failed to decrement tokens from file", "file", oldestFile, "error", err)
+				// Continue with deletion even if decrement fails
+			}
+
+			// Delete the file
+			if err := os.Remove(oldestFile); err != nil {
+				slog.Error("Failed to delete old token file", "file", oldestFile, "error", err)
+			} else {
+				slog.Info("Deleted old token file", "file", oldestFile)
+			}
+		}
+	}
+
+	return nil
+}
+
+// decrementTokensFromFile reads tokens from a file and decrements their counts
+func (fct *FrequencyComputationThread) decrementTokensFromFile(filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		return fmt.Errorf("failed to open token file %s: %v", filename, err)
+	}
+	defer file.Close()
+
+	var tokens []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		token := strings.TrimSpace(scanner.Text())
+		if token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("failed to read tokens from %s: %v", filename, err)
+	}
+
+	// Decrement token counts
+	fct.tokenCounter.DecrementTokens(tokens)
+
+	slog.Info("Decremented tokens from file", "file", filename, "token_count", len(tokens))
 	return nil
 }

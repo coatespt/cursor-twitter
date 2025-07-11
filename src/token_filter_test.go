@@ -20,6 +20,7 @@ func testTokenFilterConfig() *Config {
 			RejectUrls                      bool    `yaml:"reject_urls"`
 			RejectAllCapsLong               bool    `yaml:"reject_all_caps_long"`
 			AllCapsLowerLimit               int     `yaml:"all_caps_lower_limit"`
+			RemoveUrls                      bool    `yaml:"remove_urls"`
 		}{
 			Enabled:                         true,
 			MaxLength:                       20,
@@ -32,6 +33,7 @@ func testTokenFilterConfig() *Config {
 			RejectUrls:                      true,
 			RejectAllCapsLong:               true,
 			AllCapsLowerLimit:               10,
+			RemoveUrls:                      false,
 		},
 	}
 }
@@ -272,55 +274,6 @@ func TestShouldFilterTokenDisabled(t *testing.T) {
 		result := shouldFilterToken(token, cfg)
 		if result {
 			t.Errorf("Token filter disabled but '%s' was filtered", token)
-		}
-	}
-}
-
-// TestSimpleTokenizeWithFilters tests that the tokenization function applies filters correctly
-func TestSimpleTokenizeWithFilters(t *testing.T) {
-	cfg := testTokenFilterConfig()
-
-	// Test text with various garbage tokens
-	text := "normal Baaaaaaaaaaaaaaaaaaaa tHiSiSpRoBaBlYgArBaGe abc123def456 #hashtag http://example.com THISISPROBABLYGARBAGE good"
-
-	tokens := simpleTokenize(text, cfg)
-
-	// After tokenization, the text becomes lowercase and punctuation is removed
-	// So "#hashtag" becomes "hashtag" and passes through
-	expected := []string{"normal", "hashtag", "good"}
-
-	if len(tokens) != len(expected) {
-		t.Errorf("Expected %d tokens, got %d: %v", len(expected), len(tokens), tokens)
-		return
-	}
-
-	for i, expectedToken := range expected {
-		if tokens[i] != expectedToken {
-			t.Errorf("Expected token[%d] '%s', got '%s'", i, expectedToken, tokens[i])
-		}
-	}
-}
-
-// TestSimpleTokenizeWithoutFilters tests that tokenization works normally when filters are disabled
-func TestSimpleTokenizeWithoutFilters(t *testing.T) {
-	cfg := testTokenFilterConfig()
-	cfg.TokenFilters.Enabled = false
-
-	text := "normal Baaaaaaaaaaaaaaaaaaaa tHiSiSpRoBaBlYgArBaGe abc123def456 #hashtag http://example.com THISISPROBABLYGARBAGE good"
-
-	tokens := simpleTokenize(text, cfg)
-
-	// Should include all tokens when filters are disabled
-	expected := []string{"normal", "baaaaaaaaaaaaaaaaaaaa", "thisisprobablygarbage", "abc123def456", "hashtag", "httpexamplecom", "thisisprobablygarbage", "good"}
-
-	if len(tokens) != len(expected) {
-		t.Errorf("Expected %d tokens, got %d: %v", len(expected), len(tokens), tokens)
-		return
-	}
-
-	for i, expectedToken := range expected {
-		if tokens[i] != expectedToken {
-			t.Errorf("Expected token[%d] '%s', got '%s'", i, expectedToken, tokens[i])
 		}
 	}
 }

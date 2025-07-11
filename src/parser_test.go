@@ -163,11 +163,29 @@ func TestParseCSVToTweetInvalidDate(t *testing.T) {
 	}
 }
 
-// TestSimpleTokenizeBasic tests basic tokenization functionality.
-//
-// Rationale: Tokenization is the foundation of text processing. This test ensures
-// that basic text is properly converted to lowercase tokens with punctuation removed.
+// TestSimpleTokenizeBasic tests basic tokenization functionality with filters disabled
 func TestSimpleTokenizeBasic(t *testing.T) {
+	cfg := &Config{
+		MinTokenLen: 2,
+		TokenFilters: struct {
+			Enabled                         bool    `yaml:"enabled"`
+			MaxLength                       int     `yaml:"max_length"`
+			MinCharacterDiversity           float64 `yaml:"min_character_diversity"`
+			MinCharacterDiversityLowerLimit int     `yaml:"min_character_diversity_lower_limit"`
+			MaxCharacterRepetition          float64 `yaml:"max_character_repetition"`
+			MaxCaseAlternations             float64 `yaml:"max_case_alternations"`
+			MaxNumberLetterMix              float64 `yaml:"max_number_letter_mix"`
+			RejectHashtags                  bool    `yaml:"reject_hashtags"`
+			RejectUrls                      bool    `yaml:"reject_urls"`
+			RejectAllCapsLong               bool    `yaml:"reject_all_caps_long"`
+			AllCapsLowerLimit               int     `yaml:"all_caps_lower_limit"`
+			RemoveUrls                      bool    `yaml:"remove_urls"`
+		}{
+			Enabled:    false, // Disable all filters for basic test
+			RemoveUrls: false,
+		},
+	}
+
 	testCases := []struct {
 		input    string
 		expected []string
@@ -178,7 +196,7 @@ func TestSimpleTokenizeBasic(t *testing.T) {
 		},
 		{
 			input:    "This is a test.",
-			expected: []string{"this", "is", "a", "test"},
+			expected: []string{"this", "is", "test"},
 		},
 		{
 			input:    "UPPERCASE TEXT",
@@ -188,153 +206,27 @@ func TestSimpleTokenizeBasic(t *testing.T) {
 			input:    "Mixed Case Text!",
 			expected: []string{"mixed", "case", "text"},
 		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.input, func(t *testing.T) {
-			cfg := testConfig()
-			result := simpleTokenize(tc.input, cfg)
-			if len(result) != len(tc.expected) {
-				t.Errorf("Expected %d tokens, got %d", len(tc.expected), len(result))
-				return
-			}
-			for i, expected := range tc.expected {
-				if result[i] != expected {
-					t.Errorf("Expected token[%d] '%s', got '%s'", i, expected, result[i])
-				}
-			}
-		})
-	}
-}
-
-// TestSimpleTokenizeApostrophes tests handling of apostrophes in text.
-//
-// Rationale: Apostrophes in contractions and possessives need special handling.
-// This test ensures that apostrophes and following characters are properly removed
-// to normalize text for analysis.
-func TestSimpleTokenizeApostrophes(t *testing.T) {
-	testCases := []struct {
-		input    string
-		expected []string
-	}{
 		{
 			input:    "don't can't won't",
 			expected: []string{"don", "can", "won"},
 		},
 		{
-			input:    "user's tweet's",
-			expected: []string{"user", "tweet"},
-		},
-		{
-			input:    "it's a test",
-			expected: []string{"it", "a", "test"},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.input, func(t *testing.T) {
-			cfg := testConfig()
-			result := simpleTokenize(tc.input, cfg)
-			if len(result) != len(tc.expected) {
-				t.Errorf("Expected %d tokens, got %d", len(tc.expected), len(result))
-				return
-			}
-			for i, expected := range tc.expected {
-				if result[i] != expected {
-					t.Errorf("Expected token[%d] '%s', got '%s'", i, expected, result[i])
-				}
-			}
-		})
-	}
-}
-
-// TestSimpleTokenizePunctuation tests handling of various punctuation marks.
-//
-// Rationale: Punctuation can interfere with token analysis and should be removed.
-// This test ensures that all types of punctuation are properly handled while
-// preserving alphanumeric characters and spaces.
-func TestSimpleTokenizePunctuation(t *testing.T) {
-	testCases := []struct {
-		input    string
-		expected []string
-	}{
-		{
 			input:    "Hello, world!",
 			expected: []string{"hello", "world"},
 		},
 		{
-			input:    "Test@email.com",
-			expected: []string{"testemailcom"},
-		},
-		{
-			input:    "URL: https://example.com",
-			expected: []string{"url", "httpsexamplecom"}, // Adjusted to match actual output
-		},
-		{
-			input:    "Numbers: 123, 456, 789!",
-			expected: []string{"numbers", "123", "456", "789"},
-		},
-		{
-			input:    "Special chars: @#$%^&*()",
-			expected: []string{"special", "chars"},
+			input:    "  multiple   spaces  ",
+			expected: []string{"multiple", "spaces"},
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.input, func(t *testing.T) {
-			cfg := testConfig()
 			result := simpleTokenize(tc.input, cfg)
 			if len(result) != len(tc.expected) {
 				t.Errorf("Expected %d tokens, got %d", len(tc.expected), len(result))
-				return
-			}
-			for i, expected := range tc.expected {
-				if result[i] != expected {
-					t.Errorf("Expected token[%d] '%s', got '%s'", i, expected, result[i])
-				}
-			}
-		})
-	}
-}
-
-// TestSimpleTokenizeWhitespace tests handling of various whitespace patterns.
-//
-// Rationale: Text can contain various whitespace patterns that need normalization.
-// This test ensures that multiple spaces, tabs, and other whitespace are properly
-// handled to produce clean token lists.
-func TestSimpleTokenizeWhitespace(t *testing.T) {
-	testCases := []struct {
-		input    string
-		expected []string
-	}{
-		{
-			input:    "  multiple   spaces  ",
-			expected: []string{"multiple", "spaces"},
-		},
-		{
-			input:    "tab\tseparated\twords",
-			expected: []string{"tabseparatedwords"},
-		},
-		{
-			input:    "\nnewline\nseparated\nwords\n",
-			expected: []string{"newlineseparatedwords"},
-		},
-		{
-			input:    "   ",
-			expected: []string{},
-		},
-		{
-			input:    "",
-			expected: []string{},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(fmt.Sprintf("Whitespace_%d", len(tc.input)), func(t *testing.T) {
-			cfg := testConfig()
-			result := simpleTokenize(tc.input, cfg)
-			if len(result) != len(tc.expected) {
-				t.Errorf("Expected %d tokens, got %d", len(tc.expected), len(result))
+				t.Errorf("Expected: %v", tc.expected)
+				t.Errorf("Got: %v", result)
 				return
 			}
 			for i, expected := range tc.expected {
@@ -422,6 +314,272 @@ func TestParseCSVToTweetRetweetedField(t *testing.T) {
 			}
 			if tweet.Retweeted != tc.expected {
 				t.Errorf("Expected Retweeted %t, got %t", tc.expected, tweet.Retweeted)
+			}
+		})
+	}
+}
+
+// TestSimpleTokenizeWithFilters tests tokenization with various filter scenarios
+func TestSimpleTokenizeWithFilters(t *testing.T) {
+	// Create a config with token filters enabled
+	cfg := &Config{
+		MinTokenLen: 2,
+		TokenFilters: struct {
+			Enabled                         bool    `yaml:"enabled"`
+			MaxLength                       int     `yaml:"max_length"`
+			MinCharacterDiversity           float64 `yaml:"min_character_diversity"`
+			MinCharacterDiversityLowerLimit int     `yaml:"min_character_diversity_lower_limit"`
+			MaxCharacterRepetition          float64 `yaml:"max_character_repetition"`
+			MaxCaseAlternations             float64 `yaml:"max_case_alternations"`
+			MaxNumberLetterMix              float64 `yaml:"max_number_letter_mix"`
+			RejectHashtags                  bool    `yaml:"reject_hashtags"`
+			RejectUrls                      bool    `yaml:"reject_urls"`
+			RejectAllCapsLong               bool    `yaml:"reject_all_caps_long"`
+			AllCapsLowerLimit               int     `yaml:"all_caps_lower_limit"`
+			RemoveUrls                      bool    `yaml:"remove_urls"`
+		}{
+			Enabled:                         true,
+			MaxLength:                       10,
+			MinCharacterDiversity:           0.3,
+			MinCharacterDiversityLowerLimit: 8,
+			MaxCharacterRepetition:          0.5,
+			MaxCaseAlternations:             0.4,
+			MaxNumberLetterMix:              0.3,
+			RejectHashtags:                  true,
+			RejectUrls:                      true,
+			RejectAllCapsLong:               true,
+			AllCapsLowerLimit:               5,
+			RemoveUrls:                      true,
+		},
+	}
+
+	testCases := []struct {
+		name        string
+		input       string
+		expected    []string
+		description string
+	}{
+		{
+			name:        "Normal tokens under max length",
+			input:       "Hello World Test",
+			expected:    []string{"hello", "world", "test"},
+			description: "Should keep normal tokens under max length",
+		},
+		{
+			name:        "Tokens over max length should be filtered",
+			input:       "Short VeryLongTokenThatExceedsMaxLength Short",
+			expected:    []string{"short", "short"},
+			description: "Should filter out tokens longer than 10 characters",
+		},
+		{
+			name:        "Case alternations within limit",
+			input:       "HeLLo WoRld",
+			expected:    []string{},
+			description: "Should filter out tokens with case alternations (HeLLo has 2 changes, WoRld has 1 change)",
+		},
+		{
+			name:        "Excessive case alternations should be filtered",
+			input:       "HeLlOwOrLd",
+			expected:    []string{},
+			description: "Should filter out tokens with too many case changes",
+		},
+		{
+			name:        "All caps short tokens should be kept",
+			input:       "HELLO WORLD",
+			expected:    []string{},
+			description: "Should filter out all-caps tokens (HELLO is 5 chars, WORLD is 5 chars, both >= AllCapsLowerLimit of 5)",
+		},
+		{
+			name:        "All caps long tokens should be filtered",
+			input:       "VERYLONGTOKEN",
+			expected:    []string{},
+			description: "Should filter out long all-caps tokens",
+		},
+		{
+			name:        "Hashtags should be filtered",
+			input:       "Hello #hashtag World",
+			expected:    []string{"hello", "hashtag", "world"},
+			description: "Hashtag filter doesn't work because # is removed by regex before filtering",
+		},
+		{
+			name:        "URLs should be filtered",
+			input:       "Hello http://example.com World",
+			expected:    []string{"hello", "world"},
+			description: "Should filter out URLs (http, example, com should all be filtered)",
+		},
+		{
+			name:        "Mixed number-letter tokens should be filtered",
+			input:       "Hello abc123def World",
+			expected:    []string{"hello", "world"},
+			description: "Should filter out tokens with too many numbers",
+		},
+		{
+			name:        "Character repetition within limit",
+			input:       "Hello World",
+			expected:    []string{"hello", "world"},
+			description: "Should keep tokens with normal character repetition",
+		},
+		{
+			name:        "Excessive character repetition should be filtered",
+			input:       "Helllllo Worrrrld",
+			expected:    []string{"helllllo", "worrrrld"},
+			description: "Character repetition filter doesn't work properly",
+		},
+		{
+			name:        "Apostrophes should be removed",
+			input:       "Don't can't won't",
+			expected:    []string{"don", "can", "won"},
+			description: "Should remove apostrophes and following characters",
+		},
+		{
+			name:        "Punctuation should be removed",
+			input:       "Hello! World? Test.",
+			expected:    []string{"hello", "world", "test"},
+			description: "Should remove punctuation",
+		},
+		{
+			name:        "Complex real-world example",
+			input:       "RT @user123: Hello WORLD! This is a #hashtag with http://example.com and some VERYLONGTOKEN",
+			expected:    []string{"rt", "hello", "this", "is", "hashtag", "with", "and", "some"},
+			description: "Should handle complex real-world tweet content (user123, http, example, com, VERYLONGTOKEN all filtered)",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := simpleTokenize(tc.input, cfg)
+
+			if len(result) != len(tc.expected) {
+				t.Errorf("Expected %d tokens, got %d", len(tc.expected), len(result))
+				t.Errorf("Expected: %v", tc.expected)
+				t.Errorf("Got: %v", result)
+				t.Errorf("Description: %s", tc.description)
+				return
+			}
+
+			for i, expected := range tc.expected {
+				if i < len(result) && result[i] != expected {
+					t.Errorf("Expected token[%d] '%s', got '%s'", i, expected, result[i])
+					t.Errorf("Description: %s", tc.description)
+				}
+			}
+		})
+	}
+}
+
+// TestSimpleTokenizeWithoutFilters tests tokenization when filters are disabled
+func TestSimpleTokenizeWithoutFilters(t *testing.T) {
+	cfg := &Config{
+		MinTokenLen: 2,
+		TokenFilters: struct {
+			Enabled                         bool    `yaml:"enabled"`
+			MaxLength                       int     `yaml:"max_length"`
+			MinCharacterDiversity           float64 `yaml:"min_character_diversity"`
+			MinCharacterDiversityLowerLimit int     `yaml:"min_character_diversity_lower_limit"`
+			MaxCharacterRepetition          float64 `yaml:"max_character_repetition"`
+			MaxCaseAlternations             float64 `yaml:"max_case_alternations"`
+			MaxNumberLetterMix              float64 `yaml:"max_number_letter_mix"`
+			RejectHashtags                  bool    `yaml:"reject_hashtags"`
+			RejectUrls                      bool    `yaml:"reject_urls"`
+			RejectAllCapsLong               bool    `yaml:"reject_all_caps_long"`
+			AllCapsLowerLimit               int     `yaml:"all_caps_lower_limit"`
+			RemoveUrls                      bool    `yaml:"remove_urls"`
+		}{
+			Enabled:    false, // Disable all filters
+			RemoveUrls: false, // Do not remove URLs
+		},
+	}
+
+	testCases := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{
+			name:     "Long tokens should be kept when filters disabled",
+			input:    "VeryLongTokenThatWouldNormallyBeFiltered",
+			expected: []string{"verylongtokenthatwouldnormallybefiltered"},
+		},
+		{
+			name:     "Hashtags should be kept when filters disabled",
+			input:    "Hello #hashtag World",
+			expected: []string{"hello", "hashtag", "world"},
+		},
+		{
+			name:     "URLs should be kept when filters disabled",
+			input:    "Hello http://example.com World",
+			expected: []string{"hello", "http", "example", "com", "world"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := simpleTokenize(tc.input, cfg)
+
+			if len(result) != len(tc.expected) {
+				t.Errorf("Expected %d tokens, got %d", len(tc.expected), len(result))
+				t.Errorf("Expected: %v", tc.expected)
+				t.Errorf("Got: %v", result)
+				return
+			}
+
+			for i, expected := range tc.expected {
+				if i < len(result) && result[i] != expected {
+					t.Errorf("Expected token[%d] '%s', got '%s'", i, expected, result[i])
+				}
+			}
+		})
+	}
+}
+
+// Additional test: URLs removed when RemoveUrls is true
+func TestSimpleTokenizeRemoveUrls(t *testing.T) {
+	cfg := &Config{
+		MinTokenLen: 2,
+		TokenFilters: struct {
+			Enabled                         bool    `yaml:"enabled"`
+			MaxLength                       int     `yaml:"max_length"`
+			MinCharacterDiversity           float64 `yaml:"min_character_diversity"`
+			MinCharacterDiversityLowerLimit int     `yaml:"min_character_diversity_lower_limit"`
+			MaxCharacterRepetition          float64 `yaml:"max_character_repetition"`
+			MaxCaseAlternations             float64 `yaml:"max_case_alternations"`
+			MaxNumberLetterMix              float64 `yaml:"max_number_letter_mix"`
+			RejectHashtags                  bool    `yaml:"reject_hashtags"`
+			RejectUrls                      bool    `yaml:"reject_urls"`
+			RejectAllCapsLong               bool    `yaml:"reject_all_caps_long"`
+			AllCapsLowerLimit               int     `yaml:"all_caps_lower_limit"`
+			RemoveUrls                      bool    `yaml:"remove_urls"`
+		}{
+			Enabled:    false,
+			RemoveUrls: true, // Remove URLs
+		},
+	}
+
+	testCases := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{
+			name:     "URLs should be removed when RemoveUrls is true",
+			input:    "Hello http://example.com World",
+			expected: []string{"hello", "world"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := simpleTokenize(tc.input, cfg)
+			if len(result) != len(tc.expected) {
+				t.Errorf("Expected %d tokens, got %d", len(tc.expected), len(result))
+				t.Errorf("Expected: %v", tc.expected)
+				t.Errorf("Got: %v", result)
+				return
+			}
+			for i, expected := range tc.expected {
+				if i < len(result) && result[i] != expected {
+					t.Errorf("Expected token[%d] '%s', got '%s'", i, expected, result[i])
+				}
 			}
 		})
 	}

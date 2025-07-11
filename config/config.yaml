@@ -13,6 +13,10 @@ window: 2000000
 # The number of tweets to process in each busy-word process ccle
 batch: 15000
 
+# Number of token files to keep before deleting oldest
+# Token batch size is calculated as: window / token_persist_files
+token_persist_files: 20
+
 # Frequency class rebuild interval (in token files)
 # Rebuild frequency classes every N token files
 # Example: with 20 files and rebuild_every_files=10, rebuild every 500K tweets
@@ -22,7 +26,7 @@ rebuild_every_files: 10
 verbose: true 
 
 # The directory to log to
-log_dir: ../logs
+log_dir: logs
 
 # The minimum Z score for a 3pk element to be considered anomalous
 z_score: 3.5
@@ -46,17 +50,14 @@ filter:
 # Persistence configuration
 persistence:
   # Directory for storing state files (counts, filters, 3pk mappings)
-  state_dir: "../data/state"
-  # Number of token files to keep before deleting oldest
-  # Token batch size is calculated as: window / token_persist_files
-  token_persist_files: 20
+  state_dir: "data/state"
 
 # Sender status tracking
 sender:
   # File to track the last processed CSV file
   # NOTE: To future me--this is relative to where the sender runs from so 
-  # it's actually next to the ../data/state directory. Confusing.
-  status_file: "../../data/sender/sender_status.txt"
+  # it's actually next to the data/state directory. Confusing.
+  status_file: "data/sender_status.txt"
 
 # The minimum length of a token to be considered
 min_token_len: 2
@@ -70,11 +71,11 @@ token_filters:
   # Minimum character diversity for long tokens (0.0-1.0)
   min_character_diversity: 0.3
   # Only apply diversity filter to tokens >= this length
-  min_character_diversity_lower_limit: 10
+  min_character_diversity_lower_limit: 8
   # Maximum ratio of consecutive repeated characters (0.0-1.0)
-  max_character_repetition: 0.6
+  max_character_repetition: 0.5
   # Maximum ratio of case alternations (0.0-1.0)
-  max_case_alternations: 0.5
+  max_case_alternations: 0.4
   # Maximum ratio of digits in token (0.0-1.0)
   max_number_letter_mix: 0.3
   # Reject hashtags (tokens starting with #)
@@ -84,5 +85,6 @@ token_filters:
   # Reject all-caps tokens above a certain length
   reject_all_caps_long: true
   # Only reject all-caps if token length >= this value
-  all_caps_lower_limit: 10
+  all_caps_lower_limit: 5
+  remove_urls: true
 

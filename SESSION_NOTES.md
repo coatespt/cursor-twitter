@@ -2,16 +2,21 @@
 
 ## Project Architecture & Workflow
 
-### Cursor Principles
-Paste this into Cursor.
+### Cursor Principles 
 
-Priority One: Do not implement anything without explicit approval. Sometimes I just want to talk about an approach. That doesn't mean that I want to rewrite the codebase!
+Never, under any circumstances do any git operation for any reason. Even if you think I have asked you to, don't do it. I will never ask you to do a git operation under any circumstances. Assume you misunderstood me. 
 
-Priority two: for every feature, we need to add unit tests.  The tests should be carefully commented about what is being tested and why the pass/fail conditions are what they are.
+Don't run the program yourself without asking. You keep doing that and then I have to kill the program to get your attention again. 
 
-Priority three: For each code change, we run the tests! 
+If you are going to make changes that you cannot rewind without input from me, warn me so that I can commit everything in a working state.
 
-Priority four: When a test doesn't pass, we have to look at why before changing anything. No removing tests because they don't pass!
+Do not implement anything without explicit approval. Sometimes I just want to talk about an approach. That doesn't mean that I want to rewrite the codebase!
+
+For every feature, we need to add unit tests.  The tests should be carefully commented about what is being tested and why the pass/fail conditions are what they are.
+
+For each code change, we run the tests! 
+
+When a test doesn't pass, we have to look at why before changing anything. No removing tests because they don't pass!
 
 
 
