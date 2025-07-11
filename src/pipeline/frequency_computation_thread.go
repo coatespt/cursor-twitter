@@ -53,6 +53,9 @@ type FrequencyComputationThread struct {
 	tokenFileCounter     int      // Counter for token file naming
 	stateDir             string   // Directory for token files
 	accumulatedTokens    []string // Tokens accumulated since last file write
+
+	// Debug: Track loop iterations for logging
+	loopCount int
 }
 
 // NewFrequencyComputationThread creates a new FCT with the specified configuration
@@ -69,6 +72,25 @@ func NewFrequencyComputationThread(
 	if tokenBatchSize < 1 {
 		tokenBatchSize = 1 // Ensure at least 1 token per batch
 	}
+
+	// Initialize tokenFileCounter based on existing files
+	tokenFileCounter := 0
+	files, err := filepath.Glob(filepath.Join(stateDir, "token_batch_*.txt"))
+	if err == nil && len(files) > 0 {
+		maxNum := -1
+		for _, file := range files {
+			base := filepath.Base(file)
+			var num int
+			_, scanErr := fmt.Sscanf(base, "token_batch_%06d.txt", &num)
+			if scanErr == nil && num > maxNum {
+				maxNum = num
+			}
+		}
+		if maxNum >= 0 {
+			tokenFileCounter = maxNum + 1
+		}
+	}
+
 	return &FrequencyComputationThread{
 		tokenCounter:      tokenCounter,
 		inboundTokenQueue: inboundTokenQueue,
@@ -79,6 +101,7 @@ func NewFrequencyComputationThread(
 		tokenPersistFiles: tokenPersistFiles,
 		rebuildEveryFiles: rebuildEveryFiles,
 		stateDir:          stateDir,
+		tokenFileCounter:  tokenFileCounter,
 	}
 }
 
@@ -124,44 +147,43 @@ func (fct *FrequencyComputationThread) run() {
 	slog.Info("FCT run method entered")
 	slog.Info("FCT run loop starting")
 
-	loopCount := 0
 	for {
 		select {
 		case <-fct.stopChan:
 			slog.Info("FCT run loop stopping")
 			return
 		default:
-			loopCount++
-			if loopCount%10000 == 0 { // Log every 10,000 iterations
-				slog.Info("FCT loop iteration", "count", loopCount)
+			fct.loopCount++
+			if fct.loopCount%10000 == 0 { // Log every 10,000 iterations
+				slog.Info("FCT loop iteration", "count", fct.loopCount)
 			}
-			if loopCount%100000 == 0 { // Log every 100,000 iterations to confirm it's running
-				slog.Info("FCT: Loop is running, iteration", "count", loopCount)
+			if fct.loopCount%100000 == 0 { // Log every 100,000 iterations to confirm it's running
+				slog.Info("FCT: Loop is running, iteration", "count", fct.loopCount)
 			}
 
 			// Check if rebuild is needed first
 			shouldRebuild := atomic.LoadInt32(&fct.shouldRebuild) == 1
 
 			// Debug: Log rebuild flag status more frequently
-			if loopCount%1000 == 0 {
+			if fct.loopCount%1000 == 0 {
 				slog.Info("FCT: Rebuild flag check",
-					"loop_count", loopCount,
+					"loop_count", fct.loopCount,
 					"should_rebuild", shouldRebuild)
 			}
 
 			// ALWAYS log when rebuild flag is true (this should be rare)
 			if shouldRebuild {
 				slog.Info("FCT: REBUILD FLAG DETECTED!",
-					"loop_count", loopCount,
+					"loop_count", fct.loopCount,
 					"should_rebuild", shouldRebuild)
 			}
 
 			// Debug: Log the branch we're taking more frequently
-			if loopCount%1000 == 0 {
+			if fct.loopCount%1000 == 0 {
 				if shouldRebuild {
-					slog.Info("FCT: Taking rebuild branch", "loop_count", loopCount)
+					slog.Info("FCT: Taking rebuild branch", "loop_count", fct.loopCount)
 				} else {
-					slog.Debug("FCT: Taking token processing branch", "loop_count", loopCount)
+					slog.Debug("FCT: Taking token processing branch", "loop_count", fct.loopCount)
 				}
 			}
 
@@ -210,9 +232,9 @@ func (fct *FrequencyComputationThread) run() {
 			}
 
 			// Debug: Log when queues are empty
-			if loopCount%1000 == 0 && inboundSize == 0 {
+			if fct.loopCount%1000 == 0 && inboundSize == 0 {
 				slog.Debug("FCT: No tokens to process, waiting...",
-					"loop_count", loopCount,
+					"loop_count", fct.loopCount,
 					"inbound_queue_size", inboundSize)
 			}
 		}
@@ -241,6 +263,7 @@ func (fct *FrequencyComputationThread) processTokens() {
 
 	// Check if we need to write a token file
 	if fct.tokensSinceLastWrite >= fct.tokenBatchSize {
+		fmt.Printf("[DIAG] FCT writing token file: tokensSinceLastWrite=%d >= tokenBatchSize=%d\n", fct.tokensSinceLastWrite, fct.tokenBatchSize)
 		// Write tokens to file (only the batch size worth)
 		tokensForFile := fct.accumulatedTokens[:fct.tokenBatchSize]
 		if err := fct.writeTokenFile(tokensForFile); err != nil {
@@ -258,6 +281,7 @@ func (fct *FrequencyComputationThread) processTokens() {
 		// If we have remaining tokens, write them too (should be rare)
 		for len(fct.accumulatedTokens) >= fct.tokenBatchSize {
 			tokensForFile = fct.accumulatedTokens[:fct.tokenBatchSize]
+			fmt.Printf("[DIAG] FCT writing additional token file: accumulatedTokens=%d >= tokenBatchSize=%d\n", len(fct.accumulatedTokens), fct.tokenBatchSize)
 			if err := fct.writeTokenFile(tokensForFile); err != nil {
 				slog.Error("Failed to write additional token file", "error", err)
 			} else {
@@ -274,11 +298,14 @@ func (fct *FrequencyComputationThread) processTokens() {
 
 	// Only log if we processed tokens or if queues are getting backed up
 	if inboundProcessed > 0 {
-		slog.Info("FCT processed tokens",
-			"inbound_processed", inboundProcessed,
-			"inbound_queue_size_after", fct.inboundTokenQueue.Len(),
-			"tokens_since_last_write", fct.tokensSinceLastWrite,
-			"token_batch_size", fct.tokenBatchSize)
+		// Only log every 1000 iterations to reduce logging overhead
+		if fct.loopCount%1000 == 0 {
+			slog.Info("FCT processed tokens",
+				"inbound_processed", inboundProcessed,
+				"inbound_queue_size_after", fct.inboundTokenQueue.Len(),
+				"tokens_since_last_write", fct.tokensSinceLastWrite,
+				"token_batch_size", fct.tokenBatchSize)
+		}
 	} else {
 		// Check if queues are getting backed up but we didn't process anything
 		currentInboundSize := fct.inboundTokenQueue.Len()
@@ -529,8 +556,6 @@ func (fct *FrequencyComputationThread) writeTokenFile(tokens []string) error {
 			return fmt.Errorf("failed to write token to %s: %v", filename, err)
 		}
 	}
-
-	slog.Info("Token file written", "filename", filename, "token_count", len(tokens))
 
 	// Increment file counter
 	fct.tokenFileCounter++

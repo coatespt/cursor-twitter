@@ -109,12 +109,6 @@ var (
 	tokenMappingsMu sync.RWMutex
 )
 
-// Sliding window management
-var (
-	tweetQueue   []*tweets.Tweet // Queue of tweets in the current window
-	tweetQueueMu sync.RWMutex    // Mutex for thread-safe access to tweet queue
-)
-
 // Add a global variable to hold the stats CSV file path
 var statsCSVPath string
 
@@ -356,29 +350,6 @@ func main() {
 		slog.Error("Failed to register a consumer", "error", err)
 		os.Exit(1)
 	}
-	// TODO:Add Global stats including tweet count, token count, distinct token count
-	//     (available from map size),
-	//    number of W window cycles, number of pipeline cycles, etc.
-	//
-	// TODO: Nothing like maxRebuildTime should exist. Check that this does not exist.
-
-	// TODO: Create the TweetWindowQueue      This will not be allowed to grow beyond WindowSize
-	// TODO: Create the InboundTokenQueue
-	// TODO: Create the InboundTweetQueue
-
-	// TODO: Create a FrequencyComputationThread
-	//       THE FCT take tokens from the InboundTokenQueue and register them in
-	//       the CountMap.
-	//       It also takes tokens from the OldTokenQueue and decrements the counts in the CountMap.
-	//       It also checks a flag to see if it should stop taking tokens and
-	//       compute the frequency class filters.  If so,
-	//             it copies the CountMap to a new array
-	//             clears the existing CountMap.
-	//       It also sets the flag to resume taking tokens.
-	//       It also copies the CountMap to a new array and clears the CountMap.
-	//       It also sets the flag to resume taking tokens.
-	//       It also sets the flag to resume taking tokens.
-	//       It also sets the flag to resume taking tokens.
 
 	// Main loop runs forever
 	for msg := range msgs {
@@ -427,7 +398,6 @@ func main() {
 					if freqClass >= 0 {
 						// Check if this frequency class is active (not skipped)
 						if !freqClassProcessor.IsClassActive(freqClass) {
-							// Skip tokens for inactive classes
 							continue
 						}
 
@@ -437,7 +407,6 @@ func main() {
 						tokenMappingsMu.RUnlock()
 
 						if !exists {
-							// Generate new ThreePartKey and store in mappings
 							threePK = pipeline.GenerateThreePartKey(token)
 							tokenMappingsMu.Lock()
 							tokenToThreePK[token] = threePK
@@ -448,7 +417,6 @@ func main() {
 						// Enqueue to appropriate frequency class
 						freqClassProcessor.EnqueueToFrequencyClass(freqClass, threePK)
 					} else {
-						// Token not in any frequency class (shouldn't happen with proper filters)
 						slog.Warn("Token not found in any frequency class filter", "token", token)
 					}
 				}
@@ -461,17 +429,6 @@ func main() {
 				}
 			}
 		}
-
-		// Manage sliding window (remove old tweets when window is full)
-		if cfg.WindowSize <= 0 {
-			slog.Error("Main: window must be > 0 in config, got", "value", cfg.WindowSize)
-			os.Exit(1)
-		}
-		manageSlidingWindow(tweet, cfg.WindowSize)
-
-		// NOTE: Main has no concept of time or rebuilds
-		// FCT is completely autonomous and triggers its own rebuilds based on token count
-		// Main only puts tokens on the inbound queue - FCT handles everything else
 
 		// Send termination signals to busy word processors every batch number of tweets
 		// Only send if frequency class filters are available
@@ -582,9 +539,9 @@ func printStats() {
 	processingRate := float64(tweetDiff) / timeDiff
 
 	// Get sliding window stats
-	tweetQueueMu.RLock()
-	windowSize := len(tweetQueue)
-	tweetQueueMu.RUnlock()
+	// tweetQueueMu.RLock()
+	// windowSize := len(tweetQueue)
+	// tweetQueueMu.RUnlock()
 
 	// Get queue lengths
 	inboundQueueSize := inboundTokenQueue.Len()
@@ -617,7 +574,7 @@ func printStats() {
 	fmt.Printf("Total tweets read: %d\n", totalTweets)
 	fmt.Printf("Total tokens counted: %d\n", totalTokens)
 	fmt.Printf("Distinct tokens: %d\n", distinctTokens)
-	fmt.Printf("Tweets in current window: %d\n", windowSize)
+	// fmt.Printf("Tweets in current window: %d\n", windowSize) // Removed tweet-based window size
 	fmt.Printf("Inbound token queue size: %d\n", inboundQueueSize)
 	fmt.Printf("Processing rate: %.2f tweets/sec\n", processingRate)
 	fmt.Printf("--- Token Filter Stats ---\n")
@@ -650,7 +607,7 @@ func printStats() {
 		"tweets", totalTweets,
 		"tokens", totalTokens,
 		"distinct", distinctTokens,
-		"window_size", windowSize,
+		// "window_size", windowSize, // Removed tweet-based window size
 		"inbound_queue_size", inboundQueueSize,
 		"processing_rate_tweets_per_sec", processingRate,
 		"tokens_processed", totalProcessed,
@@ -714,8 +671,6 @@ func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
 		RetweetCount: 0,   // TODO: parse record[3] as int
 		Tokens:       nil, // We'll fill this in below
 	}
-
-	// --- BEGINNER-FRIENDLY COMMENTS BELOW ---
 
 	// Step 1: Tokenize the tweet text.
 	// - Convert to lowercase
@@ -966,25 +921,8 @@ func shouldFilterToken(token string, cfg *Config) bool {
 
 // manageSlidingWindow adds a new tweet to the queue and removes old tweets that fall outside the window
 func manageSlidingWindow(tweet *tweets.Tweet, windowSize int) {
-	tweetQueueMu.Lock()
-	defer tweetQueueMu.Unlock()
-
-	// Add the new tweet to the queue
-	tweetQueue = append(tweetQueue, tweet)
-
-	// Keep only the most recent windowSize tweets
-	if len(tweetQueue) > windowSize {
-		removedCount := len(tweetQueue) - windowSize
-		tweetQueue = tweetQueue[removedCount:]
-
-		// Log window management stats
-		if removedCount > 0 {
-			slog.Info("Sliding window management",
-				"tweets_removed", removedCount,
-				"queue_size", len(tweetQueue),
-				"window_size", windowSize)
-		}
-	}
+	// This function is no longer needed as the tweet queue is removed.
+	// The FCT handles the sliding window for tokens.
 }
 
 // setupBloomFilterParams returns the expected number of tokens and number of hashes for each frequency class.
