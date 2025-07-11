@@ -136,6 +136,73 @@ func getCurrentWorkingDir() string {
 	return dir
 }
 
+// Helper: Load and validate config
+func loadAndValidateConfig(path string) (*Config, error) {
+	cfg, err := loadConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.LogDir == "" {
+		return nil, fmt.Errorf("ERROR: 'log_dir' must be defined in the config file and cannot be empty.")
+	}
+	return cfg, nil
+}
+
+// Helper: Initialize logger
+func initializeLogger(cfg *Config) (*slog.Logger, *os.File, error) {
+	logger, logFile, err := setupLogger(cfg.LogDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	return logger, logFile, nil
+}
+
+// Helper: Initialize stats CSV
+func initializeStatsCSV(cfg *Config) string {
+	statsCSVPath := filepath.Join(cfg.LogDir, "stats.csv")
+	ensureStatsCSVHeader(statsCSVPath)
+	return statsCSVPath
+}
+
+// Helper: Initialize word filter
+func initializeWordFilter(cfg *Config) (*filter.WordFilter, error) {
+	if cfg.Filter.Enabled {
+		globalWordFilter := filter.NewWordFilter()
+		if err := globalWordFilter.LoadFromFile(cfg.Filter.FilterFile); err != nil {
+			return nil, err
+		}
+		return globalWordFilter, nil
+	}
+	return nil, nil
+}
+
+// Helper: Setup RabbitMQ
+func setupRabbitMQ(cfg *Config) (*amqp.Connection, *amqp.Channel, amqp.Queue, error) {
+	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
+	if err != nil {
+		return nil, nil, amqp.Queue{}, err
+	}
+	ch, err := conn.Channel()
+	if err != nil {
+		conn.Close()
+		return nil, nil, amqp.Queue{}, err
+	}
+	q, err := ch.QueueDeclare(
+		"tweet_in", // name
+		true,       // durable
+		false,      // delete when unused
+		false,      // exclusive
+		false,      // no-wait
+		nil,        // arguments
+	)
+	if err != nil {
+		ch.Close()
+		conn.Close()
+		return nil, nil, amqp.Queue{}, err
+	}
+	return conn, ch, q, nil
+}
+
 func main() {
 	fmt.Printf("*** MAIN FUNCTION STARTED ***\n")
 
@@ -150,91 +217,34 @@ func main() {
 	// Load config from YAML file.
 	fmt.Printf("*** LOADING CONFIG FROM: %s ***\n", *configPath)
 
-	cfg, err := loadConfig(*configPath)
+	cfg, err := loadAndValidateConfig(*configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
 	fmt.Printf("*** CONFIG LOADED SUCCESSFULLY ***\n")
 
-	// Require log_dir to be present and non-empty
-	if cfg.LogDir == "" {
-		fmt.Fprintln(os.Stderr, "ERROR: 'log_dir' must be defined in the config file and cannot be empty.")
-		os.Exit(1)
-	}
-
-	fmt.Printf("*** SETTING UP LOGGER IN: %s ***\n", cfg.LogDir)
-
-	// Set up slog logger to write to a file in the specified log_dir
-	logger, logFile, err := setupLogger(cfg.LogDir)
+	logger, logFile, err := initializeLogger(cfg)
 	if err != nil {
 		log.Fatalf("Failed to set up logger: %v", err)
 	}
 	defer logFile.Close()
 	slog.SetDefault(logger)
 
-	fmt.Printf("*** LOGGER SETUP COMPLETE ***\n")
+	statsCSVPath = initializeStatsCSV(cfg)
 
-	// Set up stats CSV file path
-	statsCSVPath = filepath.Join(cfg.LogDir, "stats.csv")
-	ensureStatsCSVHeader(statsCSVPath)
-	fmt.Printf("*** STATS CSV SETUP COMPLETE ***\n")
-
-	// Load persisted state if requested
-	if *loadState {
-		slog.Info("Starting to load persisted state")
-		fmt.Printf("*** LOADING PERSISTED STATE ***\n")
-		loadStartTime := time.Now()
-
-		loadPersistedState(cfg.Persistence.StateDir)
-
-		loadDuration := time.Since(loadStartTime)
-		slog.Info("Persisted state loading completed", "duration", loadDuration.String())
-		fmt.Printf("*** PERSISTED STATE LOADED in %v ***\n", loadDuration)
+	globalWordFilter, err = initializeWordFilter(cfg)
+	if err != nil {
+		log.Fatalf("Failed to load word filter: %v", err)
 	}
 
-	fmt.Printf("*** ABOUT TO START STATS PRINTER ***\n")
-
-	slog.Info("Starting simple RabbitMQ consumer")
-
-	// Start periodic stats printer (prints every 30 seconds)
-	startStatsPrinter()
-	fmt.Printf("*** STATS PRINTER STARTED ***\n")
-
-	// Initialize global token mappings
-	fmt.Printf("*** INITIALIZING GLOBAL TOKEN MAPPINGS ***\n")
 	tokenToThreePK = make(map[string]tweets.ThreePartKey)
 	threePKToToken = make(map[tweets.ThreePartKey]string)
-	fmt.Printf("*** GLOBAL TOKEN MAPPINGS INITIALIZED ***\n")
 
-	// Initialize word filter if enabled
-	fmt.Printf("*** CHECKING WORD FILTER CONFIG ***\n")
-	if cfg.Filter.Enabled {
-		fmt.Printf("*** LOADING WORD FILTER FROM: %s ***\n", cfg.Filter.FilterFile)
-		globalWordFilter = filter.NewWordFilter()
-		fmt.Printf("*** ATTEMPTING TO LOAD WORD FILTER ***\n")
-		if err := globalWordFilter.LoadFromFile(cfg.Filter.FilterFile); err != nil {
-			fmt.Printf("*** FATAL ERROR: Failed to load word filter ***\n")
-			fmt.Printf("*** Error: %v ***\n", err)
-			fmt.Printf("*** File: %s ***\n", cfg.Filter.FilterFile)
-			fmt.Printf("*** Current working directory: %s ***\n", getCurrentWorkingDir())
-			slog.Error("Failed to load word filter", "error", err, "file", cfg.Filter.FilterFile)
-			os.Exit(1)
-		}
-		slog.Info("Word filter initialized", "filtered_words_count", globalWordFilter.GetFilteredCount(), "file", cfg.Filter.FilterFile)
-		fmt.Printf("*** WORD FILTER LOADED SUCCESSFULLY ***\n")
-	} else {
-		slog.Info("Word filtering disabled")
-		fmt.Printf("*** WORD FILTERING DISABLED ***\n")
-	}
-
-	// Set global array length for 3PK generation
 	pipeline.SetGlobalArrayLen(cfg.BWArrayLen)
 
-	// Create the token queues and FCT
 	inboundTokenQueue = pipeline.NewTokenQueue()
 
-	// Create FCT with configuration
 	freqClasses = cfg.FreqClasses
 	if freqClasses <= 0 {
 		slog.Error("Main: freq_classes must be > 0 in config, got", "value", freqClasses)
@@ -245,98 +255,40 @@ func main() {
 		GlobalTokenCounter,
 		inboundTokenQueue,
 		freqClasses,
-		cfg.WindowSize,        // Pass window size for autonomous rebuild triggering
-		cfg.TokenPersistFiles, // Now from top-level config
-		cfg.RebuildEveryFiles, // Pass rebuild interval
+		cfg.WindowSize,
+		cfg.TokenPersistFiles,
+		cfg.RebuildEveryFiles,
 		cfg.Persistence.StateDir,
 	)
-
-	// Start the FCT
 	fct.Start()
 	defer fct.Stop()
 
-	slog.Info("FCT created and started",
-		"freq_classes", freqClasses)
-
-	// Create and start the frequency class processor
-	fmt.Printf("*** Creating FrequencyClassProcessor with %d classes, skipping %v ***\n", freqClasses, cfg.SkipFrequencyClasses)
 	freqClassProcessor = pipeline.NewFrequencyClassProcessor(freqClasses, cfg.BWArrayLen, float64(cfg.ZScore), cfg.SkipFrequencyClasses)
-	fmt.Printf("*** FrequencyClassProcessor created successfully ***\n")
 	freqClassProcessor.SetGlobalTokenMappingForAll(threePKToToken, &tokenMappingsMu)
-	fmt.Printf("*** Global token mapping set ***\n")
 	freqClassProcessor.Start()
-	fmt.Printf("*** FrequencyClassProcessor started ***\n")
 	defer freqClassProcessor.Stop()
 
-	slog.Info("FrequencyClassProcessor created and started",
-		"num_classes", freqClasses,
-		"bw_array_len", cfg.BWArrayLen,
-		"z_score_threshold", cfg.ZScore,
-		"skip_classes", cfg.SkipFrequencyClasses)
-
-	// Connect to RabbitMQ
-	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
+	conn, ch, q, err := setupRabbitMQ(cfg)
 	if err != nil {
-		slog.Error("Failed to connect to RabbitMQ", "error", err)
+		slog.Error("Failed to set up RabbitMQ", "error", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
-
-	// Create channel
-	ch, err := conn.Channel()
-	if err != nil {
-		slog.Error("Failed to open channel", "error", err)
-		os.Exit(1)
-	}
 	defer ch.Close()
 
-	// Declare queue
-	q, err := ch.QueueDeclare(
-		"tweet_in", // name
-		true,       // durable
-		false,      // delete when unused
-		false,      // exclusive
-		false,      // no-wait
-		nil,        // arguments
-	)
-	if err != nil {
-		slog.Error("Failed to declare queue", "error", err)
-		os.Exit(1)
-	}
-
-	slog.Info("Connected to RabbitMQ. Waiting for messages...", "queue", q.Name)
-
-	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Start shutdown handler in background
 	go func() {
 		sig := <-sigChan
 		slog.Info("Received shutdown signal", "signal", sig.String())
-		fmt.Printf("\n*** RECEIVED SHUTDOWN SIGNAL: %s ***\n", sig.String())
-
-		// Check if persistence is in progress
 		if pipeline.IsPersistenceInProgress() {
-			fmt.Printf("*** PERSISTENCE IN PROGRESS - WAITING FOR COMPLETION ***\n")
-			slog.Info("Persistence in progress, waiting for completion")
-
-			// Wait for persistence to complete
 			for pipeline.IsPersistenceInProgress() {
 				time.Sleep(100 * time.Millisecond)
 			}
-
-			fmt.Printf("*** PERSISTENCE COMPLETED - EXITING ***\n")
-			slog.Info("Persistence completed, exiting")
-		} else {
-			fmt.Printf("*** NO PERSISTENCE IN PROGRESS - EXITING IMMEDIATELY ***\n")
-			slog.Info("No persistence in progress, exiting immediately")
 		}
-
 		os.Exit(0)
 	}()
 
-	// Start blocking consumer
 	msgs, err := ch.Consume(
 		q.Name, // queue
 		"",     // consumer
@@ -351,7 +303,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Main loop runs forever
+	startStatsPrinter()
+
 	for msg := range msgs {
 
 		tweet, err := parseCSVToTweet(string(msg.Body), cfg)
