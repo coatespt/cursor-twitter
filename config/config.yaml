@@ -66,7 +66,7 @@ sender:
   # File to track the last processed CSV file
   # NOTE: To future me--this is relative to where the sender runs from so 
   # it's actually next to the data/state directory. Confusing.
-  status_file: "/Users/petercoates/python-work/data/sender_status.txt"
+  status_file: "/Users/petercoates/python-work/data/sender/sender_status.txt"
 
 # The minimum length of a token to be considered
 min_token_len: 2

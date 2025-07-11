@@ -3,6 +3,7 @@ package pipeline
 import (
 	"encoding/gob"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -209,20 +210,22 @@ func BuildFrequencyClassHashSets(tokenCounts map[string]int, F int, bloomSizes [
 	}
 
 	// Log final class distribution with usage counts
-	fmt.Printf("*** FREQUENCY CLASS REBUILD: Built %d classes ***\n", F)
-	fmt.Printf("*** DEBUG: Total tokens to distribute: %d, Target per class: %d ***\n", total, C)
+	slog.Info("Frequency class rebuild started", "num_classes", F, "total_tokens", total, "target_per_class", C)
 	for i := 0; i < F; i++ {
 		// Calculate total usage for this class (optimized - use map lookup)
 		classUsage := 0
 		for _, token := range classes[i] {
 			classUsage += tokenCounts[token] // Direct map lookup - O(1)
 		}
-		fmt.Printf("  Class %d: %d distinct tokens, %d total usages\n", i+1, len(classes[i]), classUsage)
+		slog.Info("Frequency class distribution",
+			"class", i+1,
+			"distinct_tokens", len(classes[i]),
+			"total_usages", classUsage)
 		if len(classes[i]) == 0 {
-			fmt.Printf("  *** WARNING: Class %d is empty! ***\n", i+1)
+			slog.Warn("Frequency class is empty", "class", i+1)
 		}
 	}
-	fmt.Printf("*** FREQUENCY CLASS REBUILD COMPLETE ***\n")
+	slog.Info("Frequency class rebuild completed", "num_classes", F)
 
 	return FreqClassResult{
 		Filters:   filters,
@@ -238,7 +241,7 @@ func SetGlobalFilters(filters []FreqClassFilter) {
 	globalFiltersMutex.Lock()
 	defer globalFiltersMutex.Unlock()
 	globalFilters = filters
-	fmt.Printf("*** SetGlobalFilters called with %d filters ***\n", len(filters))
+	slog.Info("Global filters set", "num_filters", len(filters))
 }
 
 // GetGlobalFilters returns the current global frequency class filters

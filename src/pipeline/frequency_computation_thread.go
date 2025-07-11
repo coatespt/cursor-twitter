@@ -345,9 +345,9 @@ func (fct *FrequencyComputationThread) performRebuild() {
 	fct.filtersMutex.Unlock()
 
 	// Also install globally for main thread
-	fmt.Printf("*** ABOUT TO INSTALL FILTERS GLOBALLY ***\n")
+	slog.Info("Installing filters globally")
 	SetGlobalFilters(result.Filters)
-	fmt.Printf("*** FILTERS INSTALLED GLOBALLY ***\n")
+	slog.Info("Filters installed globally", "num_filters", len(result.Filters))
 
 	// Save the data structures to files
 	savePersistedState(result, tokenCounts)
@@ -360,16 +360,11 @@ func (fct *FrequencyComputationThread) performRebuild() {
 		"token_count", len(tokenCounts),
 		"filters_built", len(result.Filters))
 
-	// Also print to stdout for immediate visibility
-	fmt.Printf("*** FREQUENCY REBUILD COMPLETED at %s (duration: %v) ***\n",
-		completionTime.Format("15:04:05"), duration)
-
 	// Add diagnostic line to show filters are installed
-	slog.Info("INSTALLED: frequency class filters are now active",
-		"num_filters", len(result.Filters))
-
-	// Print to stdout for immediate visibility
-	fmt.Printf("*** FREQUENCY FILTERS INSTALLED: %d filters now active ***\n", len(result.Filters))
+	slog.Info("Frequency class filters are now active",
+		"num_filters", len(result.Filters),
+		"completion_time", completionTime.Format("15:04:05"),
+		"duration", duration)
 
 	// Log top tokens for debugging
 	if len(result.TopTokens) > 0 {
@@ -433,7 +428,6 @@ func savePersistedState(result FreqClassResult, tokenCounts map[string]int) {
 	defer atomic.StoreInt32(&persistenceInProgress, 0)
 
 	slog.Info("Starting to save persisted state")
-	fmt.Printf("*** SAVING PERSISTED STATE ***\n")
 	saveStartTime := time.Now()
 
 	// Get the state directory from config (hardcoded for now, could be made configurable)
@@ -448,7 +442,7 @@ func savePersistedState(result FreqClassResult, tokenCounts map[string]int) {
 		for _, count := range tokenCounts {
 			totalTokens += count
 		}
-		fmt.Printf("TokenCounter saved: %d total tokens (%d distinct tokens)\n", totalTokens, len(tokenCounts))
+		slog.Info("TokenCounter saved", "total_tokens", totalTokens, "distinct_tokens", len(tokenCounts))
 	}
 
 	// Save FrequencyClassResult
@@ -456,7 +450,7 @@ func savePersistedState(result FreqClassResult, tokenCounts map[string]int) {
 	if err := result.SaveToFile(freqClassPath); err != nil {
 		slog.Error("Failed to save FrequencyClassResult", "error", err, "path", freqClassPath)
 	} else {
-		fmt.Printf("FrequencyClassResult saved: %d classes\n", len(result.Filters))
+		slog.Info("FrequencyClassResult saved", "num_classes", len(result.Filters))
 	}
 
 	// Save ThreePartKey mappings
@@ -464,14 +458,11 @@ func savePersistedState(result FreqClassResult, tokenCounts map[string]int) {
 	if err := saveThreePartKeyMappingsToFile(threePKPath, TokenTo3PK); err != nil {
 		slog.Error("Failed to save ThreePartKey mappings", "error", err, "path", threePKPath)
 	} else {
-		fmt.Printf("ThreePartKey mappings saved: %d mappings\n", len(TokenTo3PK))
+		slog.Info("ThreePartKey mappings saved", "num_mappings", len(TokenTo3PK))
 	}
 
 	saveDuration := time.Since(saveStartTime)
 	slog.Info("Persisted state saving completed", "duration", saveDuration.String())
-	fmt.Printf("*** PERSISTED STATE SAVED in %v ***\n", saveDuration)
-
-	fmt.Println("=== PERSISTED STATE SAVED ===")
 }
 
 // IsPersistenceInProgress returns true if persistence operations are currently running

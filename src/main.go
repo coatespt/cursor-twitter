@@ -272,18 +272,13 @@ func setupRabbitMQConsumer(ch *amqp.Channel, q amqp.Queue) (<-chan amqp.Delivery
 }
 
 func main() {
-	fmt.Printf("*** MAIN FUNCTION STARTED ***\n")
-
 	// Add a command line flag to control printing of tweets
 	printTweets := flag.Bool("print-tweets", true, "Print each parsed tweet to the console")
 	configPath := flag.String("config", "config/config.yaml", "Path to YAML config file")
 	loadState := flag.Bool("load-state", false, "Load persisted state from files on startup")
 	flag.Parse()
 
-	fmt.Printf("*** FLAGS PARSED: config=%s, print-tweets=%v, load-state=%v ***\n", *configPath, *printTweets, *loadState)
-
 	// Load config from YAML file.
-	fmt.Printf("*** LOADING CONFIG FROM: %s ***\n", *configPath)
 
 	cfg, err := loadAndValidateConfig(*configPath)
 	if err != nil {
@@ -298,6 +293,12 @@ func main() {
 	}
 	defer logFile.Close()
 	slog.SetDefault(logger)
+
+	// Log startup information
+	slog.Info("Application started",
+		"config_path", *configPath,
+		"print_tweets", *printTweets,
+		"load_state", *loadState)
 
 	statsCSVPath = initializeStatsCSV(cfg)
 
@@ -349,10 +350,6 @@ func main() {
 		// Always add new tweet tokens to the inbound queue for FCT to build frequency filters
 		if len(tweet.Tokens) > 0 {
 			inboundTokenQueue.Enqueue(tweet.Tokens)
-			slog.Info("Added tokens to InboundTokenQueue",
-				"tweet_id", tweet.IDStr,
-				"token_count", len(tweet.Tokens),
-				"queue_size_after", inboundTokenQueue.Len())
 
 			// Route each token to its appropriate frequency class (only if filters are available)
 			filters := pipeline.GetGlobalFilters()
@@ -362,7 +359,6 @@ func main() {
 					slog.Info("Filters are available for token routing",
 						"tweet_count", TotalTweetsRead,
 						"num_filters", len(filters))
-					fmt.Printf("*** TOKEN ROUTING ACTIVE: %d filters available ***\n", len(filters))
 				}
 
 				// Route tokens to frequency classes
@@ -381,32 +377,36 @@ func main() {
 						if !freqClassProcessor.IsClassActive(freqClass) {
 							continue
 						}
-
-						// Generate or get the 3pk for this token
-						tokenMappingsMu.RLock()
-						threePK, exists := tokenToThreePK[token]
-						tokenMappingsMu.RUnlock()
-
-						if !exists {
-							threePK = pipeline.GenerateThreePartKey(token)
-							tokenMappingsMu.Lock()
-							tokenToThreePK[token] = threePK
-							threePKToToken[threePK] = token
-							tokenMappingsMu.Unlock()
-						}
-
-						// Enqueue to appropriate frequency class
-						freqClassProcessor.EnqueueToFrequencyClass(freqClass, threePK)
 					} else {
-						slog.Warn("Token not found in any frequency class filter", "token", token)
+						// Token not found in any frequency class filter - assign to highest numbered class
+						freqClass = len(filters) - 1
+						// Check if this frequency class is active (not skipped)
+						if !freqClassProcessor.IsClassActive(freqClass) {
+							continue
+						}
 					}
+
+					// Generate or get the 3pk for this token
+					tokenMappingsMu.RLock()
+					threePK, exists := tokenToThreePK[token]
+					tokenMappingsMu.RUnlock()
+
+					if !exists {
+						threePK = pipeline.GenerateThreePartKey(token)
+						tokenMappingsMu.Lock()
+						tokenToThreePK[token] = threePK
+						threePKToToken[threePK] = token
+						tokenMappingsMu.Unlock()
+					}
+
+					// Enqueue to appropriate frequency class
+					freqClassProcessor.EnqueueToFrequencyClass(freqClass, threePK)
 				}
 			} else {
 				// No filters available yet - log occasionally
 				if TotalTweetsRead%10000 == 0 {
 					slog.Info("No frequency class filters available yet",
 						"tweet_count", TotalTweetsRead)
-					fmt.Printf("*** NO FILTERS AVAILABLE: waiting for first rebuild ***\n")
 				}
 			}
 		}
@@ -427,8 +427,6 @@ func main() {
 					}
 				}
 
-				fmt.Printf("*** BATCH BOUNDARY: Sent termination signals to %d active busy word processors at tweet %d ***\n",
-					activeCount, TotalTweetsRead)
 				slog.Info("Main: Sent termination signals to busy word processors",
 					"tweet_count", TotalTweetsRead,
 					"batch_size", cfg.BatchSize,

@@ -294,29 +294,35 @@ func (fcp *FrequencyClassProcessor) collectBatchResults() {
 
 // printBatchSummary prints a summary of all busy words found in this batch
 func (fcp *FrequencyClassProcessor) printBatchSummary(classResults map[int][]string) {
-	fmt.Printf("\n" + strings.Repeat("=", 60) + "\n")
+	totalBusyWords := 0
+
+	// Print to console
+	fmt.Printf("\n" + strings.Repeat("-", 60) + "\n")
 	fmt.Printf("BATCH %d SUMMARY: %d frequency classes completed\n",
 		fcp.batchNumber, fcp.numClasses)
 
-	totalBusyWords := 0
 	for classIndex, words := range classResults {
 		totalBusyWords += len(words)
-		fmt.Printf("Class %d: %d busy words\n", classIndex, len(words))
-	}
-
-	fmt.Printf("TOTAL: %d busy words\n", totalBusyWords)
-
-	// Print busy words by class (only if there are any)
-	for classIndex, words := range classResults {
 		if len(words) > 0 {
-			fmt.Printf("\nClass %d busy words:\n", classIndex)
-			for i, word := range words {
-				fmt.Printf("  %d. %s\n", i+1, word)
-			}
+			// Print class count and busy words on the same line
+			fmt.Printf("Class %d: %d busy words - %s\n", classIndex, len(words), strings.Join(words, ", "))
+		} else {
+			fmt.Printf("Class %d: %d busy words\n", classIndex, len(words))
 		}
 	}
 
-	fmt.Printf(strings.Repeat("=", 60) + "\n\n")
+	fmt.Printf("TOTAL: %d busy words\n", totalBusyWords)
+	fmt.Printf(strings.Repeat("-", 60) + "\n\n")
+
+	// Also log to file
+	for classIndex, words := range classResults {
+		slog.Info("Batch class results", "batch", fcp.batchNumber, "class", classIndex, "busy_words", len(words))
+	}
+
+	slog.Info("Batch summary completed",
+		"batch", fcp.batchNumber,
+		"num_classes", fcp.numClasses,
+		"total_busy_words", totalBusyWords)
 }
 
 // convert3PKsToWords converts ThreePartKeys back to actual word strings
@@ -507,8 +513,7 @@ func (bwp *BusyWordProcessor) performCoordinatedZComputation() {
 	if bwp.freqClassProcessor.batchBarrier.IsComplete() {
 		bwp.freqClassProcessor.batchBarrier.Reset()
 		activeClassCount := bwp.freqClassProcessor.numClasses - len(bwp.freqClassProcessor.skipClasses)
-		fmt.Printf("*** BARRIER RESET: All %d active processors synchronized, starting next cycle ***\n",
-			activeClassCount)
+		slog.Info("Barrier reset - all processors synchronized", "active_processors", activeClassCount)
 	}
 	bwp.freqClassProcessor.batchMutex.Unlock()
 
@@ -542,7 +547,7 @@ func (bwp *BusyWordProcessor) GetTokenCount() int {
 // performZComputation performs statistical analysis on the counter arrays
 // Calculates z-scores using Gaussian statistics for each array position
 func (bwp *BusyWordProcessor) performZComputation() {
-	fmt.Printf("*** BusyWordProcessor-%d: Z-COMPUTATION STARTED ***\n", bwp.classIndex)
+	slog.Info("Z-computation started", "class_index", bwp.classIndex)
 
 	// Calculate statistics for each array
 	part1Stats := bwp.CalculateArrayStats(bwp.part1Counters)
@@ -560,19 +565,7 @@ func (bwp *BusyWordProcessor) performZComputation() {
 	// This will identify the "busy words" for this frequency class
 	busyWords := bwp.FindBusyWords(part1HighZScores, part2HighZScores, part3HighZScores)
 
-	fmt.Printf("*** BusyWordProcessor-%d: Z-COMPUTATION COMPLETED ***\n", bwp.classIndex)
-	fmt.Printf("*** BusyWordProcessor-%d: Array totals - Part1: %d, Part2: %d, Part3: %d ***\n",
-		bwp.classIndex, part1Stats.Total, part2Stats.Total, part3Stats.Total)
-	fmt.Printf("*** BusyWordProcessor-%d: Part1 stats - Mean: %.2f, StdDev: %.2f ***\n",
-		bwp.classIndex, part1Stats.Mean, part1Stats.StdDev)
-	fmt.Printf("*** BusyWordProcessor-%d: Part2 stats - Mean: %.2f, StdDev: %.2f ***\n",
-		bwp.classIndex, part2Stats.Mean, part2Stats.StdDev)
-	fmt.Printf("*** BusyWordProcessor-%d: Part3 stats - Mean: %.2f, StdDev: %.2f ***\n",
-		bwp.classIndex, part3Stats.Mean, part3Stats.StdDev)
-	fmt.Printf("*** BusyWordProcessor-%d: High Z-scores (>=%.1f) - Part1: %d, Part2: %d, Part3: %d ***\n",
-		bwp.classIndex, bwp.zScoreThreshold, len(part1HighZScores), len(part2HighZScores), len(part3HighZScores))
-	fmt.Printf("*** BusyWordProcessor-%d: Busy words found: %d ***\n", bwp.classIndex, len(busyWords))
-	fmt.Printf("*** BusyWordProcessor-%d: Wiping counter arrays to zero ***\n", bwp.classIndex)
+	slog.Info("Z-computation completed", "class_index", bwp.classIndex, "busy_words_found", len(busyWords))
 
 	// Wipe all counter arrays to zero
 	for i := 0; i < bwp.arrayLen; i++ {
@@ -581,7 +574,7 @@ func (bwp *BusyWordProcessor) performZComputation() {
 		bwp.part3Counters[i] = 0
 	}
 
-	fmt.Printf("*** BusyWordProcessor-%d: Arrays reset, ready for next batch ***\n", bwp.classIndex)
+	slog.Info("Arrays reset, ready for next batch", "class_index", bwp.classIndex)
 
 	slog.Info("Z-computation completed and arrays reset",
 		"class_index", bwp.classIndex,
@@ -635,8 +628,7 @@ func (bwp *BusyWordProcessor) CalculateZScores(counts []int, stats ArrayStats, t
 			}
 		}
 
-		fmt.Printf("*** BusyWordProcessor-%d: Z-score stats - Min: %.2f, Max: %.2f ***\n",
-			bwp.classIndex, minZ, maxZ)
+		slog.Info("Z-score stats", "class_index", bwp.classIndex, "min_z", minZ, "max_z", maxZ)
 	}
 
 	return highZScores
