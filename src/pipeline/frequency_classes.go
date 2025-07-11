@@ -233,14 +233,67 @@ func BuildFrequencyClassHashSets(tokenCounts map[string]int, F int, bloomSizes [
 	}
 }
 
+// BuildFrequencyClassHashSetsAdaptive builds frequency classes with a minimum count threshold
+// to handle long-tailed distributions more efficiently
+func BuildFrequencyClassHashSetsAdaptive(tokenCounts map[string]int, F int, minCountThreshold int) FreqClassResult {
+	// Step 1: Filter out tokens below the minimum count threshold
+	filteredTokenCounts := make(map[string]int)
+	totalFilteredOut := 0
+	for token, count := range tokenCounts {
+		if count >= minCountThreshold {
+			filteredTokenCounts[token] = count
+		} else {
+			totalFilteredOut++
+		}
+	}
+
+	// Step 2: Build frequency classes from filtered tokens
+	result := BuildFrequencyClassHashSets(filteredTokenCounts, F, nil, nil)
+
+	// Log the filtering statistics
+	slog.Info("Adaptive frequency class filtering",
+		"original_tokens", len(tokenCounts),
+		"filtered_tokens", len(filteredTokenCounts),
+		"filtered_out", totalFilteredOut,
+		"min_count_threshold", minCountThreshold,
+		"filtered_percentage", float64(len(filteredTokenCounts))/float64(len(tokenCounts))*100)
+
+	return result
+}
+
 var globalFiltersMutex sync.RWMutex
 var globalFilters []FreqClassFilter
+var tokenToClassMapping map[string]int
+var tokenToClassMutex sync.RWMutex
+var masterFilter *SetFilter
+var masterFilterMutex sync.RWMutex
 
 // SetGlobalFilters sets the global frequency class filters
 func SetGlobalFilters(filters []FreqClassFilter) {
 	globalFiltersMutex.Lock()
 	defer globalFiltersMutex.Unlock()
 	globalFilters = filters
+
+	// Build the reverse lookup map for O(1) token-to-class lookup
+	tokenToClassMutex.Lock()
+	tokenToClassMapping = make(map[string]int)
+	masterFilterMutex.Lock()
+	masterFilter = &SetFilter{tokens: make(map[string]bool)}
+
+	for classIndex, filter := range filters {
+		// For SetFilter, we can extract the tokens directly
+		if setFilter, ok := filter.(*SetFilter); ok {
+			for token := range setFilter.tokens {
+				tokenToClassMapping[token] = classIndex
+				masterFilter.tokens[token] = true // Add to master filter
+			}
+		}
+		// Note: For BloomFilter, we can't easily extract tokens, so we'll fall back to the old method
+	}
+
+	tokenToClassMutex.Unlock()
+	masterFilterMutex.Unlock()
+
 	slog.Info("Global filters set", "num_filters", len(filters))
 }
 
@@ -252,6 +305,20 @@ func GetGlobalFilters() []FreqClassFilter {
 	copy(result, globalFilters)
 	//fmt.Printf("*** GetGlobalFilters called, returning %d filters ***\n", len(result))
 	return result
+}
+
+// GetTokenToClassMapping returns the token-to-class mapping for O(1) lookup
+func GetTokenToClassMapping() map[string]int {
+	tokenToClassMutex.RLock()
+	defer tokenToClassMutex.RUnlock()
+	return tokenToClassMapping
+}
+
+// GetMasterFilter returns the master filter containing all tokens from all classes
+func GetMasterFilter() *SetFilter {
+	masterFilterMutex.RLock()
+	defer masterFilterMutex.RUnlock()
+	return masterFilter
 }
 
 // SaveToFile saves the frequency class filters to a file

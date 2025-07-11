@@ -26,7 +26,7 @@ token_persist_files: 20
 rebuild_every_files: 10
 
 # The number of tweets to process in each busy-word process cycle
-batch: 15000
+batch: 10000
 
 # Whether to log to the console
 verbose: true 
@@ -50,6 +50,10 @@ bw_array_len: 1000
 
 # List of frequency classes (1-based) to skip for busy word detection. E.g., [1, 2] skips the most frequent and second most frequent classes.
 skip_frequency_classes: []
+
+# Minimum count threshold for frequency class inclusion (0 = no threshold)
+# This helps handle long-tailed distributions by filtering out rare tokens
+min_count_threshold: 0
 
 # Busyword classes to consider in clustering.
 # There is probably no point in using words from the most frequent classes.
@@ -83,7 +87,7 @@ token_filters:
   # Enable token filtering
   enabled: true
   # Maximum token length (0 = no limit)
-  max_length: 20
+  max_length: 30
   # Minimum character diversity for long tokens (0.0-1.0)
   min_character_diversity: 0.3
   # Only apply diversity filter to tokens >= this length
@@ -99,7 +103,7 @@ token_filters:
   # Reject URLs (tokens starting with http or www)
   reject_urls: true
   # Reject all-caps tokens above a certain length
-  reject_all_caps_long: true
+  reject_all_caps_long: false
   # Only reject all-caps if token length >= this value
   all_caps_lower_limit: 5
   remove_urls: true

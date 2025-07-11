@@ -55,6 +55,9 @@ type FrequencyComputationThread struct {
 
 	// Debug: Track loop iterations for logging
 	loopCount int
+
+	// Adaptive frequency class building configuration
+	minCountThreshold int
 }
 
 // NewFrequencyComputationThread creates a new FCT with the specified configuration
@@ -66,6 +69,7 @@ func NewFrequencyComputationThread(
 	tokenPersistFiles int,
 	rebuildEveryFiles int,
 	stateDir string,
+	minCountThreshold int,
 ) *FrequencyComputationThread {
 	tokenBatchSize := windowSize / tokenPersistFiles
 	if tokenBatchSize < 1 {
@@ -101,6 +105,7 @@ func NewFrequencyComputationThread(
 		rebuildEveryFiles: rebuildEveryFiles,
 		stateDir:          stateDir,
 		tokenFileCounter:  tokenFileCounter,
+		minCountThreshold: minCountThreshold,
 	}
 }
 
@@ -331,7 +336,15 @@ func (fct *FrequencyComputationThread) performRebuild() {
 
 	// Perform the frequency class calculation
 	slog.Info("FCT: About to call BuildFrequencyClassHashSets", "token_count", len(tokenCounts), "freq_classes", fct.freqClasses)
-	result := BuildFrequencyClassHashSets(tokenCounts, fct.freqClasses, nil, nil)
+
+	// Use adaptive frequency class building if min count threshold is configured
+	var result FreqClassResult
+	if fct.minCountThreshold > 0 {
+		result = BuildFrequencyClassHashSetsAdaptive(tokenCounts, fct.freqClasses, fct.minCountThreshold)
+	} else {
+		result = BuildFrequencyClassHashSets(tokenCounts, fct.freqClasses, nil, nil)
+	}
+
 	slog.Info("FCT: BuildFrequencyClassHashSets returned", "filters_built", len(result.Filters))
 
 	// Clear the token counter after frequency calculation

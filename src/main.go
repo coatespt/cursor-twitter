@@ -45,6 +45,7 @@ type Config struct {
 	SkipFrequencyClasses []int   `yaml:"skip_frequency_classes"`
 	TokenPersistFiles    int     `yaml:"token_persist_files"`
 	RebuildEveryFiles    int     `yaml:"rebuild_every_files"`
+	MinCountThreshold    int     `yaml:"min_count_threshold"` // Minimum count for frequency class inclusion
 
 	Filter struct {
 		Enabled    bool   `yaml:"enabled"`
@@ -220,14 +221,16 @@ func initializePipeline(cfg *Config) error {
 		return fmt.Errorf("freq_classes must be > 0 in config, got %d", freqClasses)
 	}
 
+	// Initialize the FrequencyComputationThread
 	fct = pipeline.NewFrequencyComputationThread(
 		GlobalTokenCounter,
 		inboundTokenQueue,
-		freqClasses,
+		cfg.FreqClasses,
 		cfg.WindowSize,
 		cfg.TokenPersistFiles,
 		cfg.RebuildEveryFiles,
 		cfg.Persistence.StateDir,
+		cfg.MinCountThreshold,
 	)
 	fct.Start()
 
@@ -307,6 +310,11 @@ func main() {
 		log.Fatalf("Failed to load word filter: %v", err)
 	}
 
+	// Load persisted state if requested
+	if *loadState {
+		loadPersistedState(cfg.Persistence.StateDir, cfg.FreqClasses, cfg)
+	}
+
 	initializeGlobalState()
 
 	err = initializePipeline(cfg)
@@ -361,29 +369,27 @@ func main() {
 						"num_filters", len(filters))
 				}
 
+				// Get the token-to-class mapping and master filter for fast lookup
+				tokenToClass := pipeline.GetTokenToClassMapping()
+				masterFilter := pipeline.GetMasterFilter()
+
 				// Route tokens to frequency classes
 				for _, token := range tweet.Tokens {
-					// Find which frequency class this token belongs to
-					freqClass := -1
-					for i, filter := range filters {
-						if filter.Contains(token) {
-							freqClass = i
-							break
-						}
+					// Quick check: if token not in master filter, skip it entirely
+					if masterFilter != nil && !masterFilter.Contains(token) {
+						continue
 					}
 
-					if freqClass >= 0 {
-						// Check if this frequency class is active (not skipped)
-						if !freqClassProcessor.IsClassActive(freqClass) {
-							continue
-						}
-					} else {
+					// Find which frequency class this token belongs to (O(1) lookup)
+					freqClass, exists := tokenToClass[token]
+					if !exists {
 						// Token not found in any frequency class filter - assign to highest numbered class
 						freqClass = len(filters) - 1
-						// Check if this frequency class is active (not skipped)
-						if !freqClassProcessor.IsClassActive(freqClass) {
-							continue
-						}
+					}
+
+					// Check if this frequency class is active (not skipped)
+					if !freqClassProcessor.IsClassActive(freqClass) {
+						continue
 					}
 
 					// Generate 3pk for this token on-the-fly (no persistence)
@@ -916,7 +922,7 @@ func setupBloomFilterParams(numClasses int) ([]int, []uint) {
 }
 
 // loadPersistedState loads the persisted data structures from files and logs statistics
-func loadPersistedState(stateDir string) {
+func loadPersistedState(stateDir string, freqClasses int, cfg *Config) {
 	fmt.Println("=== LOADING PERSISTED STATE ===")
 
 	// Check if any of the files exist
@@ -934,7 +940,7 @@ func loadPersistedState(stateDir string) {
 		return
 	}
 
-	// Load TokenCounter if it exists
+	// Load TokenCounter if it exists and rebuild frequency class filters
 	tempTokenCounter := pipeline.NewTokenCounter()
 	if err := tempTokenCounter.LoadFromFile(tokenCounterPath); err != nil {
 		if strings.Contains(err.Error(), "no such file or directory") {
@@ -949,6 +955,17 @@ func loadPersistedState(stateDir string) {
 			totalTokens += count
 		}
 		fmt.Printf("TokenCounter loaded: %d total tokens (%d distinct tokens)\n", totalTokens, len(counts))
+
+		// Rebuild frequency class filters from the loaded token counts
+		fmt.Println("Rebuilding frequency class filters from loaded token counts...")
+		var result pipeline.FreqClassResult
+		if cfg.MinCountThreshold > 0 {
+			result = pipeline.BuildFrequencyClassHashSetsAdaptive(counts, freqClasses, cfg.MinCountThreshold)
+		} else {
+			result = pipeline.BuildFrequencyClassHashSets(counts, freqClasses, nil, nil)
+		}
+		pipeline.SetGlobalFilters(result.Filters)
+		fmt.Printf("Frequency class filters rebuilt: %d classes\n", len(result.Filters))
 	}
 
 	// Load FrequencyClassResult if it exists

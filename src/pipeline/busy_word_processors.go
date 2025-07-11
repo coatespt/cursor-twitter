@@ -290,10 +290,7 @@ func (fcp *FrequencyClassProcessor) createCSVFile() error {
 	fcp.csvWriter = csv.NewWriter(file)
 
 	// Write header
-	header := []string{"Batch"}
-	for i := 0; i < fcp.numClasses; i++ {
-		header = append(header, fmt.Sprintf("Class-%d", i))
-	}
+	header := []string{"Batch", "Class", "Tokens"}
 
 	if err := fcp.csvWriter.Write(header); err != nil {
 		return fmt.Errorf("failed to write CSV header: %v", err)
@@ -310,21 +307,24 @@ func (fcp *FrequencyClassProcessor) writeToCSV(classResults map[int][]string) {
 		return
 	}
 
-	// Create CSV row: Batch, Class-0, Class-1, ..., Class-N
-	row := []string{fmt.Sprintf("%d", fcp.batchNumber)}
-
+	// Write one row per class per batch
 	for i := 0; i < fcp.numClasses; i++ {
+		row := []string{
+			fmt.Sprintf("%d", fcp.batchNumber),
+			fmt.Sprintf("%d", i),
+		}
+
 		if words, exists := classResults[i]; exists && len(words) > 0 {
-			// Join words with semicolon for CSV
-			row = append(row, strings.Join(words, ";"))
+			// Join words with comma for CSV
+			row = append(row, strings.Join(words, ","))
 		} else {
 			row = append(row, "")
 		}
-	}
 
-	if err := fcp.csvWriter.Write(row); err != nil {
-		slog.Error("Failed to write to CSV", "error", err)
-		return
+		if err := fcp.csvWriter.Write(row); err != nil {
+			slog.Error("Failed to write to CSV", "error", err)
+			return
+		}
 	}
 
 	fcp.csvWriter.Flush()

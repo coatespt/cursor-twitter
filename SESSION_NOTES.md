@@ -464,73 +464,78 @@ make test-race
 cd to cursor-twitter
 ./run_tests
 
-
-# Development Plan
-
-## Some Concerns to Look Out For
- 
-## Make sure Cursor doesn't lose its mind and change the architecture. Check code into git often.
-
-
-## Counts and frequencies are computed by a FrequencyComputationThread FCT
-
-
-## There is a potential issue here if the frequency computations can't keep up with the pipeline processing Tweets. If the global calculations are temporarily off by a cycle of two or three off, it's not a big problem, but if the pipline is consistently faster
-- The size of the unprocessed backlog on the InboundTokenQueue and OldTokenQueue grow without bound.
-- The creation of fresh frequencyfilters will get more and more out of sync with the Tweet stream. 
-- The former is a memory consumption problem. The latter will degrade quality, as words that have recently become more frequent pollute the streams of lower-frequency 
-  frequency classes. 
  
 
-## Main processing pipeline.
+# Processing Tweets
+ 
+The processing may start from scratch or it may pick up where it left off.
 
-## Using the Frequency Class Filters
--  The F frequency class filters described in the previous section are used to determine what class word is in. 
--  Its 3pK's are identified from a global lookup table. If a token doesn't have a 3pk registered, it is created and added to the global table.  Important note: The hashes in the 3pk's are written modulo the bw_word_len which is also the length of the processor arrays in the busy-word processor threads.
-- the 3pk is passed into the appropriate kth frequency class pipeline.
+The offline frequency calculation thrad (FCT) maintains a map of input tokens (words) to the count of times they have been seen in the last N tokens read. N is typically in the millions. This is used to prepare a set of filters used to determine the frequency class an input token is in.
 
-## The Core Token Processing Structures
-The heart of a processing pipeline are the busy-word threads. There is one for each freqency class.
-- Each 3pk processor is centered around a data structure with three arrays of counters. The arrays are all of the same size.
-- The size (3pkCountArraySize) is configurable, but experience suggests about 1000 is a good balance. As above, these arrays of of the same size as the range of the 3pk values, i.e. bw_word_len
-- Each 3pkProcessor reads 3pk's from a queue fed by the main routine. (The 3pk's are put on the queue by the main processing thread.)
+This counter map takes quite a while to build, so it is persisted to disk and read read in on startup if it is available. If it is not available, it is built from scratch. This can take many minutes.
 
-Each of the three elements of the 3pk is used to choose the index of a counter to increment. That counter in the corresponding array is bumped.
+The counter map needs to be kept fresh, so old tokens are aged out as new tokens are fed in. As this could involve hundreds of thousands of tweets, batches of tokens are written to disk. 50k tokens might be a typical batch size, which would be 20 files per million. In steady state, as each new file gets written the oldest file gets read in and used to decrement the token counts. (The file is then deleted.)
+ 
+Thus, the set of tokens in the token counter map is kept fresh with respect to the advancing day (people Tweet differently before breakfast than they do at midnight) and it is kept fresh with respect to changing is subject matter of Tweets.
 
-After a window of width batch, (batch is typically a small fraction of WindowSize, perhaps a few thousand Tweets) its counters will be have been incremented by a total of approximately the average number of tokens in a Tweet multiplied by batch and divided by the number of frequency classes.
+## The FCT
+The frequency computation thread manages all of the above. It operates almost entirely independently of the main processing, except that it reads a queue of tokens fed to it by the main processor as it reads in new Tweets.
 
-When batch number of Tweets have been processed by the main thread and their 3pk's sent to the 3pk processors, the main thread sends a special 3pk to all 3pK processors to tell them to stop reading 3pk's and process the batch. E.g. a 3pk with all three values equal to -1?  
+Periodically (the period is configured) the FCT creates the data structures necessary to divide the incoming stream of tokens into F frequency classes, from most-frequently used to least frequently used. Each of the classes represents approximately the same amount of word usage. Therefore in the most frequently used class, there are just a few words, while in the least frequently used class there can be millions.
 
-The reason for this, and not a flag, is to keep them synchonized, as the signal 3pk's would be injected into the queues at the same time. Therefore each processor would keep draining its queue until it hits the signal.
+These filter data structures are prepared in the background and swapped in for the main processor's use. The main processor has no knowledge of how they get there, or indeed, that the FCT exists at all.
 
-To process a batch:
-- The mean and standard deviation of the distribution of counts is compute and from those, a Z score is obtained for each element of the array of counts.
-- The counts with Z scores above a configured Z min are are isolated for each counter array.
-- The counteres can now be wiped to zero.
-- The Cartesian product of the three sets is created. These are 3pk's of which the great majority will be spurious.
-- The computed keys that match to known keys in the central lookup of keys to tokens represet presumed busy words. 
-- The F sets of busywords are merged and passed on to the next stage of processing (clustering the Tweets.)
-- As the processors complete their work, they register with a "barrier."  When all have registered, the barrier allows them to restart their 3pk reading loop.
+## Reading in the Tweets
+The main rountine reads a stream of tweets in CSV format from RabbitMQ.
 
-### Notes on the Computation
-Given three sets of indices of counters that pass the Z test We take the Cartesian product of the three sets 
+It tokenizes the words in the Tweet text, making them all lower case, filtering out garbage and some of the more extreme offensive words (variations on the "n" word are incredibly common) as well as URL's and some other obvious junk.
 
-Most of these will not corrrespond to existing 3pk's. Consider why. If you actually had K busy words producing high index values in each array, you'd have k^3 combinations, and all but about k/k^3 of them would be spurious. 
+Each token is tested against the 3pk lookup table to see if a 3pk key has been computed for it. This data structure maps tokens to 3pk's and 3pk's to tokens.
 
-For example if there are 25 legit busy words, that's 15,625 combination of which approximately 15,600 are spurious. 
-- Note that if the size of the counter arrays is 1000, there are a billion possible 3pk's, but probably only about 20 million distict tokens appear in a day of Tweets, which means about 1 in 50 random 3pk's would correspond to a real token. 
-- That one in fifty would indeed be spurious, but while 1 in 50 sounds high, most of them will never actually appear even once in any of the few thousand Tweets considered in an interval. This is because almost all words are rare.
-- When a spurious word does appear in a Tweet or two, so what? It is unlikely to appear in 
-the same Tweets as other busy words and even if it does, it is not likely to appear again. Therefore, very little harm comes from a reasonable spurious busy-word rate. 
-  
-##  What Happens with the busy words.
+Note: A 3pk is a three-part key, which is an ordered triple of hashes of the token. Each hash is different, so  you get three pseudo-random numbers in the range of 0 to a configured number which is typically about 1000. This value is also used in the busy-word processing threads.
 
-- The busy words produced by all the 3pk processing pipelines are grouped together. 
-- The set of batch Tweets that produced those words are examined, and all Tweets that don't contain tokens matching the 3pk's produced by the pipelines are discarded.
-- Depending upon configured values, 1, 2 or more busy words appearing together might be considered to represent a subject. The best value will be determined empirically.
-- A clustering algorithm is applied to the Tweets that contain a set of busy words, grouping them together based upon the subset of busy words they contain. Details TBD.
+The tokens are put on a queue for the FCT to consume, and then passed along.
 
-These clusters are the output of the main processing pipeline.
+If the filters have been prepared (which is the usual case except for at the beginning)
+-  Looks up a 3pk for for the token. If it doesn't find on, it creates one and stores it in the lookup table for next time.
+- Testing the token with the filters prepared by the FCT, it chooses one of F queues to put the corresponding 3pk on.
+
+Then it goes and reads the next Tweet.
+
+## Busy Word Queues and Processors.
+THe F queues that the main assigns tokens to correspond to the F frequency classes. Each queue is read by an instance of a busyword processor running on its own thread.
+
+The busyword processor are each built around three arrays of counters. These arrays, typically about 1000 counters wide. The exact size is the same as the range of th 3pk hash values.
+
+The processor takes each of the three values in an incoming 3pk, and uses them to increment the counter at the corresponding counter array and index. 
+
+Every time a batch value is reached (a batch is five to ten thousand) the main puts a special valued 3pk on each queue (-1, -1, -1).  This tells the busy word processors to stop reading the queue and compute statistics on the counters.
+
+A Z score is computed for each value on each counter. (Z is just a normalized form of the standard deviation of the count with respect to the rest of the array.) If the 3pk's coming in were truly representative of the same frequency class, the counters would all have approximately the same counts. 
+
+But they don't. We're assuming that busy words will over count some of the counters. Which is why they are "busy" words.
+
+The mean Z score is by definition 0. The divergence of a Z from zero indicates that the counter is getting hit harder than it would be if all the words were of approximately the same frequency.
+
+A min Z score is configured. Say it's value is z.  For any Z>z, the index is selected, given a small set of busy counters.  Each processor has three sets of {Z|>z}, so you have three sets of indexes.
+
+The Cartesian product of the indexes is taken, giving a set of triples of indexes. Three of these values is exactly what a 3pk is.  So you have a fairly large set of these 3pk's, most of which are spurios, but some of which correspond to tokens that are actully in the token->3pk lookup.
+
+The spurious 3pk's are discarded, and the ones that are legit are collected and passed on to another queue to be processed further.
+
+When this process is done, each thread hits a "barrier."  When all threaads have reached he barrier, they can wipe their counters and go back to collecting more 3pk data.
+
+## Finding and clustering the Relevant Tweets
+
+NOT YET IMPLEMENTED.
+### Next TO DO
+- We still need a window of recent Tweets in memory. I think this has been removed.  It needs to be at least batch Tweets long, and the oldest need to be aged out just as before.  This will be used to find the Tweets the busy words correspond to.
+- The busy word processors need to put their 3pk's on queues to be collected by the final stage, that analyzes the recent Tweets, identifies the subjecs, and groups the Tweets that use them
+- The objects that the processors put on the queues need to identify the batch, their F, and the list of 3pk's.
+- That analysis thread needs to read the queues from the busyword processors. We can start by having it simply print out the collected words. What it will actually do is:
+  - Gather the tokens from one batch.
+  - Find the recent tweets that use at least k of them.
+  - For starters, printing out the Tweet texts is good enough. 
 
 
 # Some Sample Code for PTC's Edification
@@ -562,29 +567,26 @@ func updateData() {
     mu.Unlock()
 }
 
-## How to Create Short Lived Git Branches so Cursor Doesn't Trash Yo Shit
+# How to Create Short Lived Git Branches so Cursor Doesn't Trash Yo Shit
 
-### Start From Main branch
+## Start From Main branch
 git checkout main
 git pull origin main
 
 
-### Create and Switch to New Branch
+## Create and Switch to New Branch
 git checkout -b my-feature
 
 
-### Make Your Changes and Commit Them
+## Make Your Changes and Commit Them
 git add .
 git commit -m "Test change"
 
-### Switch Back to Main and Merge the Feature Branch
+## Switch Back to Main and Merge the Feature Branch
 git checkout main
 git merge my-feature
 
 This will fast-forward merge if no other changes have been made to main.
 
-
-The broken code is in ./tweetparser -inputdir ../../twits/msg_input  -outputdir ../../twits/msg_output
-
-
-VS Code has a launch.json. Set one up for running and debugging all the tests.
+ 
+ 
