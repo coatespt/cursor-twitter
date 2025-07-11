@@ -178,6 +178,9 @@ func NewFrequencyClassProcessor(numClasses int, arrayLen int, zScoreThreshold fl
 		skipMap[class] = true
 	}
 
+	// Calculate number of active classes (not skipped)
+	activeClassCount := numClasses - len(skipClasses)
+
 	fcp := &FrequencyClassProcessor{
 		queues:       queues,
 		processors:   processors,
@@ -185,7 +188,7 @@ func NewFrequencyClassProcessor(numClasses int, arrayLen int, zScoreThreshold fl
 		skipClasses:  skipMap,
 		stopChan:     make(chan struct{}),
 		batchResults: make(chan BatchResult, numClasses), // Buffer for all processors
-		batchBarrier: NewBarrier(numClasses),
+		batchBarrier: NewBarrier(activeClassCount),       // Only wait for active classes
 	}
 
 	for i := 0; i < numClasses; i++ {
@@ -503,8 +506,9 @@ func (bwp *BusyWordProcessor) performCoordinatedZComputation() {
 	bwp.freqClassProcessor.batchMutex.Lock()
 	if bwp.freqClassProcessor.batchBarrier.IsComplete() {
 		bwp.freqClassProcessor.batchBarrier.Reset()
-		fmt.Printf("*** BARRIER RESET: All %d processors synchronized, starting next cycle ***\n",
-			bwp.freqClassProcessor.numClasses)
+		activeClassCount := bwp.freqClassProcessor.numClasses - len(bwp.freqClassProcessor.skipClasses)
+		fmt.Printf("*** BARRIER RESET: All %d active processors synchronized, starting next cycle ***\n",
+			activeClassCount)
 	}
 	bwp.freqClassProcessor.batchMutex.Unlock()
 
@@ -621,7 +625,6 @@ func (bwp *BusyWordProcessor) CalculateZScores(counts []int, stats ArrayStats, t
 	if len(allZScores) > 0 {
 		minZ := allZScores[0]
 		maxZ := allZScores[0]
-		sumZ := 0.0
 
 		for _, z := range allZScores {
 			if z < minZ {
@@ -630,12 +633,10 @@ func (bwp *BusyWordProcessor) CalculateZScores(counts []int, stats ArrayStats, t
 			if z > maxZ {
 				maxZ = z
 			}
-			sumZ += z
 		}
-		meanZ := sumZ / float64(len(allZScores))
 
-		fmt.Printf("*** BusyWordProcessor-%d: Z-score stats - Min: %.2f, Max: %.2f, Mean: %.2f ***\n",
-			bwp.classIndex, minZ, maxZ, meanZ)
+		fmt.Printf("*** BusyWordProcessor-%d: Z-score stats - Min: %.2f, Max: %.2f ***\n",
+			bwp.classIndex, minZ, maxZ)
 	}
 
 	return highZScores

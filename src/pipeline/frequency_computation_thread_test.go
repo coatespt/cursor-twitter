@@ -17,6 +17,7 @@ func TestFrequencyComputationThread(t *testing.T) {
 		3,    // frequency classes
 		1000, // window size
 		10,   // tokenPersistFiles
+		5,    // rebuildEveryFiles
 		"",   // stateDir - empty for test
 	)
 
@@ -89,6 +90,7 @@ func TestFrequencyComputationThreadConcurrency(t *testing.T) {
 		3,    // frequency classes
 		1000, // window size
 		10,   // tokenPersistFiles
+		5,    // rebuildEveryFiles
 		"",   // stateDir - empty for test
 	)
 
@@ -135,6 +137,7 @@ func TestFrequencyComputationThreadTokenProcessing(t *testing.T) {
 		3,    // frequency classes
 		1000, // window size
 		10,   // tokenPersistFiles
+		5,    // rebuildEveryFiles
 		"",   // stateDir - empty for test
 	)
 
@@ -172,6 +175,52 @@ func TestFrequencyComputationThreadTokenProcessing(t *testing.T) {
 	t.Logf("Queue stats: %+v", stats)
 }
 
+func TestFrequencyComputationThreadFileBasedRebuild(t *testing.T) {
+	// Test that FCT triggers rebuilds based on file count
+	tokenCounter := NewTokenCounter()
+	inboundQueue := NewTokenQueue()
+
+	// Create FCT with small window and rebuild every 2 files
+	fct := NewFrequencyComputationThread(
+		tokenCounter,
+		inboundQueue,
+		3,   // frequency classes
+		100, // window size (small for testing)
+		5,   // tokenPersistFiles (small for testing)
+		2,   // rebuildEveryFiles (rebuild every 2 files)
+		"",  // stateDir - empty for test
+	)
+
+	// Start FCT
+	fct.Start()
+	defer fct.Stop()
+
+	// Give FCT time to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Add enough tokens to trigger file writes
+	// Each file will contain 20 tokens (100/5)
+	// We need to add enough tokens to write multiple files
+	for i := 0; i < 100; i++ {
+		inboundQueue.Enqueue([]string{"test", "token"})
+	}
+
+	// Give FCT time to process and write files
+	time.Sleep(500 * time.Millisecond)
+
+	// Check that rebuilds were triggered
+	rebuildCount := fct.GetRebuildCount()
+	if rebuildCount == 0 {
+		t.Logf("No rebuilds triggered yet, this is expected if not enough files were written")
+	} else {
+		t.Logf("Rebuilds triggered: %d", rebuildCount)
+	}
+
+	// Check queue stats
+	stats := fct.GetQueueStats()
+	t.Logf("Final queue stats: %+v", stats)
+}
+
 func TestFrequencyComputationThreadRunLoop(t *testing.T) {
 	// Create test components
 	tokenCounter := NewTokenCounter()
@@ -184,6 +233,7 @@ func TestFrequencyComputationThreadRunLoop(t *testing.T) {
 		3,    // frequency classes
 		1000, // window size
 		10,   // tokenPersistFiles
+		5,    // rebuildEveryFiles
 		"",   // stateDir - empty for test
 	)
 

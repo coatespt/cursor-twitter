@@ -48,6 +48,7 @@ type FrequencyComputationThread struct {
 	// Token file rotation
 	tokenBatchSize       int      // window / token_persist_files
 	tokenPersistFiles    int      // Number of token files to keep
+	rebuildEveryFiles    int      // Rebuild frequency filters every N files
 	tokensSinceLastWrite int      // Tokens processed since last file write
 	tokenFileCounter     int      // Counter for token file naming
 	stateDir             string   // Directory for token files
@@ -61,6 +62,7 @@ func NewFrequencyComputationThread(
 	freqClasses int,
 	windowSize int,
 	tokenPersistFiles int,
+	rebuildEveryFiles int,
 	stateDir string,
 ) *FrequencyComputationThread {
 	tokenBatchSize := windowSize / tokenPersistFiles
@@ -75,6 +77,7 @@ func NewFrequencyComputationThread(
 		windowSize:        windowSize,
 		tokenBatchSize:    tokenBatchSize,
 		tokenPersistFiles: tokenPersistFiles,
+		rebuildEveryFiles: rebuildEveryFiles,
 		stateDir:          stateDir,
 	}
 }
@@ -409,18 +412,16 @@ func savePersistedState(result FreqClassResult, tokenCounts map[string]int) {
 	// Get the state directory from config (hardcoded for now, could be made configurable)
 	stateDir := "../data/state"
 
-	// Save TokenCounter
-	tokenCounter := NewTokenCounter()
-	for token, count := range tokenCounts {
-		for i := 0; i < count; i++ {
-			tokenCounter.IncrementTokens([]string{token})
-		}
-	}
+	// Save TokenCounter directly from the counts map
 	tokenCounterPath := filepath.Join(stateDir, "token_counter.json")
-	if err := tokenCounter.SaveToFile(tokenCounterPath); err != nil {
+	if err := saveTokenCountsToFile(tokenCounterPath, tokenCounts); err != nil {
 		slog.Error("Failed to save TokenCounter", "error", err, "path", tokenCounterPath)
 	} else {
-		fmt.Printf("TokenCounter saved: %d total tokens (%d distinct tokens)\n", len(tokenCounts), len(tokenCounts))
+		totalTokens := 0
+		for _, count := range tokenCounts {
+			totalTokens += count
+		}
+		fmt.Printf("TokenCounter saved: %d total tokens (%d distinct tokens)\n", totalTokens, len(tokenCounts))
 	}
 
 	// Save FrequencyClassResult
@@ -449,6 +450,30 @@ func savePersistedState(result FreqClassResult, tokenCounts map[string]int) {
 // IsPersistenceInProgress returns true if persistence operations are currently running
 func IsPersistenceInProgress() bool {
 	return atomic.LoadInt32(&persistenceInProgress) == 1
+}
+
+// saveTokenCountsToFile saves token counts directly to a file using gob encoding
+func saveTokenCountsToFile(filename string, counts map[string]int) error {
+	// Ensure the directory exists
+	dir := filepath.Dir(filename)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %v", dir, err)
+	}
+
+	// Create the file
+	file, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("failed to create file %s: %v", filename, err)
+	}
+	defer file.Close()
+
+	// Encode and write to file
+	encoder := gob.NewEncoder(file)
+	if err := encoder.Encode(counts); err != nil {
+		return fmt.Errorf("failed to encode counts to %s: %v", filename, err)
+	}
+
+	return nil
 }
 
 // saveThreePartKeyMappingsToFile saves ThreePartKey mappings to a file
@@ -498,18 +523,6 @@ func (fct *FrequencyComputationThread) writeTokenFile(tokens []string) error {
 	}
 	defer file.Close()
 
-	// Debug: Print first few tokens being written
-	if len(tokens) > 0 {
-		firstTokens := tokens
-		if len(tokens) > 5 {
-			firstTokens = tokens[:5]
-		}
-		fmt.Printf("DEBUG: Writing %d tokens to file. First 5 tokens:\n", len(tokens))
-		for i, token := range firstTokens {
-			fmt.Printf("  [%d] '%s'\n", i, token)
-		}
-	}
-
 	// Write tokens as text, one per line
 	for _, token := range tokens {
 		if _, err := fmt.Fprintln(file, token); err != nil {
@@ -521,6 +534,17 @@ func (fct *FrequencyComputationThread) writeTokenFile(tokens []string) error {
 
 	// Increment file counter
 	fct.tokenFileCounter++
+
+	// Check if we should trigger a rebuild based on file count
+	// Only trigger rebuilds after we have the full window of files (tokenPersistFiles)
+	if fct.tokenFileCounter > fct.tokenPersistFiles &&
+		(fct.tokenFileCounter-fct.tokenPersistFiles)%fct.rebuildEveryFiles == 0 {
+		slog.Info("FCT: File-based rebuild trigger",
+			"file_counter", fct.tokenFileCounter,
+			"rebuild_every_files", fct.rebuildEveryFiles,
+			"files_since_window_full", fct.tokenFileCounter-fct.tokenPersistFiles)
+		fct.TriggerRebuild()
+	}
 
 	// Check if we need to rotate files
 	return fct.rotateTokenFiles()

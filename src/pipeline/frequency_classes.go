@@ -407,6 +407,13 @@ func BuildFrequencyClassBloomFilters(tc *TokenCounter, F int, bloomSizes []uint,
 
 	// Step 5: Create F filters and insert tokens
 	filters := make([]FreqClassFilter, F)
+
+	// Create a lookup map for O(1) token count access
+	tokenCountMap := make(map[string]int, len(tokenCounts))
+	for _, tc := range tokenCounts {
+		tokenCountMap[tc.Token] = tc.Count
+	}
+
 	for i := 0; i < F; i++ {
 		tokenCount := len(classes[i])
 
@@ -421,11 +428,7 @@ func BuildFrequencyClassBloomFilters(tc *TokenCounter, F int, bloomSizes []uint,
 			// Log the number of tokens and total occurrences in this class
 			totalClassCount := 0
 			for _, token := range classes[i] {
-				for _, tc := range tokenCounts {
-					if tc.Token == token {
-						totalClassCount += tc.Count
-					}
-				}
+				totalClassCount += tokenCountMap[token]
 			}
 			fmt.Printf("[FreqClass] Class %d: %d tokens, %d total occurrences, using HASH SET\n",
 				i+1, len(classes[i]), totalClassCount)
@@ -442,11 +445,7 @@ func BuildFrequencyClassBloomFilters(tc *TokenCounter, F int, bloomSizes []uint,
 			// Log the number of tokens and total occurrences in this class
 			totalClassCount := 0
 			for _, token := range classes[i] {
-				for _, tc := range tokenCounts {
-					if tc.Token == token {
-						totalClassCount += tc.Count
-					}
-				}
+				totalClassCount += tokenCountMap[token]
 			}
 			fmt.Printf("[FreqClass] Class %d: %d tokens, %d total occurrences, bloom_size=%d, hash_count=%d\n",
 				i+1, len(classes[i]), totalClassCount, bloomSize, numHashes)

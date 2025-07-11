@@ -6,29 +6,38 @@ mq_host: localhost
 mq_port: 5672
 mq_queue: tweet_in
 
-# The number of tweets to keep in memory
-# Also the set of tweets over which global frequency classes are computed
+# The number of tweets in the rolling window. Two million is only about seven minute
+# of the Decahose this was recorded on.  A more realistic window would be maybe half
+# hour to an hour.  Enought to keep up with the changes over the course of a day.
+# The idea is to keep it short enough to reflect changes but long enough to have 
+# all the reasonably common word show up. 
 window: 2000000
 
-# The number of tweets to process in each busy-word process ccle
-batch: 15000
-
-# Number of token files to keep before deleting oldest
-# Token batch size is calculated as: window / token_persist_files
+# Number of token files to keep before using the oldest to age tokens out of the 
+# the window. At steady state, every time a token file is written, the oldest is 
+# deleted. 
+# The number of tokens in a file is calculated as: window / token_persist_files
 token_persist_files: 20
 
 # Frequency class rebuild interval (in token files)
-# Rebuild frequency classes every N token files
-# Example: with 20 files and rebuild_every_files=10, rebuild every 500K tweets
+# Rebuild the frequency classes every this many files 
+# The frequency classes, therefore, can be build more often than the size
+# of the window. 
 rebuild_every_files: 10
+
+# The number of tweets to process in each busy-word process cycle
+batch: 15000
 
 # Whether to log to the console
 verbose: true 
 
 # The directory to log to
-log_dir: logs
+log_dir: /Users/petercoates/python-work/cursor-twitter/logs
 
 # The minimum Z score for a 3pk element to be considered anomalous
+# I think this is typically a very high value--in two digits. AFAIK the 
+# Distributionis not necessarily Gaussian.
+# TODO: there may be a better way to estimate weirdness.
 z_score: 3.5
 
 # The number of frequency classes to create
@@ -45,19 +54,19 @@ filter:
   # Enable word filtering
   enabled: true
   # Path to file containing words to filter out
-  filter_file: "config/filter_lists/test_filters.txt"
+  filter_file: "/Users/petercoates/python-work/cursor-twitter/config/filter_lists/test_filters.txt"
 
 # Persistence configuration
 persistence:
   # Directory for storing state files (counts, filters, 3pk mappings)
-  state_dir: "data/state"
+  state_dir: "/Users/petercoates/python-work/data/state"
 
 # Sender status tracking
 sender:
   # File to track the last processed CSV file
   # NOTE: To future me--this is relative to where the sender runs from so 
   # it's actually next to the data/state directory. Confusing.
-  status_file: "data/sender_status.txt"
+  status_file: "/Users/petercoates/python-work/data/sender_status.txt"
 
 # The minimum length of a token to be considered
 min_token_len: 2

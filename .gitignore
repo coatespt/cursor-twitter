@@ -17,3 +17,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 data/
+src/data
+data/state/
+src/data/state/
+*.json

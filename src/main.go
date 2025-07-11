@@ -44,6 +44,7 @@ type Config struct {
 	MinTokenLen          int     `yaml:"min_token_len"`
 	SkipFrequencyClasses []int   `yaml:"skip_frequency_classes"`
 	TokenPersistFiles    int     `yaml:"token_persist_files"`
+	RebuildEveryFiles    int     `yaml:"rebuild_every_files"`
 
 	Filter struct {
 		Enabled    bool   `yaml:"enabled"`
@@ -252,6 +253,7 @@ func main() {
 		freqClasses,
 		cfg.WindowSize,        // Pass window size for autonomous rebuild triggering
 		cfg.TokenPersistFiles, // Now from top-level config
+		cfg.RebuildEveryFiles, // Pass rebuild interval
 		cfg.Persistence.StateDir,
 	)
 
