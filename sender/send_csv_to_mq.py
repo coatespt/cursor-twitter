@@ -17,21 +17,68 @@ import time
 from atomic_file import update_sender_status, get_sender_status
 
 
-def get_queue_depth(channel, queue_name):
-    """Get the current number of messages in the queue."""
+def get_queue_depth(queue_name):
+    """Get the current number of messages in the queue using RabbitMQ management API."""
     try:
-        method = channel.queue_declare(queue=queue_name, durable=True, passive=True)
-        return method.method.message_count
+        import requests
+        from requests.auth import HTTPBasicAuth
+        
+        url = f'http://localhost:15672/api/queues/%2f/{queue_name}'
+        response = requests.get(url, auth=HTTPBasicAuth('guest', 'guest'), timeout=2)
+        if response.status_code == 200:
+            data = response.json()
+            count = data.get('messages', 0)
+            return count
+        else:
+            print(f"[DEBUG] Management API returned status {response.status_code}: {response.text}")
+            return 0
+            
+    except ImportError:
+        print("[DEBUG] requests library not available, falling back to pika")
+        # Fallback to pika method
+        try:
+            connection_params = pika.ConnectionParameters(
+                host='localhost',
+                connection_attempts=2,
+                retry_delay=1,
+                socket_timeout=2.0
+            )
+            connection = pika.BlockingConnection(connection_params)
+            channel = connection.channel()
+            
+            method = channel.queue_declare(queue=queue_name, durable=True, passive=True)
+            count = method.method.message_count
+            
+            connection.close()
+            return count
+            
+        except Exception as e:
+            print(f"Warning: Pika fallback also failed: {e}")
+            return 0
+            
     except Exception as e:
         print(f"Warning: Could not get queue depth: {e}")
         return 0
 
 
 def send_csv_rows_to_mq(directory, status_file=None, queue_name='tweet_in', max_queue_depth=10000, pause_duration=1.0):
-    # Connect to RabbitMQ
-    connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
+    # Connect to RabbitMQ with timeout
+    connection_params = pika.ConnectionParameters(
+        host='localhost',
+        connection_attempts=3,
+        retry_delay=1,
+        socket_timeout=5.0  # 5 second timeout
+    )
+    connection = pika.BlockingConnection(connection_params)
     channel = connection.channel()
-    channel.queue_declare(queue=queue_name, durable=True)
+    
+    # Set queue size limits to enable flow control
+    queue_args = {
+        'x-max-length': 100000,        # Maximum number of messages in queue
+        'x-overflow': 'drop-head',     # Drop oldest messages when limit reached
+        'x-max-length-bytes': 0        # No byte limit (only message count)
+    }
+    channel.queue_declare(queue=queue_name, durable=True, arguments=queue_args)
 
     # Find all CSV files in the directory, sorted
     csv_files = sorted(glob.glob(os.path.join(directory, '*.csv')))
@@ -69,14 +116,15 @@ def send_csv_rows_to_mq(directory, status_file=None, queue_name='tweet_in', max_
                 if not line:
                     continue
                 
-                # Check queue depth before sending
-                queue_depth = get_queue_depth(channel, queue_name)
-                if queue_depth >= max_queue_depth:
-                    if flow_control_pauses % 10 == 0:  # Log every 10th pause to avoid spam
-                        print(f"Queue depth {queue_depth} >= {max_queue_depth}, pausing for {pause_duration}s...")
-                    time.sleep(pause_duration)
-                    flow_control_pauses += 1
-                    continue
+                # Check queue depth more frequently (every 1000 messages) to prevent overflow
+                if total_sent % 1000 == 0:
+                    queue_depth = get_queue_depth(queue_name)
+                    if queue_depth >= max_queue_depth:
+                        if flow_control_pauses % 10 == 0:  # Log every 10th pause to avoid spam
+                            print(f"Queue depth {queue_depth} >= {max_queue_depth}, pausing for {pause_duration}s...")
+                        time.sleep(pause_duration)
+                        flow_control_pauses += 1
+                        continue
                 
                 channel.basic_publish(
                     exchange='',
@@ -86,8 +134,8 @@ def send_csv_rows_to_mq(directory, status_file=None, queue_name='tweet_in', max_
                 )
                 total_sent += 1
                 if total_sent % 1000 == 0:
-                    queue_depth = get_queue_depth(channel, queue_name)
-                    print(f"Sent {total_sent} messages... (queue depth: {queue_depth})", end='\r', flush=True)
+                    queue_depth = get_queue_depth(queue_name)
+                    print(f"Sent {total_sent} messages... (queue depth: {queue_depth}) [DEBUG: raw_value={queue_depth}]", end='\r', flush=True)
     
     print(f"\nDone. Sent {total_sent} messages in total.")
     if flow_control_pauses > 0:

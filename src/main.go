@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -206,7 +207,16 @@ func printBatchSummary(classResults map[int][]string, batchNumber int) {
 	fmt.Printf("BATCH %d ANALYSIS SUMMARY\n", batchNumber)
 	fmt.Printf(strings.Repeat("=", 80) + "\n")
 
-	for classIndex, words := range classResults {
+	// Get sorted class indices to ensure consistent ordering
+	classIndices := make([]int, 0, len(classResults))
+	for classIndex := range classResults {
+		classIndices = append(classIndices, classIndex)
+	}
+	sort.Ints(classIndices)
+
+	// Print classes in sorted order
+	for _, classIndex := range classIndices {
+		words := classResults[classIndex]
 		totalBusyWords += len(words)
 		if len(words) > 0 {
 			classesWithWords++
@@ -325,13 +335,20 @@ func setupRabbitMQ(cfg *Config) (*amqp.Connection, *amqp.Channel, amqp.Queue, er
 		conn.Close()
 		return nil, nil, amqp.Queue{}, err
 	}
+	// Set queue size limits to enable flow control
+	args := amqp.Table{
+		"x-max-length":       int32(100000), // Maximum number of messages in queue
+		"x-overflow":         "drop-head",   // Drop oldest messages when limit reached
+		"x-max-length-bytes": int32(0),      // No byte limit (only message count)
+	}
+
 	q, err := ch.QueueDeclare(
 		"tweet_in", // name
 		true,       // durable
 		false,      // delete when unused
 		false,      // exclusive
 		false,      // no-wait
-		nil,        // arguments
+		args,       // arguments with size limits
 	)
 	if err != nil {
 		ch.Close()
@@ -403,7 +420,7 @@ func setupRabbitMQConsumer(ch *amqp.Channel, q amqp.Queue) (<-chan amqp.Delivery
 	msgs, err := ch.Consume(
 		q.Name, // queue
 		"",     // consumer
-		true,   // auto-ack
+		false,  // auto-ack (changed to false for manual acknowledgments)
 		false,  // exclusive
 		false,  // no-local
 		false,  // no-wait
@@ -513,8 +530,9 @@ func main() {
 
 		tweet, err := parseCSVToTweet(string(msg.Body), cfg)
 		if err != nil {
-			//slog.Warn("Failed to parse tweet", "error", err, "raw_row", string(msg.Body))
-			//fmt.Printf("[PARSE ERROR] %v\nRaw: %s\n", err, string(msg.Body))
+			// Log parse errors and reject the message (don't requeue)
+			slog.Warn("Failed to parse tweet, rejecting message", "error", err, "raw_row", string(msg.Body))
+			msg.Reject(false) // false = don't requeue
 			continue
 		}
 		// Only print the tweet if the flag is set
@@ -620,6 +638,9 @@ func main() {
 				}
 			}
 		}
+
+		// Acknowledge successful message processing
+		msg.Ack(false) // false = single acknowledgment
 	}
 }
 
@@ -750,14 +771,14 @@ func printStats() {
 		fmt.Printf("  Rejected by all caps: %d (%.1f%%)\n", rejectedByAllCaps, float64(rejectedByAllCaps)/float64(totalRejected)*100)
 	}
 
-	// Print frequency class stats
+	// Print frequency class stats (ordered from lowest to highest class number)
 	fmt.Printf("--- Frequency Class Stats ---\n")
 	for i := 0; i < freqClasses; i++ {
 		queueKey := fmt.Sprintf("freq_class_%d_queue_size", i)
 		processorKey := fmt.Sprintf("freq_class_%d_tokens_processed", i)
 		queueSize := freqClassQueueStats[queueKey]
 		tokensProcessed := freqClassProcessorStats[processorKey]
-		fmt.Printf("Class %d: Queue=%d, Processed=%d\n", i, queueSize, tokensProcessed)
+		fmt.Printf("Class %2d: Queue=%6d, Processed=%8d\n", i, queueSize, tokensProcessed)
 	}
 	fmt.Printf("----------------------\n")
 	// Also log to slog

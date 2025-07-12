@@ -396,15 +396,20 @@ Right now it's something like 300k. It should probably be in the millions. Howev
   
 # Building and Running Everything
     
+The codebase is in ~/python-work/cursor-twitter. Data that it writes to persist data structures, etc. is configured to be in ~/python-work/data, i.e., at the same level as the project root. You can change this in config/config.yaml.  Using relative paths is treacherous.
 
-The codebase is in ~/python-work/cursor-twitter. Data that it writes to persist data structures, etc. is in ~/python-work/data, i.e., at the same level as the project root.
+The following is how to run/mangage the major components.
 
 ## Creating the CSV from GZ files
-The CSV is created as follows. This reads GZ files from msg_input and writes them as  CSV files in msg_output
- 
+The original data is JSON in gzip'ed files. We send it to the analysis program as CSV files. The program described below unpacks the gzip'ed JSON, extracts the fields we care about int a csc, and writes each to a similarly named uncompressed CSV file.
 
-### This way of parsing the JSON to CSV seems to work very well.
- python3 parser/parser.py /Users/petercoates/python-work/twits/msg_input_2 ../twits/msg_output_2
+This is reasonable for a few hundred files. The full set of 5k or so are on an non-writeable disk so copy the block of files you want to a disk you can read/write.  Or move the entire set if you have disk space! It's a few hundred gigs of compressed files. They are actually smaller as uncompressed CSV (about 18mb) than as compressed JSON (about 37mb.)
+
+The CSV is created as follows. 
+
+Assume you are in the cursor-twitter root directory.
+
+python3 parser/parser.py /Users/petercoates/python-work/twits/msg_input_2 ../twits/msg_output_2
 
 ## Starting RabbitMQ
 
@@ -412,24 +417,37 @@ RabbitMQ feeds Tweets in CSV form to the processor. The service normally running
 
 brew services start rabbitmq  
 
-However, this doesn't seem to work right, so just ask Cursor to start rabbit in Docker.
+However, this doesn't seem to work right, so just ask Cursor to start rabbit in Docker. 
+
+In theory the following commands will run it in docker, restart, etc.
+- docker start rabbitmq
+- docker stop rabbitmq
+- docker restart rabbitmq
+- docker ps | grep rabbit
+- docker logs rabbitmq
+
+There was considerable drama aound getting this right. Rabbit was set up wrong so that it just silently dropped messages that weren't instantly picked up.  It is now configured right but it can be monitored on the web app.
+
+http://localhost:15672/#/
+
 
  
 ## Sending Tweets
-Running the actual software assumes you have a directory of CSV files of Tweets, in this case msg_output for the small set and msg_output_2 for several million Tweets.
+Running the actual software assumes you have a directory of CSV files of Tweets, in this case ../twits/msg_output_2 has about 38 million tweets which is about 21 hours of the decahose. We process at about 1200/second, so the entire set should run in 9 hours or so.
+
 
 ### The default will limit the msgs on the queue to 10,000
 
  python ./send_csv_to_mq.py ../twits/msg_output
 
  ### Custom Depth
- --max-queue-depth 5000
+ --max-queue-depth 10000
  ### Pause duration (how long it pauses sending)
- --pause-duration 2.0
+ --pause-duration 1.0
 
  ### With Both
   --max-queue-depth 5000 --pause-duration 2.0
-  
+
 ### With Configuration File
   python sender/send_csv_to_mq.py /path/to/csv/files --config ../config/config.yaml
 

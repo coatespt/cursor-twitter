@@ -11,7 +11,7 @@ mq_queue: tweet_in
 # hour to an hour.  Enought to keep up with the changes over the course of a day.
 # The idea is to keep it short enough to reflect changes but long enough to have 
 # all the reasonably common word show up. 
-window: 2000000
+window: 20000000
 
 # Number of token files to keep before using the oldest to age tokens out of the 
 # the window. At steady state, every time a token file is written, the oldest is 
@@ -82,7 +82,7 @@ sender:
   # it's actually next to the data/state directory. Confusing.
   status_file: "/Users/petercoates/python-work/data/sender/sender_status.txt"
   # Maximum number of messages in RabbitMQ queue before pausing sender
-  max_queue_depth: 10000
+  max_queue_depth: 15000
   # Duration to pause when queue is full (seconds)
   pause_duration: 1.0
 

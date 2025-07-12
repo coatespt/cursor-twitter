@@ -333,16 +333,15 @@ func (fcp *FrequencyClassProcessor) collectBatchResults() {
 	currentBatch := make(map[int][]string)
 	resultsReceived := 0
 
-	fmt.Printf("[BATCH_COLLECTOR] Batch collector started, waiting for results...\n")
+	slog.Info("Batch collector started, waiting for results...")
 
 	for {
 		select {
 		case <-fcp.stopChan:
-			fmt.Printf("[BATCH_COLLECTOR] Batch collector stopping\n")
+			slog.Info("Batch collector stopping")
 			return
 		case result := <-fcp.batchResults:
-			fmt.Printf("[BATCH_COLLECTOR] Received result from class %d: %d busy words\n",
-				result.FrequencyClass, len(result.BusyWord3PKs))
+			slog.Debug("Received batch result", "class", result.FrequencyClass, "busy_words", len(result.BusyWord3PKs))
 
 			// Convert 3PKs to actual words
 			busyWords := fcp.convert3PKsToWords(result.BusyWord3PKs)
@@ -353,9 +352,6 @@ func (fcp *FrequencyClassProcessor) collectBatchResults() {
 
 			// Send result to analysis thread
 			fcp.resultChannel <- result
-
-			// Immediate feedback for this class (simplified)
-			fmt.Printf("Class %d: %d busy words\n", result.FrequencyClass, len(busyWords))
 
 			// Check if all active classes have reported
 			activeClassCount := fcp.numClasses - len(fcp.skipClasses)
@@ -513,7 +509,7 @@ func (bwp *BusyWordProcessor) run() {
 			for _, key := range keys {
 				// Check for termination signal: (-1, -1, -1)
 				if key.Part1 == -1 && key.Part2 == -1 && key.Part3 == -1 {
-					fmt.Printf("[BWP-%d] Received termination signal, starting z-computation\n", bwp.classIndex)
+					slog.Debug("Received termination signal, starting z-computation", "class_index", bwp.classIndex)
 					// Perform coordinated z-computation
 					bwp.performCoordinatedZComputation()
 					continue
@@ -538,16 +534,10 @@ func (bwp *BusyWordProcessor) run() {
 
 // performCoordinatedZComputation performs z-computation and reports results to coordinator
 func (bwp *BusyWordProcessor) performCoordinatedZComputation() {
-	fmt.Printf("[BWP-%d] COORDINATED Z-COMPUTATION STARTED\n", bwp.classIndex)
-
 	// Calculate statistics for each array
 	part1Stats := bwp.CalculateArrayStats(bwp.part1Counters)
 	part2Stats := bwp.CalculateArrayStats(bwp.part2Counters)
 	part3Stats := bwp.CalculateArrayStats(bwp.part3Counters)
-
-	// Debug: Show counter totals
-	fmt.Printf("[BWP-%d] Counter totals: part1=%d, part2=%d, part3=%d\n",
-		bwp.classIndex, part1Stats.Total, part2Stats.Total, part3Stats.Total)
 
 	// Calculate z-scores and find high-scoring positions
 	part1HighZScores := bwp.CalculateZScores(bwp.part1Counters, part1Stats, bwp.zScoreThreshold)
@@ -573,13 +563,13 @@ func (bwp *BusyWordProcessor) performCoordinatedZComputation() {
 			maxZ3 = z
 		}
 	}
-	fmt.Printf("[BWP-%d] Highest z-scores: part1=%.2f, part2=%.2f, part3=%.2f (threshold=%.2f)\n",
-		bwp.classIndex, maxZ1, maxZ2, maxZ3, bwp.zScoreThreshold)
+	fmt.Printf("Class %d (Batch %d): Highest z-scores: part1=%.2f, part2=%.2f, part3=%.2f (threshold=%.2f)\n",
+		bwp.classIndex, bwp.freqClassProcessor.batchNumber, maxZ1, maxZ2, maxZ3, bwp.zScoreThreshold)
 
 	// Find busy words
 	busyWords := bwp.FindBusyWords(part1HighZScores, part2HighZScores, part3HighZScores)
 
-	fmt.Printf("[BWP-%d] Found %d busy words\n", bwp.classIndex, len(busyWords))
+	slog.Debug("Found busy words", "class_index", bwp.classIndex, "count", len(busyWords))
 
 	// Wipe all counter arrays to zero
 	for i := 0; i < bwp.arrayLen; i++ {
@@ -596,26 +586,9 @@ func (bwp *BusyWordProcessor) performCoordinatedZComputation() {
 	}
 
 	// Send result to batch coordinator
-	fmt.Printf("[BWP-%d] Sending result to batch coordinator\n", bwp.classIndex)
 	bwp.freqClassProcessor.batchResults <- result
-	fmt.Printf("[BWP-%d] Result sent successfully\n", bwp.classIndex)
 
-	slog.Info("Coordinated z-computation completed and arrays reset",
-		"class_index", bwp.classIndex,
-		"array_len", bwp.arrayLen,
-		"part1_total", part1Stats.Total,
-		"part2_total", part2Stats.Total,
-		"part3_total", part3Stats.Total,
-		"part1_mean", part1Stats.Mean,
-		"part1_stddev", part1Stats.StdDev,
-		"part2_mean", part2Stats.Mean,
-		"part2_stddev", part2Stats.StdDev,
-		"part3_mean", part3Stats.Mean,
-		"part3_stddev", part3Stats.StdDev,
-		"z_score_threshold", bwp.zScoreThreshold,
-		"part1_high_z_scores", len(part1HighZScores),
-		"part2_high_z_scores", len(part2HighZScores),
-		"part3_high_z_scores", len(part3HighZScores))
+	slog.Debug("Z-computation completed", "class_index", bwp.classIndex, "batch", bwp.freqClassProcessor.batchNumber)
 }
 
 // GetTokenCount returns the number of tokens processed by this processor
@@ -778,26 +751,13 @@ func (bwp *BusyWordProcessor) FindBusyWords(part1HighZScores, part2HighZScores, 
 		}
 	}
 
-	// Debug: Show filtering statistics
+	// Log filtering statistics (reduced verbosity)
 	if totalCombinations > 0 {
-		fmt.Printf("[BWP-%d] 3PK filtering: %d/%d combinations valid (%.1f%%)\n",
-			bwp.classIndex, validCombinations, totalCombinations,
-			float64(validCombinations)/float64(totalCombinations)*100.0)
-
-		// Show a few example 3PKs that were checked
-		exampleCount := 0
-		for pos1, _ := range part1HighZScores {
-			for pos2, _ := range part2HighZScores {
-				for pos3, _ := range part3HighZScores {
-					if exampleCount < 3 {
-						key := tweets.ThreePartKey{Part1: pos1, Part2: pos2, Part3: pos3}
-						exists := bwp.existsInGlobalTokenMapping(key)
-						fmt.Printf("[BWP-%d] Example 3PK: %v exists=%v\n", bwp.classIndex, key, exists)
-						exampleCount++
-					}
-				}
-			}
-		}
+		slog.Debug("3PK filtering completed",
+			"class_index", bwp.classIndex,
+			"valid_combinations", validCombinations,
+			"total_combinations", totalCombinations,
+			"valid_percentage", float64(validCombinations)/float64(totalCombinations)*100.0)
 	}
 
 	return busyWords
