@@ -81,6 +81,10 @@ sender:
   # NOTE: To future me--this is relative to where the sender runs from so 
   # it's actually next to the data/state directory. Confusing.
   status_file: "/Users/petercoates/python-work/data/sender/sender_status.txt"
+  # Maximum number of messages in RabbitMQ queue before pausing sender
+  max_queue_depth: 10000
+  # Duration to pause when queue is full (seconds)
+  pause_duration: 1.0
 
 # The minimum length of a token to be considered
 min_token_len: 2

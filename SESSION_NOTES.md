@@ -418,9 +418,20 @@ However, this doesn't seem to work right, so just ask Cursor to start rabbit in 
 ## Sending Tweets
 Running the actual software assumes you have a directory of CSV files of Tweets, in this case msg_output for the small set and msg_output_2 for several million Tweets.
 
- python ./send_csv_to_mq.py ../twits/msg_output
- 
+### The default will limit the msgs on the queue to 10,000
 
+ python ./send_csv_to_mq.py ../twits/msg_output
+
+ ### Custom Depth
+ --max-queue-depth 5000
+ ### Pause duration (how long it pauses sending)
+ --pause-duration 2.0
+
+ ### With Both
+  --max-queue-depth 5000 --pause-duration 2.0
+  
+### With Configuration File
+  python sender/send_csv_to_mq.py /path/to/csv/files --config ../config/config.yaml
 
 ##  Build and run the main program
 
@@ -614,5 +625,8 @@ git merge my-feature
 
 This will fast-forward merge if no other changes have been made to main.
 
- 
+## Remove an Unneeded Feature Branch 
+This is if it only exists locally.
+
+ git branch -d branch-name
  
