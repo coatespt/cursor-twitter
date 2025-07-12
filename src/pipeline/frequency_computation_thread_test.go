@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -267,4 +268,40 @@ func TestFrequencyComputationThreadRunLoop(t *testing.T) {
 	}
 
 	t.Logf("Queue stats: %+v", stats)
+}
+
+func TestFrequencyComputationThreadCheckAndTriggerInitialRebuild(t *testing.T) {
+	// Create a new FCT
+	tokenCounter := NewTokenCounter()
+	inboundQueue := NewTokenQueue()
+	fct := NewFrequencyComputationThread(
+		tokenCounter,
+		inboundQueue,
+		3,   // freqClasses
+		100, // windowSize
+		10,  // tokenPersistFiles
+		5,   // rebuildEveryFiles
+		"",  // stateDir
+		0,   // minCountThreshold
+	)
+
+	// Test 1: Token counter not populated - should not trigger rebuild
+	fct.CheckAndTriggerInitialRebuild()
+	shouldRebuild := atomic.LoadInt32(&fct.shouldRebuild)
+	if shouldRebuild != 0 {
+		t.Errorf("Expected shouldRebuild to be 0 when token counter not populated, got %d", shouldRebuild)
+	}
+
+	// Test 2: Token counter populated with persisted data - should trigger rebuild
+	// Simulate loading persisted data by adding tokens to reach window size
+	for i := 0; i < 100; i++ {
+		tokenCounter.IncrementTokens([]string{"test"})
+	}
+
+	// Now check and trigger rebuild
+	fct.CheckAndTriggerInitialRebuild()
+	shouldRebuild = atomic.LoadInt32(&fct.shouldRebuild)
+	if shouldRebuild != 1 {
+		t.Errorf("Expected shouldRebuild to be 1 when token counter populated, got %d", shouldRebuild)
+	}
 }

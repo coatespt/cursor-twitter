@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"cursor-twitter/src/tweets"
 	"encoding/gob"
 	"fmt"
 	"log/slog"
@@ -307,11 +308,54 @@ func GetGlobalFilters() []FreqClassFilter {
 	return result
 }
 
-// GetTokenToClassMapping returns the token-to-class mapping for O(1) lookup
-func GetTokenToClassMapping() map[string]int {
+// HasGlobalFilters returns true if global filters are available
+func HasGlobalFilters() bool {
+	globalFiltersMutex.RLock()
+	defer globalFiltersMutex.RUnlock()
+	return len(globalFilters) > 0
+}
+
+// GetGlobalFiltersCount returns the number of global filters
+func GetGlobalFiltersCount() int {
+	globalFiltersMutex.RLock()
+	defer globalFiltersMutex.RUnlock()
+	return len(globalFilters)
+}
+
+// GetTokenClass returns the frequency class for a token with O(1) lookup
+func GetTokenClass(token string) (int, bool) {
 	tokenToClassMutex.RLock()
 	defer tokenToClassMutex.RUnlock()
-	return tokenToClassMapping
+	class, exists := tokenToClassMapping[token]
+	return class, exists
+}
+
+// GetTokenInfo returns both the 3PK and frequency class for a token in a single operation
+func GetTokenInfo(token string) (tweets.ThreePartKey, int, bool) {
+	// First check if token exists in 3PK mapping
+	Token3PKMutex.RLock()
+	threePK, exists := TokenTo3PK[token]
+	Token3PKMutex.RUnlock()
+
+	if !exists {
+		// Token doesn't exist, return zero values
+		return tweets.ThreePartKey{}, 0, false
+	}
+
+	// Token exists, get its frequency class
+	tokenToClassMutex.RLock()
+	class, classExists := tokenToClassMapping[token]
+	tokenToClassMutex.RUnlock()
+
+	if !classExists {
+		// Token exists but no class assigned, use least frequent class
+		globalFiltersMutex.RLock()
+		leastFrequentClass := len(globalFilters) - 1
+		globalFiltersMutex.RUnlock()
+		return threePK, leastFrequentClass, true
+	}
+
+	return threePK, class, true
 }
 
 // GetMasterFilter returns the master filter containing all tokens from all classes

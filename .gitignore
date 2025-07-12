@@ -21,3 +21,4 @@ src/data
 data/state/
 src/data/state/
 *.json
+*.prof

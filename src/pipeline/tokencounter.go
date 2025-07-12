@@ -6,13 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 )
 
 // TokenCounter keeps track of how many times each token appears in the current window.
 // Uses record-level locking for thread safety with minimal contention.
 type TokenCounter struct {
-	counts map[string]int
-	mu     sync.RWMutex
+	counts     map[string]int
+	totalCount int64 // Running total of all token counts (atomic for thread safety)
+	mu         sync.RWMutex
 }
 
 // NewTokenCounter creates a new TokenCounter with an empty map.
@@ -27,6 +29,8 @@ func (tc *TokenCounter) IncrementTokens(tokens []string) {
 	defer tc.mu.Unlock()
 	for _, token := range tokens {
 		tc.counts[token]++
+		// Update running total
+		atomic.AddInt64(&tc.totalCount, 1)
 	}
 }
 
@@ -40,6 +44,8 @@ func (tc *TokenCounter) DecrementTokens(tokens []string) {
 		if tc.counts[token] <= 0 {
 			delete(tc.counts, token) // Clean up to save memory
 		}
+		// Update running total (decrement by 1)
+		atomic.AddInt64(&tc.totalCount, -1)
 	}
 }
 
@@ -91,17 +97,14 @@ func (tc *TokenCounter) Clear() {
 	defer tc.mu.Unlock()
 	// Clear the map by creating a new one
 	tc.counts = make(map[string]int)
+	// Reset the running total
+	atomic.StoreInt64(&tc.totalCount, 0)
 }
 
 // GetTotalTokens returns the total number of token occurrences (sum of all counts)
+// Now uses a cached running total for O(1) performance instead of O(n) map iteration
 func (tc *TokenCounter) GetTotalTokens() int {
-	tc.mu.RLock()
-	defer tc.mu.RUnlock()
-	total := 0
-	for _, count := range tc.counts {
-		total += count
-	}
-	return total
+	return int(atomic.LoadInt64(&tc.totalCount))
 }
 
 // SaveToFile saves the current token counts to a file using gob encoding
@@ -153,4 +156,21 @@ func (tc *TokenCounter) LoadFromFile(filename string) error {
 	tc.counts = counts
 
 	return nil
+}
+
+// SetCountsDirectly sets the token counts directly (for fast loading from persisted state)
+// This is much faster than incrementing millions of times
+func (tc *TokenCounter) SetCountsDirectly(counts map[string]int) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	// Set the counts directly
+	tc.counts = counts
+
+	// Calculate and set the total count
+	total := int64(0)
+	for _, count := range counts {
+		total += int64(count)
+	}
+	atomic.StoreInt64(&tc.totalCount, total)
 }

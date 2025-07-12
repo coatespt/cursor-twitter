@@ -122,6 +122,25 @@ func (fct *FrequencyComputationThread) Start() {
 		"state_dir", fct.stateDir)
 }
 
+// CheckAndTriggerInitialRebuild checks if the token counter has been populated with persisted data
+// and triggers an immediate rebuild if it has, to avoid waiting for the full window
+func (fct *FrequencyComputationThread) CheckAndTriggerInitialRebuild() {
+	// Check if the token counter has been populated with persisted data
+	tokensProcessed := fct.tokenCounter.GetTotalTokens()
+	if tokensProcessed >= fct.windowSize {
+		fmt.Printf("*** FCT: Token counter populated with persisted data, triggering immediate rebuild (tokens: %d >= window: %d) ***\n",
+			tokensProcessed, fct.windowSize)
+		slog.Info("FCT: Token counter already populated with persisted data, triggering immediate rebuild",
+			"tokens_processed", tokensProcessed,
+			"window_size", fct.windowSize)
+		fct.TriggerRebuild()
+	} else {
+		slog.Info("FCT: Token counter not yet populated, will wait for full window to build filters",
+			"tokens_processed", tokensProcessed,
+			"window_size", fct.windowSize)
+	}
+}
+
 // Stop gracefully stops the FCT goroutine
 func (fct *FrequencyComputationThread) Stop() {
 	close(fct.stopChan)
@@ -329,7 +348,16 @@ func (fct *FrequencyComputationThread) performRebuild() {
 	slog.Info("FCT: Rebuild flag RESET at start of performRebuild")
 
 	startTime := time.Now()
-	slog.Info("Starting frequency class rebuild")
+
+	// Get current token file count for logging
+	tokenFileCount := fct.tokenFileCounter
+
+	fmt.Printf("*** FCT REBUILD STARTING at %s (token files written: %d) ***\n",
+		startTime.Format("15:04:05"), tokenFileCount)
+
+	slog.Info("Starting frequency class rebuild",
+		"token_files_written", tokenFileCount,
+		"start_time", startTime.Format("15:04:05"))
 
 	// Get a snapshot of current token counts for frequency calculations
 	tokenCounts := fct.tokenCounter.CountsSnapshot()
@@ -366,17 +394,23 @@ func (fct *FrequencyComputationThread) performRebuild() {
 
 	duration := time.Since(startTime)
 	completionTime := time.Now()
+
+	fmt.Printf("*** FCT REBUILD COMPLETED at %s (duration: %v, token files written: %d) ***\n",
+		completionTime.Format("15:04:05"), duration, tokenFileCount)
+
 	slog.Info("Frequency class rebuild completed",
 		"duration", duration,
 		"completion_time", completionTime.Format("15:04:05"),
 		"token_count", len(tokenCounts),
-		"filters_built", len(result.Filters))
+		"filters_built", len(result.Filters),
+		"token_files_written", tokenFileCount)
 
 	// Add diagnostic line to show filters are installed
 	slog.Info("Frequency class filters are now active",
 		"num_filters", len(result.Filters),
 		"completion_time", completionTime.Format("15:04:05"),
-		"duration", duration)
+		"duration", duration,
+		"token_files_written", tokenFileCount)
 
 	// Log top tokens for debugging
 	if len(result.TopTokens) > 0 {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestTokenCounterSaveLoad(t *testing.T) {
@@ -213,5 +214,109 @@ func TestTokenCounterSaveLoadConcurrentAccess(t *testing.T) {
 	counts := tc2.Counts()
 	if len(counts) == 0 {
 		t.Error("Loaded counts are empty after concurrent save")
+	}
+}
+
+func TestTokenCounterRunningTotal(t *testing.T) {
+	// Create a TokenCounter
+	tc := NewTokenCounter()
+
+	// Test initial state
+	if total := tc.GetTotalTokens(); total != 0 {
+		t.Errorf("Expected initial total 0, got %d", total)
+	}
+
+	// Test incrementing tokens
+	tokens := []string{"hello", "world", "hello", "test"}
+	tc.IncrementTokens(tokens)
+
+	// Verify total is correct
+	if total := tc.GetTotalTokens(); total != 4 {
+		t.Errorf("Expected total 4 after incrementing, got %d", total)
+	}
+
+	// Test decrementing tokens
+	tc.DecrementTokens([]string{"hello", "world"})
+
+	// Verify total is updated correctly
+	if total := tc.GetTotalTokens(); total != 2 {
+		t.Errorf("Expected total 2 after decrementing, got %d", total)
+	}
+
+	// Test clearing
+	tc.Clear()
+	if total := tc.GetTotalTokens(); total != 0 {
+		t.Errorf("Expected total 0 after clearing, got %d", total)
+	}
+
+	// Test with large numbers
+	largeTokens := make([]string, 1000)
+	for i := range largeTokens {
+		largeTokens[i] = fmt.Sprintf("token%d", i)
+	}
+	tc.IncrementTokens(largeTokens)
+	if total := tc.GetTotalTokens(); total != 1000 {
+		t.Errorf("Expected total 1000 after large increment, got %d", total)
+	}
+}
+
+func TestTokenCounterSetCountsDirectly(t *testing.T) {
+	// Create a TokenCounter
+	tc := NewTokenCounter()
+
+	// Test initial state
+	if total := tc.GetTotalTokens(); total != 0 {
+		t.Errorf("Expected initial total 0, got %d", total)
+	}
+
+	// Create test counts
+	testCounts := map[string]int{
+		"hello": 5,
+		"world": 3,
+		"test":  2,
+	}
+
+	// Set counts directly
+	tc.SetCountsDirectly(testCounts)
+
+	// Verify total is correct
+	expectedTotal := 5 + 3 + 2
+	if total := tc.GetTotalTokens(); total != expectedTotal {
+		t.Errorf("Expected total %d after SetCountsDirectly, got %d", expectedTotal, total)
+	}
+
+	// Verify individual counts
+	if count := tc.GetCount("hello"); count != 5 {
+		t.Errorf("Expected count 5 for 'hello', got %d", count)
+	}
+	if count := tc.GetCount("world"); count != 3 {
+		t.Errorf("Expected count 3 for 'world', got %d", count)
+	}
+	if count := tc.GetCount("test"); count != 2 {
+		t.Errorf("Expected count 2 for 'test', got %d", count)
+	}
+
+	// Test with large dataset
+	largeCounts := make(map[string]int, 10000)
+	for i := 0; i < 10000; i++ {
+		largeCounts[fmt.Sprintf("token%d", i)] = i + 1
+	}
+
+	startTime := time.Now()
+	tc.SetCountsDirectly(largeCounts)
+	duration := time.Since(startTime)
+
+	// Verify it's fast (should be under 100ms for 10k tokens)
+	if duration > 100*time.Millisecond {
+		t.Errorf("SetCountsDirectly took too long: %v for 10k tokens", duration)
+	}
+
+	// Verify total is correct
+	expectedLargeTotal := 0
+	for _, count := range largeCounts {
+		expectedLargeTotal += count
+	}
+	if total := tc.GetTotalTokens(); total != expectedLargeTotal {
+		t.Errorf("Expected total %d for large dataset, got %d", expectedLargeTotal, total)
 	}
 }

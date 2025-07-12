@@ -424,12 +424,19 @@ Running the actual software assumes you have a directory of CSV files of Tweets,
 
 ##  Build and run the main program
 
+./main -help tells you all the flags.
+
 Note, this assumes you are in the root. Sometimes cursor wants to run it from src which
 is not right. It is better to build and run from the root directory.
 
 cd /Users/petercoates/python-work/cursor-twitter
 go build -o main src/main.go 
-./main  -config ./config/config.yaml -print-tweets=false
+./main  -config ./config/config.yaml -print-tweets=false 
+
+IMPORTANT FLAGS:
+-profile  causes it to produce profiler output (see section on profiling). Profiling slows the whole thing down--the results are relative.
+
+-load-state  Causes it to load the state from disk. Without this it takes some minutes to build up enought tweets to start computing busy-words.
 
 ## Shutting down the main
 
@@ -464,7 +471,21 @@ make test-race
 cd to cursor-twitter
 ./run_tests
 
+### Run the Profiler
  
+ ./main -config ./config/config.yaml -print-tweets=false -profile
+
+ Let it run
+
+  go tool pprof -text cpu.prof
+
+  or 
+
+    go tool pprof -http=:8080 cpu.prof
+
+
+  You can get a quick summary with
+  go tool pprof -top cpu.prof
 
 # Processing Tweets
  
@@ -528,18 +549,20 @@ When this process is done, each thread hits a "barrier."  When all threaads have
 ## Finding and clustering the Relevant Tweets
 
 NOT YET IMPLEMENTED.
-### Next TO DO
-- We still need a window of recent Tweets in memory. I think this has been removed.  It needs to be at least batch Tweets long, and the oldest need to be aged out just as before.  This will be used to find the Tweets the busy words correspond to.
-- The busy word processors need to put their 3pk's on queues to be collected by the final stage, that analyzes the recent Tweets, identifies the subjecs, and groups the Tweets that use them
-- The objects that the processors put on the queues need to identify the batch, their F, and the list of 3pk's.
-- That analysis thread needs to read the queues from the busyword processors. We can start by having it simply print out the collected words. What it will actually do is:
-  - Gather the tokens from one batch.
-  - Find the recent tweets that use at least k of them.
-  - For starters, printing out the Tweet texts is good enough. 
+### Next TO DO 
+- Fill in the functionality of the analysis thread
+  - finding the relevant tweets
+  - clustering
+  - what does the output look like?
+
+- Profile to find out why it's so slow now. there should be a profile file in the directory by AM.
+
+- Fix the delay in processing when it starts up. See below.
+
 
 # Things to Do/Fix
 - We start the recomputation of frequency data after a certain number of file writes. But this isn't necessary when you have just read in the stored counts.  It wastes a lot of time waiting for half a window to go by when it could create the frequency data structures immediately.
--
+-Testing now.  Meanwhile, don't implement, but let me tell you a problem. I thought we fixed this but I guess not. In the config file, window is a number of tokens to process as a rolling window.  Token_persist_files is a number of files, like 20, that all those tokens are logged to disk in.  In steady state, when (window/token_persist_files) tokens come in, they are logged as a new file, and the oldest of the files is read in, and the disk file deleted. Those read-in tokens are used to decrement the counter map.  This keeps the counter map step-wise up to date.  The FCT kicks of making new filters every time it reads rebuild_every_files number of files.  The thing is, if it's just read in the count map, there is no reason to wait for all those files to be written.  In the case where there the state is persisted, it can make them immediately. 
 
 # Some Sample Code for PTC's Edification
 sample of how to do mutex to protect the data structures

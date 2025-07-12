@@ -22,6 +22,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"runtime/pprof"
+
 	amqp "github.com/rabbitmq/amqp091-go"
 	"gopkg.in/yaml.v3"
 )
@@ -131,6 +133,12 @@ var globalWordFilter *filter.WordFilter
 
 // Global recent tweet window
 var recentTweetWindow *RecentTweetWindow
+
+// Pre-compiled regexes for tokenization (compiled once at startup)
+var (
+	urlRegex        *regexp.Regexp
+	apostropheRegex *regexp.Regexp
+)
 
 // Analysis thread for processing busy word results
 func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult) {
@@ -363,6 +371,9 @@ func initializePipeline(cfg *Config) error {
 	)
 	fct.Start()
 
+	// Check if filters are already available from persisted state and trigger immediate rebuild if so
+	fct.CheckAndTriggerInitialRebuild()
+
 	freqClassProcessor = pipeline.NewFrequencyClassProcessor(freqClasses, cfg.BWArrayLen, float64(cfg.ZScore), cfg.SkipFrequencyClasses, cfg.LogDir)
 	freqClassProcessor.Start()
 
@@ -381,6 +392,8 @@ func setupSignalHandling() {
 				time.Sleep(100 * time.Millisecond)
 			}
 		}
+		// Stop CPU profiling before exiting to ensure profile data is written
+		pprof.StopCPUProfile()
 		os.Exit(0)
 	}()
 }
@@ -407,7 +420,22 @@ func main() {
 	printTweets := flag.Bool("print-tweets", true, "Print each parsed tweet to the console")
 	configPath := flag.String("config", "config/config.yaml", "Path to YAML config file")
 	loadState := flag.Bool("load-state", false, "Load persisted state from files on startup")
+	enableProfiling := flag.Bool("profile", false, "Enable CPU profiling (creates cpu.prof)")
 	flag.Parse()
+
+	// Start CPU profiling if enabled
+	if *enableProfiling {
+		cpuProfile, err := os.Create("cpu.prof")
+		if err != nil {
+			log.Fatalf("Failed to create CPU profile: %v", err)
+		}
+		defer cpuProfile.Close()
+		if err := pprof.StartCPUProfile(cpuProfile); err != nil {
+			log.Fatalf("Failed to start CPU profile: %v", err)
+		}
+		defer pprof.StopCPUProfile()
+		fmt.Println("CPU profiling enabled - will create cpu.prof file")
+	}
 
 	// Load config from YAML file.
 
@@ -437,6 +465,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load word filter: %v", err)
 	}
+
+	// Initialize pre-compiled regexes for tokenization
+	urlRegex = regexp.MustCompile(`(https?://[^\s]+|www\.[^\s]+)`)
+	apostropheRegex = regexp.MustCompile(`'.*`)
 
 	// Initialize the recent tweet window
 	windowSize := cfg.WindowBatches * cfg.BatchSize
@@ -501,13 +533,12 @@ func main() {
 			inboundTokenQueue.Enqueue(tweet.Tokens)
 
 			// Route each token to its appropriate frequency class (only if filters are available)
-			filters := pipeline.GetGlobalFilters()
-			if len(filters) > 0 {
+			if pipeline.HasGlobalFilters() {
 				// Debug: Log when filters are available
 				if TotalTweetsRead%10000 == 0 {
 					slog.Info("Filters are available for token routing",
 						"tweet_count", TotalTweetsRead,
-						"num_filters", len(filters))
+						"num_filters", pipeline.GetGlobalFiltersCount())
 				}
 
 				// Get the token-to-class mapping and master filter for fast lookup
@@ -520,26 +551,12 @@ func main() {
 						continue
 					}
 
-					// Check if token exists in the global mapping
-					pipeline.Token3PKMutex.RLock()
-					_, exists := pipeline.TokenTo3PK[token]
-					pipeline.Token3PKMutex.RUnlock()
-
-					var threePK tweets.ThreePartKey
-					var freqClass int
+					// Get token info (3PK and frequency class) in a single operation
+					threePK, freqClass, exists := pipeline.GetTokenInfo(token)
 					if !exists {
 						// New token: create 3PK, insert into mapping, assign to least frequent class
-						threePK = pipeline.GenerateThreePartKey(token) // This inserts into the mapping
-						freqClass = len(filters) - 1                   // Least frequent class (highest number)
-					} else {
-						// Known token: get 3PK and frequency class
-						threePK = pipeline.TokenTo3PK[token]
-						class, ok := pipeline.GetTokenToClassMapping()[token]
-						if ok {
-							freqClass = class
-						} else {
-							freqClass = len(filters) - 1 // Fallback to least frequent class
-						}
+						threePK = pipeline.GenerateThreePartKey(token)   // This inserts into the mapping
+						freqClass = pipeline.GetGlobalFiltersCount() - 1 // Least frequent class (highest number)
 					}
 
 					// Enqueue to appropriate frequency class
@@ -577,8 +594,7 @@ func main() {
 		// Send termination signals to busy word processors every batch number of tweets
 		// Only send if frequency class filters are available
 		if TotalTweetsRead%cfg.BatchSize == 0 && TotalTweetsRead > 0 {
-			filters := pipeline.GetGlobalFilters()
-			if len(filters) > 0 {
+			if pipeline.HasGlobalFilters() {
 				terminationSignal := tweets.ThreePartKey{Part1: -1, Part2: -1, Part3: -1}
 
 				// Send termination signal to active frequency class processors only
@@ -854,19 +870,30 @@ func simpleTokenize(text string, cfg *Config) []string {
 
 	// Process each token individually
 	var processedTokens []string
+	totalProcessed := 0
+	totalRejected := 0
+	rejectedByMaxLength := 0
+	rejectedByDiversity := 0
+	rejectedByRepetition := 0
+	rejectedByCaseAlt := 0
+	rejectedByNumberMix := 0
+	rejectedByHashtag := 0
+	rejectedByUrl := 0
+	rejectedByAllCaps := 0
+
 	for _, token := range tokens {
+		totalProcessed++
+
 		// Remove URLs from this token if enabled
 		if cfg.TokenFilters.RemoveUrls {
-			urlRe := regexp.MustCompile(`(https?://[^\s]+|www\.[^\s]+)`)
-			token = urlRe.ReplaceAllString(token, "")
+			token = urlRegex.ReplaceAllString(token, "")
 			if token == "" {
 				continue
 			}
 		}
 
 		// Remove apostrophes and what follows (e.g., "don't" -> "don", "Harry's" -> "Harry")
-		apostropheRe := regexp.MustCompile(`'.*`)
-		token = apostropheRe.ReplaceAllString(token, "")
+		token = apostropheRegex.ReplaceAllString(token, "")
 		if token == "" {
 			continue
 		}
@@ -889,14 +916,127 @@ func simpleTokenize(text string, cfg *Config) []string {
 			continue
 		}
 
-		// Apply token filters if enabled
-		if shouldFilterToken(cleanToken, cfg) {
-			continue
+		// Apply token filters if enabled and track rejections
+		if cfg.TokenFilters.Enabled {
+			rejected := false
+
+			// Max length filter
+			if cfg.TokenFilters.MaxLength > 0 && len(cleanToken) > cfg.TokenFilters.MaxLength {
+				rejectedByMaxLength++
+				rejected = true
+			}
+
+			// Character diversity filter (only for long tokens)
+			if !rejected && len(cleanToken) >= cfg.TokenFilters.MinCharacterDiversityLowerLimit && cfg.TokenFilters.MinCharacterDiversity > 0 {
+				uniqueChars := make(map[rune]bool)
+				for _, char := range cleanToken {
+					uniqueChars[char] = true
+				}
+				diversity := float64(len(uniqueChars)) / float64(len(cleanToken))
+				if diversity < cfg.TokenFilters.MinCharacterDiversity {
+					rejectedByDiversity++
+					rejected = true
+				}
+			}
+
+			// Character repetition filter
+			if !rejected && cfg.TokenFilters.MaxCharacterRepetition > 0 {
+				repetitionCount := 0
+				for i := 1; i < len(cleanToken); i++ {
+					if cleanToken[i] == cleanToken[i-1] {
+						repetitionCount++
+					}
+				}
+				repetitionRatio := float64(repetitionCount) / float64(len(cleanToken))
+				if repetitionRatio > cfg.TokenFilters.MaxCharacterRepetition {
+					rejectedByRepetition++
+					rejected = true
+				}
+			}
+
+			// Case alternation filter
+			if !rejected && cfg.TokenFilters.MaxCaseAlternations > 0 {
+				caseChanges := 0
+				for i := 1; i < len(cleanToken); i++ {
+					if (cleanToken[i] >= 'A' && cleanToken[i] <= 'Z' && cleanToken[i-1] >= 'a' && cleanToken[i-1] <= 'z') ||
+						(cleanToken[i] >= 'a' && cleanToken[i] <= 'z' && cleanToken[i-1] >= 'A' && cleanToken[i-1] <= 'Z') {
+						caseChanges++
+					}
+				}
+				caseChangeRatio := float64(caseChanges) / float64(len(cleanToken))
+				if caseChangeRatio > cfg.TokenFilters.MaxCaseAlternations {
+					rejectedByCaseAlt++
+					rejected = true
+				}
+			}
+
+			// Number-letter mixing filter
+			if !rejected && cfg.TokenFilters.MaxNumberLetterMix > 0 {
+				digitCount := 0
+				for _, char := range cleanToken {
+					if char >= '0' && char <= '9' {
+						digitCount++
+					}
+				}
+				digitRatio := float64(digitCount) / float64(len(cleanToken))
+				if digitRatio > cfg.TokenFilters.MaxNumberLetterMix {
+					rejectedByNumberMix++
+					rejected = true
+				}
+			}
+
+			// Hashtag filter
+			if !rejected && cfg.TokenFilters.RejectHashtags && strings.HasPrefix(cleanToken, "#") {
+				rejectedByHashtag++
+				rejected = true
+			}
+
+			// URL filter
+			if !rejected && cfg.TokenFilters.RejectUrls && (strings.HasPrefix(cleanToken, "http") || strings.HasPrefix(cleanToken, "www")) {
+				rejectedByUrl++
+				rejected = true
+			}
+
+			// All caps long filter
+			if !rejected && cfg.TokenFilters.RejectAllCapsLong && len(cleanToken) >= cfg.TokenFilters.AllCapsLowerLimit {
+				allCaps := true
+				for _, char := range cleanToken {
+					if char < 'A' || char > 'Z' {
+						allCaps = false
+						break
+					}
+				}
+				if allCaps {
+					rejectedByAllCaps++
+					rejected = true
+				}
+			}
+
+			if rejected {
+				totalRejected++
+				continue
+			}
 		}
 
 		// Convert to lowercase for final output
 		cleanToken = strings.ToLower(cleanToken)
 		processedTokens = append(processedTokens, cleanToken)
+	}
+
+	// Update statistics in a single batch operation
+	if cfg.TokenFilters.Enabled {
+		TokenFilterStats.mu.Lock()
+		TokenFilterStats.TotalTokensProcessed += totalProcessed
+		TokenFilterStats.TotalTokensRejected += totalRejected
+		TokenFilterStats.RejectedByMaxLength += rejectedByMaxLength
+		TokenFilterStats.RejectedByDiversity += rejectedByDiversity
+		TokenFilterStats.RejectedByRepetition += rejectedByRepetition
+		TokenFilterStats.RejectedByCaseAlt += rejectedByCaseAlt
+		TokenFilterStats.RejectedByNumberMix += rejectedByNumberMix
+		TokenFilterStats.RejectedByHashtag += rejectedByHashtag
+		TokenFilterStats.RejectedByUrl += rejectedByUrl
+		TokenFilterStats.RejectedByAllCaps += rejectedByAllCaps
+		TokenFilterStats.mu.Unlock()
 	}
 
 	return processedTokens
@@ -924,17 +1064,8 @@ func shouldFilterToken(token string, cfg *Config) bool {
 		return false
 	}
 
-	// Track that we're processing a token
-	TokenFilterStats.mu.Lock()
-	TokenFilterStats.TotalTokensProcessed++
-	TokenFilterStats.mu.Unlock()
-
 	// Max length filter
 	if cfg.TokenFilters.MaxLength > 0 && len(token) > cfg.TokenFilters.MaxLength {
-		TokenFilterStats.mu.Lock()
-		TokenFilterStats.TotalTokensRejected++
-		TokenFilterStats.RejectedByMaxLength++
-		TokenFilterStats.mu.Unlock()
 		return true
 	}
 
@@ -946,10 +1077,6 @@ func shouldFilterToken(token string, cfg *Config) bool {
 		}
 		diversity := float64(len(uniqueChars)) / float64(len(token))
 		if diversity < cfg.TokenFilters.MinCharacterDiversity {
-			TokenFilterStats.mu.Lock()
-			TokenFilterStats.TotalTokensRejected++
-			TokenFilterStats.RejectedByDiversity++
-			TokenFilterStats.mu.Unlock()
 			return true
 		}
 	}
@@ -964,10 +1091,6 @@ func shouldFilterToken(token string, cfg *Config) bool {
 		}
 		repetitionRatio := float64(repetitionCount) / float64(len(token))
 		if repetitionRatio > cfg.TokenFilters.MaxCharacterRepetition {
-			TokenFilterStats.mu.Lock()
-			TokenFilterStats.TotalTokensRejected++
-			TokenFilterStats.RejectedByRepetition++
-			TokenFilterStats.mu.Unlock()
 			return true
 		}
 	}
@@ -983,10 +1106,6 @@ func shouldFilterToken(token string, cfg *Config) bool {
 		}
 		caseChangeRatio := float64(caseChanges) / float64(len(token))
 		if caseChangeRatio > cfg.TokenFilters.MaxCaseAlternations {
-			TokenFilterStats.mu.Lock()
-			TokenFilterStats.TotalTokensRejected++
-			TokenFilterStats.RejectedByCaseAlt++
-			TokenFilterStats.mu.Unlock()
 			return true
 		}
 	}
@@ -1001,29 +1120,17 @@ func shouldFilterToken(token string, cfg *Config) bool {
 		}
 		digitRatio := float64(digitCount) / float64(len(token))
 		if digitRatio > cfg.TokenFilters.MaxNumberLetterMix {
-			TokenFilterStats.mu.Lock()
-			TokenFilterStats.TotalTokensRejected++
-			TokenFilterStats.RejectedByNumberMix++
-			TokenFilterStats.mu.Unlock()
 			return true
 		}
 	}
 
 	// Hashtag filter
 	if cfg.TokenFilters.RejectHashtags && strings.HasPrefix(token, "#") {
-		TokenFilterStats.mu.Lock()
-		TokenFilterStats.TotalTokensRejected++
-		TokenFilterStats.RejectedByHashtag++
-		TokenFilterStats.mu.Unlock()
 		return true
 	}
 
 	// URL filter
 	if cfg.TokenFilters.RejectUrls && (strings.HasPrefix(token, "http") || strings.HasPrefix(token, "www")) {
-		TokenFilterStats.mu.Lock()
-		TokenFilterStats.TotalTokensRejected++
-		TokenFilterStats.RejectedByUrl++
-		TokenFilterStats.mu.Unlock()
 		return true
 	}
 
@@ -1037,10 +1144,6 @@ func shouldFilterToken(token string, cfg *Config) bool {
 			}
 		}
 		if allCaps {
-			TokenFilterStats.mu.Lock()
-			TokenFilterStats.TotalTokensRejected++
-			TokenFilterStats.RejectedByAllCaps++
-			TokenFilterStats.mu.Unlock()
 			return true
 		}
 	}
@@ -1116,15 +1219,28 @@ func loadPersistedState(stateDir string, freqClasses int, cfg *Config) {
 			fmt.Printf("Failed to load TokenCounter: %v\n", err)
 		}
 	} else {
+		loadStartTime := time.Now()
 		counts := tempTokenCounter.Counts()
 		totalTokens := 0
 		for _, count := range counts {
 			totalTokens += count
 		}
-		fmt.Printf("TokenCounter loaded: %d total tokens (%d distinct tokens)\n", totalTokens, len(counts))
+		loadDuration := time.Since(loadStartTime)
+		fmt.Printf("TokenCounter loaded: %d total tokens (%d distinct tokens) in %v\n", totalTokens, len(counts), loadDuration)
+
+		// Load the token counts into the global token counter for the FCT to use
+		populateStartTime := time.Now()
+		fmt.Printf("Starting to populate global token counter with %d total tokens...\n", totalTokens)
+
+		// Use the fast direct set method instead of incrementing millions of times
+		GlobalTokenCounter.SetCountsDirectly(counts)
+
+		populateDuration := time.Since(populateStartTime)
+		fmt.Printf("Global token counter populated with %d total tokens in %v\n", totalTokens, populateDuration)
 
 		// Rebuild frequency class filters from the loaded token counts
-		fmt.Println("Rebuilding frequency class filters from loaded token counts...")
+		rebuildStartTime := time.Now()
+		fmt.Printf("Rebuilding frequency class filters from loaded token counts...\n")
 		var result pipeline.FreqClassResult
 		if cfg.MinCountThreshold > 0 {
 			result = pipeline.BuildFrequencyClassHashSetsAdaptive(counts, freqClasses, cfg.MinCountThreshold)
@@ -1132,7 +1248,8 @@ func loadPersistedState(stateDir string, freqClasses int, cfg *Config) {
 			result = pipeline.BuildFrequencyClassHashSets(counts, freqClasses, nil, nil)
 		}
 		pipeline.SetGlobalFilters(result.Filters)
-		fmt.Printf("Frequency class filters rebuilt: %d classes\n", len(result.Filters))
+		rebuildDuration := time.Since(rebuildStartTime)
+		fmt.Printf("Frequency class filters rebuilt: %d classes in %v\n", len(result.Filters), rebuildDuration)
 	}
 
 	// Load FrequencyClassResult if it exists
