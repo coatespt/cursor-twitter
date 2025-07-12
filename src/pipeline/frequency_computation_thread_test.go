@@ -19,6 +19,7 @@ func TestFrequencyComputationThread(t *testing.T) {
 		10,   // tokenPersistFiles
 		5,    // rebuildEveryFiles
 		"",   // stateDir - empty for test
+		0,    // minCountThreshold - 0 for test
 	)
 
 	// Start FCT
@@ -92,6 +93,7 @@ func TestFrequencyComputationThreadConcurrency(t *testing.T) {
 		10,   // tokenPersistFiles
 		5,    // rebuildEveryFiles
 		"",   // stateDir - empty for test
+		0,    // minCountThreshold - 0 for test
 	)
 
 	fct.Start()
@@ -139,6 +141,7 @@ func TestFrequencyComputationThreadTokenProcessing(t *testing.T) {
 		10,   // tokenPersistFiles
 		5,    // rebuildEveryFiles
 		"",   // stateDir - empty for test
+		0,    // minCountThreshold - 0 for test
 	)
 
 	// Start FCT
@@ -189,6 +192,7 @@ func TestFrequencyComputationThreadFileBasedRebuild(t *testing.T) {
 		5,   // tokenPersistFiles (small for testing)
 		2,   // rebuildEveryFiles (rebuild every 2 files)
 		"",  // stateDir - empty for test
+		0,   // minCountThreshold - 0 for test
 	)
 
 	// Start FCT
@@ -235,6 +239,7 @@ func TestFrequencyComputationThreadRunLoop(t *testing.T) {
 		10,   // tokenPersistFiles
 		5,    // rebuildEveryFiles
 		"",   // stateDir - empty for test
+		0,    // minCountThreshold - 0 for test
 	)
 
 	// Start FCT

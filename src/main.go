@@ -132,6 +132,87 @@ var globalWordFilter *filter.WordFilter
 // Global recent tweet window
 var recentTweetWindow *RecentTweetWindow
 
+// Analysis thread for processing busy word results
+func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult) {
+	go func() {
+		fmt.Printf("[ANALYSIS] Analysis thread started, waiting for results...\n")
+		resultCount := 0
+
+		// Track results by batch
+		currentBatch := make(map[int][]string) // class -> busy words
+		currentBatchNumber := -1
+
+		for result := range resultChannel {
+			resultCount++
+
+			// Check if this is a new batch
+			if currentBatchNumber != result.BatchNumber {
+				// Print summary of previous batch if it exists
+				if currentBatchNumber >= 0 {
+					printBatchSummary(currentBatch, currentBatchNumber)
+				}
+
+				// Start new batch
+				currentBatch = make(map[int][]string)
+				currentBatchNumber = result.BatchNumber
+			}
+
+			// Convert 3PKs to actual words
+			busyWords := make([]string, 0, len(result.BusyWord3PKs))
+			notFoundCount := 0
+			for _, threePK := range result.BusyWord3PKs {
+				// Convert 3PK to word using the global token mapping
+				if word, exists := pipeline.GetWordFrom3PK(threePK); exists {
+					busyWords = append(busyWords, word)
+				} else {
+					// Skip 3PKs that aren't in the mapping - they shouldn't exist
+					notFoundCount++
+				}
+			}
+
+			// Debug: Show if any 3PKs weren't found (this indicates a system problem)
+			if notFoundCount > 0 {
+				fmt.Printf("[ANALYSIS] ERROR: %d/%d 3PKs not found in mapping for class %d - this should not happen!\n",
+					notFoundCount, len(result.BusyWord3PKs), result.FrequencyClass)
+			}
+
+			// Store results for this class
+			currentBatch[result.FrequencyClass] = busyWords
+		}
+
+		// Print final batch summary
+		if currentBatchNumber >= 0 {
+			printBatchSummary(currentBatch, currentBatchNumber)
+		}
+
+		fmt.Printf("[ANALYSIS] Analysis thread stopped after processing %d results\n", resultCount)
+	}()
+}
+
+// printBatchSummary prints a summary of all busy words found in a batch
+func printBatchSummary(classResults map[int][]string, batchNumber int) {
+	totalBusyWords := 0
+	classesWithWords := 0
+
+	fmt.Printf("\n" + strings.Repeat("=", 80) + "\n")
+	fmt.Printf("BATCH %d ANALYSIS SUMMARY\n", batchNumber)
+	fmt.Printf(strings.Repeat("=", 80) + "\n")
+
+	for classIndex, words := range classResults {
+		totalBusyWords += len(words)
+		if len(words) > 0 {
+			classesWithWords++
+			fmt.Printf("Class %d: %d busy words - %s\n", classIndex, len(words), strings.Join(words, ", "))
+		} else {
+			fmt.Printf("Class %d: %d busy words\n", classIndex, len(words))
+		}
+	}
+
+	fmt.Printf("\nTOTAL: %d busy words across %d classes\n", totalBusyWords, classesWithWords)
+	fmt.Printf("Would search %d tweets for these busy words\n", recentTweetWindow.Len())
+	fmt.Printf(strings.Repeat("=", 80) + "\n\n")
+}
+
 // RecentTweetWindow is a thread-safe, fixed-size queue for recent tweets
 // Holds up to maxSize tweets; oldest are removed as new ones arrive
 // Provides thread-safe Add, GetAll, and Len methods
@@ -283,7 +364,6 @@ func initializePipeline(cfg *Config) error {
 	fct.Start()
 
 	freqClassProcessor = pipeline.NewFrequencyClassProcessor(freqClasses, cfg.BWArrayLen, float64(cfg.ZScore), cfg.SkipFrequencyClasses, cfg.LogDir)
-	// freqClassProcessor.SetGlobalTokenMappingForAll(threePKToToken, &tokenMappingsMu) - COMMENTED OUT for on-the-fly generation test
 	freqClassProcessor.Start()
 
 	return nil
@@ -376,6 +456,9 @@ func main() {
 	defer fct.Stop()
 	defer freqClassProcessor.Stop()
 
+	// Start the analysis thread
+	startAnalysisThread(freqClassProcessor.GetResultChannel())
+
 	setupSignalHandling()
 
 	conn, ch, q, err := setupRabbitMQ(cfg)
@@ -428,7 +511,6 @@ func main() {
 				}
 
 				// Get the token-to-class mapping and master filter for fast lookup
-				tokenToClass := pipeline.GetTokenToClassMapping()
 				masterFilter := pipeline.GetMasterFilter()
 
 				// Route tokens to frequency classes
@@ -438,23 +520,50 @@ func main() {
 						continue
 					}
 
-					// Find which frequency class this token belongs to (O(1) lookup)
-					freqClass, exists := tokenToClass[token]
+					// Check if token exists in the global mapping
+					pipeline.Token3PKMutex.RLock()
+					_, exists := pipeline.TokenTo3PK[token]
+					pipeline.Token3PKMutex.RUnlock()
+
+					var threePK tweets.ThreePartKey
+					var freqClass int
 					if !exists {
-						// Token not found in any frequency class filter - assign to highest numbered class
-						freqClass = len(filters) - 1
+						// New token: create 3PK, insert into mapping, assign to least frequent class
+						threePK = pipeline.GenerateThreePartKey(token) // This inserts into the mapping
+						freqClass = len(filters) - 1                   // Least frequent class (highest number)
+					} else {
+						// Known token: get 3PK and frequency class
+						threePK = pipeline.TokenTo3PK[token]
+						class, ok := pipeline.GetTokenToClassMapping()[token]
+						if ok {
+							freqClass = class
+						} else {
+							freqClass = len(filters) - 1 // Fallback to least frequent class
+						}
 					}
-
-					// Check if this frequency class is active (not skipped)
-					if !freqClassProcessor.IsClassActive(freqClass) {
-						continue
-					}
-
-					// Generate 3pk for this token on-the-fly (no persistence)
-					threePK := pipeline.GenerateThreePartKey(token)
 
 					// Enqueue to appropriate frequency class
 					freqClassProcessor.EnqueueToFrequencyClass(freqClass, threePK)
+				}
+
+				// Debug: Show token distribution every 10,000 tweets
+				if TotalTweetsRead%10000 == 0 {
+					// Show queue sizes for each frequency class
+					queueStats := freqClassProcessor.GetQueueStats()
+					fmt.Printf("[DEBUG] Frequency class queue sizes: ")
+					for i := 0; i < freqClasses; i++ {
+						queueSize := queueStats[fmt.Sprintf("freq_class_%d_queue_size", i)]
+						if queueSize > 0 {
+							fmt.Printf("Class%d:%d ", i, queueSize)
+						}
+					}
+					fmt.Printf("\n")
+
+					// Show 3PK mapping size
+					pipeline.Token3PKMutex.RLock()
+					mappingSize := len(pipeline.TokenTo3PK)
+					pipeline.Token3PKMutex.RUnlock()
+					fmt.Printf("[DEBUG] 3PK mapping size: %d\n", mappingSize)
 				}
 			} else {
 				// No filters available yet - log occasionally

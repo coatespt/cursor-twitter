@@ -14,6 +14,14 @@ import (
 	"log/slog"
 )
 
+// BusyWordResult represents the output from a busy word processor
+// Contains batch number, frequency class, and list of busy word 3PKs
+type BusyWordResult struct {
+	BatchNumber    int
+	FrequencyClass int
+	BusyWord3PKs   []tweets.ThreePartKey
+}
+
 // ThreePartKeyQueue is a thread-safe queue for ThreePartKeys
 type ThreePartKeyQueue struct {
 	items []tweets.ThreePartKey
@@ -80,30 +88,26 @@ type BatchSummary struct {
 
 // FrequencyClassProcessor manages queues and processors for each frequency class
 type FrequencyClassProcessor struct {
+	numClasses  int
 	queues      []*ThreePartKeyQueue
 	processors  []*BusyWordProcessor
-	numClasses  int
 	skipClasses map[int]bool
 	stopChan    chan struct{}
 	wg          sync.WaitGroup
 
-	// Batch coordination
-	batchResults chan BatchResult
-	batchBarrier *Barrier
-	batchMutex   sync.Mutex
-	batchActive  bool
-	batchNumber  int
-
-	// Global token mapping reference (set from main.go)
-	globalTokenMapping map[tweets.ThreePartKey]string
-	globalMappingMutex *sync.RWMutex
-
 	// CSV logging
-	csvWriter *csv.Writer
-	csvFile   *os.File
-	startTime time.Time
-	zScoreMin float64
-	logDir    string
+	csvFile     *os.File
+	csvWriter   *csv.Writer
+	logDir      string
+	startTime   time.Time
+	batchNumber int
+	zScoreMin   float64
+
+	// Batch results collection
+	batchResults chan BusyWordResult
+
+	// Analysis thread communication
+	resultChannel chan BusyWordResult
 }
 
 // Barrier implements thread coordination barrier pattern
@@ -169,10 +173,6 @@ type BusyWordProcessor struct {
 	// Configuration
 	zScoreThreshold float64
 
-	// Global token mapping reference (set from main.go)
-	globalTokenMapping map[tweets.ThreePartKey]string
-	globalMappingMutex *sync.RWMutex
-
 	// Batch coordination
 	freqClassProcessor *FrequencyClassProcessor
 }
@@ -188,20 +188,17 @@ func NewFrequencyClassProcessor(numClasses int, arrayLen int, zScoreThreshold fl
 		skipMap[class] = true
 	}
 
-	// Calculate number of active classes (not skipped)
-	activeClassCount := numClasses - len(skipClasses)
-
 	fcp := &FrequencyClassProcessor{
-		queues:       queues,
-		processors:   processors,
-		numClasses:   numClasses,
-		skipClasses:  skipMap,
-		stopChan:     make(chan struct{}),
-		batchResults: make(chan BatchResult, numClasses), // Buffer for all processors
-		batchBarrier: NewBarrier(activeClassCount),       // Only wait for active classes
-		startTime:    time.Now(),
-		zScoreMin:    zScoreThreshold,
-		logDir:       logDir,
+		numClasses:    numClasses,
+		queues:        queues,
+		processors:    processors,
+		skipClasses:   skipMap,
+		stopChan:      make(chan struct{}),
+		batchResults:  make(chan BusyWordResult, numClasses), // Buffer for all processors
+		resultChannel: make(chan BusyWordResult, numClasses), // Buffer for analysis thread
+		startTime:     time.Now(),
+		zScoreMin:     zScoreThreshold,
+		logDir:        logDir,
 	}
 
 	for i := 0; i < numClasses; i++ {
@@ -336,27 +333,29 @@ func (fcp *FrequencyClassProcessor) collectBatchResults() {
 	currentBatch := make(map[int][]string)
 	resultsReceived := 0
 
+	fmt.Printf("[BATCH_COLLECTOR] Batch collector started, waiting for results...\n")
+
 	for {
 		select {
 		case <-fcp.stopChan:
+			fmt.Printf("[BATCH_COLLECTOR] Batch collector stopping\n")
 			return
 		case result := <-fcp.batchResults:
-			if result.Error != nil {
-				slog.Error("Busy word processor error",
-					"class_index", result.ClassIndex,
-					"error", result.Error)
-				continue
-			}
+			fmt.Printf("[BATCH_COLLECTOR] Received result from class %d: %d busy words\n",
+				result.FrequencyClass, len(result.BusyWord3PKs))
 
 			// Convert 3PKs to actual words
-			busyWords := fcp.convert3PKsToWords(result.BusyWords)
+			busyWords := fcp.convert3PKsToWords(result.BusyWord3PKs)
 
 			// Store results for this class
-			currentBatch[result.ClassIndex] = busyWords
+			currentBatch[result.FrequencyClass] = busyWords
 			resultsReceived++
 
+			// Send result to analysis thread
+			fcp.resultChannel <- result
+
 			// Immediate feedback for this class (simplified)
-			fmt.Printf("Class %d: %d busy words\n", result.ClassIndex, len(busyWords))
+			fmt.Printf("Class %d: %d busy words\n", result.FrequencyClass, len(busyWords))
 
 			// Check if all active classes have reported
 			activeClassCount := fcp.numClasses - len(fcp.skipClasses)
@@ -425,14 +424,8 @@ func (fcp *FrequencyClassProcessor) convert3PKsToWords(threePKs []tweets.ThreePa
 
 // getWordFrom3PK retrieves a word from the pipeline's global 3PK mapping
 func (fcp *FrequencyClassProcessor) getWordFrom3PK(threePK tweets.ThreePartKey) (string, bool) {
-	token3PKMutex.RLock()
-	word, exists := ThreePKToToken[threePK]
-	token3PKMutex.RUnlock()
-	if exists {
-		return word, true
-	}
-	// Fallback to 3PK representation if not found
-	return fmt.Sprintf("3PK(%d,%d,%d)", threePK.Part1, threePK.Part2, threePK.Part3), true
+	// Use the global mapping from the pipeline package
+	return GetWordFrom3PK(threePK)
 }
 
 // EnqueueToFrequencyClass routes a ThreePartKey to the appropriate frequency class queue
@@ -488,6 +481,11 @@ func (fcp *FrequencyClassProcessor) GetProcessorStats() map[string]int {
 	return stats
 }
 
+// GetResultChannel returns the channel for receiving busy word results
+func (fcp *FrequencyClassProcessor) GetResultChannel() <-chan BusyWordResult {
+	return fcp.resultChannel
+}
+
 // run is the main loop for a busy word processor
 func (bwp *BusyWordProcessor) run() {
 	defer bwp.wg.Done()
@@ -515,6 +513,7 @@ func (bwp *BusyWordProcessor) run() {
 			for _, key := range keys {
 				// Check for termination signal: (-1, -1, -1)
 				if key.Part1 == -1 && key.Part2 == -1 && key.Part3 == -1 {
+					fmt.Printf("[BWP-%d] Received termination signal, starting z-computation\n", bwp.classIndex)
 					// Perform coordinated z-computation
 					bwp.performCoordinatedZComputation()
 					continue
@@ -539,44 +538,48 @@ func (bwp *BusyWordProcessor) run() {
 
 // performCoordinatedZComputation performs z-computation and reports results to coordinator
 func (bwp *BusyWordProcessor) performCoordinatedZComputation() {
-	// fmt.Printf("*** BusyWordProcessor-%d: COORDINATED Z-COMPUTATION STARTED ***\n", bwp.classIndex)
+	fmt.Printf("[BWP-%d] COORDINATED Z-COMPUTATION STARTED\n", bwp.classIndex)
 
 	// Calculate statistics for each array
 	part1Stats := bwp.CalculateArrayStats(bwp.part1Counters)
 	part2Stats := bwp.CalculateArrayStats(bwp.part2Counters)
 	part3Stats := bwp.CalculateArrayStats(bwp.part3Counters)
 
+	// Debug: Show counter totals
+	fmt.Printf("[BWP-%d] Counter totals: part1=%d, part2=%d, part3=%d\n",
+		bwp.classIndex, part1Stats.Total, part2Stats.Total, part3Stats.Total)
+
 	// Calculate z-scores and find high-scoring positions
 	part1HighZScores := bwp.CalculateZScores(bwp.part1Counters, part1Stats, bwp.zScoreThreshold)
 	part2HighZScores := bwp.CalculateZScores(bwp.part2Counters, part2Stats, bwp.zScoreThreshold)
 	part3HighZScores := bwp.CalculateZScores(bwp.part3Counters, part3Stats, bwp.zScoreThreshold)
 
+	// Debug: Show highest z-scores found
+	maxZ1 := 0.0
+	maxZ2 := 0.0
+	maxZ3 := 0.0
+	for _, z := range part1HighZScores {
+		if z > maxZ1 {
+			maxZ1 = z
+		}
+	}
+	for _, z := range part2HighZScores {
+		if z > maxZ2 {
+			maxZ2 = z
+		}
+	}
+	for _, z := range part3HighZScores {
+		if z > maxZ3 {
+			maxZ3 = z
+		}
+	}
+	fmt.Printf("[BWP-%d] Highest z-scores: part1=%.2f, part2=%.2f, part3=%.2f (threshold=%.2f)\n",
+		bwp.classIndex, maxZ1, maxZ2, maxZ3, bwp.zScoreThreshold)
+
 	// Find busy words
 	busyWords := bwp.FindBusyWords(part1HighZScores, part2HighZScores, part3HighZScores)
 
-	// Report results to coordinator
-	result := BatchResult{
-		ClassIndex: bwp.classIndex,
-		BusyWords:  busyWords,
-		WordCount:  len(busyWords),
-		Error:      nil,
-		Timestamp:  time.Now(),
-	}
-
-	bwp.freqClassProcessor.batchResults <- result
-
-	// fmt.Printf("*** BusyWordProcessor-%d: COORDINATED Z-COMPUTATION COMPLETED ***\n", bwp.classIndex)
-	// fmt.Printf("*** BusyWordProcessor-%d: Array totals - Part1: %d, Part2: %d, Part3: %d ***\n",
-	// 	bwp.classIndex, part1Stats.total, part2Stats.total, part3Stats.total)
-	// fmt.Printf("*** BusyWordProcessor-%d: Part1 stats - Mean: %.2f, StdDev: %.2f ***\n",
-	// 	bwp.classIndex, part1Stats.mean, part1Stats.stdDev)
-	// fmt.Printf("*** BusyWordProcessor-%d: Part2 stats - Mean: %.2f, StdDev: %.2f ***\n",
-	// 	bwp.classIndex, part2Stats.mean, part2Stats.stdDev)
-	// fmt.Printf("*** BusyWordProcessor-%d: Part3 stats - Mean: %.2f, StdDev: %.2f ***\n",
-	// 	bwp.classIndex, part3Stats.mean, part3Stats.stdDev)
-	// fmt.Printf("*** BusyWordProcessor-%d: High Z-scores (>=%.1f) - Part1: %d, Part2: %d, Part3: %d ***\n",
-	// 	bwp.classIndex, bwp.zScoreThreshold, len(part1HighZScores), len(part2HighZScores), len(part3HighZScores))
-	// fmt.Printf("*** BusyWordProcessor-%d: Busy words found: %d ***\n", bwp.classIndex, len(busyWords))
+	fmt.Printf("[BWP-%d] Found %d busy words\n", bwp.classIndex, len(busyWords))
 
 	// Wipe all counter arrays to zero
 	for i := 0; i < bwp.arrayLen; i++ {
@@ -585,38 +588,34 @@ func (bwp *BusyWordProcessor) performCoordinatedZComputation() {
 		bwp.part3Counters[i] = 0
 	}
 
-	// fmt.Printf("*** BusyWordProcessor-%d: Arrays reset, waiting at barrier ***\n", bwp.classIndex)
-
-	// Wait at barrier until all processors have completed
-	bwp.freqClassProcessor.batchBarrier.Wait()
-
-	// Reset barrier for next cycle (only the last processor to reach barrier does this)
-	bwp.freqClassProcessor.batchMutex.Lock()
-	if bwp.freqClassProcessor.batchBarrier.IsComplete() {
-		bwp.freqClassProcessor.batchBarrier.Reset()
-		activeClassCount := bwp.freqClassProcessor.numClasses - len(bwp.freqClassProcessor.skipClasses)
-		slog.Info("Barrier reset - all processors synchronized", "active_processors", activeClassCount)
+	// Report results to coordinator
+	result := BusyWordResult{
+		BatchNumber:    bwp.freqClassProcessor.batchNumber,
+		FrequencyClass: bwp.classIndex,
+		BusyWord3PKs:   busyWords,
 	}
-	bwp.freqClassProcessor.batchMutex.Unlock()
 
-	// fmt.Printf("*** BusyWordProcessor-%d: Barrier cleared, starting next cycle ***\n", bwp.classIndex)
+	// Send result to batch coordinator
+	fmt.Printf("[BWP-%d] Sending result to batch coordinator\n", bwp.classIndex)
+	bwp.freqClassProcessor.batchResults <- result
+	fmt.Printf("[BWP-%d] Result sent successfully\n", bwp.classIndex)
 
-	// slog.Info("Coordinated z-computation completed and arrays reset",
-	// 	"class_index", bwp.classIndex,
-	// 	"array_len", bwp.arrayLen,
-	// 	"part1_total", part1Stats.total,
-	// 	"part2_total", part2Stats.total,
-	// 	"part3_total", part3Stats.total,
-	// 	"part1_mean", part1Stats.mean,
-	// 	"part1_stddev", part1Stats.stdDev,
-	// 	"part2_mean", part2Stats.mean,
-	// 	"part2_stddev", part2Stats.stdDev,
-	// 	"part3_mean", part3Stats.mean,
-	// 	"part3_stddev", part3Stats.stdDev,
-	// 	"z_score_threshold", bwp.zScoreThreshold,
-	// 	"part1_high_z_scores", len(part1HighZScores),
-	// 	"part2_high_z_scores", len(part2HighZScores),
-	// 	"part3_high_z_scores", len(part3HighZScores))
+	slog.Info("Coordinated z-computation completed and arrays reset",
+		"class_index", bwp.classIndex,
+		"array_len", bwp.arrayLen,
+		"part1_total", part1Stats.Total,
+		"part2_total", part2Stats.Total,
+		"part3_total", part3Stats.Total,
+		"part1_mean", part1Stats.Mean,
+		"part1_stddev", part1Stats.StdDev,
+		"part2_mean", part2Stats.Mean,
+		"part2_stddev", part2Stats.StdDev,
+		"part3_mean", part3Stats.Mean,
+		"part3_stddev", part3Stats.StdDev,
+		"z_score_threshold", bwp.zScoreThreshold,
+		"part1_high_z_scores", len(part1HighZScores),
+		"part2_high_z_scores", len(part2HighZScores),
+		"part3_high_z_scores", len(part3HighZScores))
 }
 
 // GetTokenCount returns the number of tokens processed by this processor
@@ -754,10 +753,15 @@ func (bwp *BusyWordProcessor) CalculateArrayStats(counts []int) ArrayStats {
 func (bwp *BusyWordProcessor) FindBusyWords(part1HighZScores, part2HighZScores, part3HighZScores map[int]float64) []tweets.ThreePartKey {
 	busyWords := []tweets.ThreePartKey{}
 
+	totalCombinations := 0
+	validCombinations := 0
+
 	// Iterate over all combinations of high z-score positions
 	for pos1, _ := range part1HighZScores {
 		for pos2, _ := range part2HighZScores {
 			for pos3, _ := range part3HighZScores {
+				totalCombinations++
+
 				// Generate 3PK from high z-score positions
 				key := tweets.ThreePartKey{
 					Part1: pos1,
@@ -767,7 +771,30 @@ func (bwp *BusyWordProcessor) FindBusyWords(part1HighZScores, part2HighZScores, 
 
 				// Check if the generated 3PK exists in the global token mapping table
 				if bwp.existsInGlobalTokenMapping(key) {
+					validCombinations++
 					busyWords = append(busyWords, key)
+				}
+			}
+		}
+	}
+
+	// Debug: Show filtering statistics
+	if totalCombinations > 0 {
+		fmt.Printf("[BWP-%d] 3PK filtering: %d/%d combinations valid (%.1f%%)\n",
+			bwp.classIndex, validCombinations, totalCombinations,
+			float64(validCombinations)/float64(totalCombinations)*100.0)
+
+		// Show a few example 3PKs that were checked
+		exampleCount := 0
+		for pos1, _ := range part1HighZScores {
+			for pos2, _ := range part2HighZScores {
+				for pos3, _ := range part3HighZScores {
+					if exampleCount < 3 {
+						key := tweets.ThreePartKey{Part1: pos1, Part2: pos2, Part3: pos3}
+						exists := bwp.existsInGlobalTokenMapping(key)
+						fmt.Printf("[BWP-%d] Example 3PK: %v exists=%v\n", bwp.classIndex, key, exists)
+						exampleCount++
+					}
 				}
 			}
 		}
@@ -776,16 +803,13 @@ func (bwp *BusyWordProcessor) FindBusyWords(part1HighZScores, part2HighZScores, 
 	return busyWords
 }
 
-// SetGlobalTokenMapping sets the reference to the global token mapping
-func (bwp *BusyWordProcessor) SetGlobalTokenMapping(mapping map[tweets.ThreePartKey]string, mutex *sync.RWMutex) {
-	bwp.globalTokenMapping = mapping
-	bwp.globalMappingMutex = mutex
-}
-
 // existsInGlobalTokenMapping checks if a ThreePartKey exists in the pipeline's global mapping
+// Returns true only if the 3PK already exists in the mapping
 func (bwp *BusyWordProcessor) existsInGlobalTokenMapping(key tweets.ThreePartKey) bool {
-	token3PKMutex.RLock()
+	// Use the global mapping directly, not a copy
+	Token3PKMutex.RLock()
 	_, exists := ThreePKToToken[key]
-	token3PKMutex.RUnlock()
+	Token3PKMutex.RUnlock()
+
 	return exists
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"cursor-twitter/src/pipeline"
 	"cursor-twitter/src/tweets"
-	"sync"
 	"testing"
 )
 
@@ -142,7 +141,7 @@ func TestFrequencyClassProcessorOperations(t *testing.T) {
 // TestFrequencyClassProcessorSkipClasses tests that skipped frequency classes are properly handled
 func TestFrequencyClassProcessorSkipClasses(t *testing.T) {
 	// Create a frequency class processor with classes 1 and 2 skipped
-	fcp := pipeline.NewFrequencyClassProcessor(4, 10, 2.0, []int{1, 2})
+	fcp := pipeline.NewFrequencyClassProcessor(4, 10, 2.0, []int{1, 2}, "")
 
 	// Test that skipped classes are not active
 	if fcp.IsClassActive(0) != true {
@@ -239,28 +238,15 @@ func TestBarrierSynchronization(t *testing.T) {
 func TestGlobalTokenMapping(t *testing.T) {
 	// Create a test processor
 	queue := pipeline.NewThreePartKeyQueue()
-	fcp := pipeline.NewFrequencyClassProcessor(1, 10, 2.0, []int{})
+	fcp := pipeline.NewFrequencyClassProcessor(1, 10, 2.0, []int{}, "")
 	processor := pipeline.NewBusyWordProcessor(0, queue, 10, 2.0, fcp)
 
-	// Set up global token mapping
-	tokenMapping := map[tweets.ThreePartKey]string{
-		{Part1: 1, Part2: 2, Part3: 3}: "hello",
-		{Part1: 4, Part2: 5, Part3: 6}: "world",
-		{Part1: 7, Part2: 8, Part3: 9}: "test",
-	}
-	var mappingMutex sync.RWMutex
-	processor.SetGlobalTokenMapping(tokenMapping, &mappingMutex)
-
-	// Test that mapping is set (we can't directly test the private method,
-	// but we can verify the processor was created and configured)
+	// Test that processor was created successfully
 	if processor == nil {
 		t.Error("Expected processor to be created successfully")
 	}
 
-	// Test frequency class processor mapping setup
-	fcp.SetGlobalTokenMappingForAll(tokenMapping, &mappingMutex)
-
-	// Verify the processor was created and configured
+	// Verify the frequency class processor was created and configured
 	if fcp == nil {
 		t.Error("Expected frequency class processor to be created successfully")
 	}
@@ -284,7 +270,7 @@ func TestBusyWordProcessorConfiguration(t *testing.T) {
 
 	for _, tc := range testCases {
 		queue := pipeline.NewThreePartKeyQueue()
-		fcp := pipeline.NewFrequencyClassProcessor(tc.numClasses, tc.arrayLen, tc.zScoreThreshold, []int{})
+		fcp := pipeline.NewFrequencyClassProcessor(tc.numClasses, tc.arrayLen, tc.zScoreThreshold, []int{}, "")
 		processor := pipeline.NewBusyWordProcessor(0, queue, tc.arrayLen, tc.zScoreThreshold, fcp)
 
 		// Verify processor was created

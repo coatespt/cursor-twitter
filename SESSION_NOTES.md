@@ -537,6 +537,9 @@ NOT YET IMPLEMENTED.
   - Find the recent tweets that use at least k of them.
   - For starters, printing out the Tweet texts is good enough. 
 
+# Things to Do/Fix
+- We start the recomputation of frequency data after a certain number of file writes. But this isn't necessary when you have just read in the stored counts.  It wastes a lot of time waiting for half a window to go by when it could create the frequency data structures immediately.
+-
 
 # Some Sample Code for PTC's Edification
 sample of how to do mutex to protect the data structures

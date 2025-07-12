@@ -2,7 +2,6 @@ package main
 
 import (
 	"cursor-twitter/src/pipeline"
-	"cursor-twitter/src/tweets"
 	"fmt"
 	"testing"
 	"time"
@@ -27,10 +26,8 @@ func testConfig() *Config {
 // works correctly with well-formed input data. It validates that all tweet fields are
 // properly extracted and tokenized.
 func TestParseCSVToTweetValid(t *testing.T) {
-	// Initialize global variables required by parseCSVToTweet
-	tokenToThreePK = make(map[string]tweets.ThreePartKey)
-	threePKToToken = make(map[tweets.ThreePartKey]string)
-	pipeline.SetGlobalArrayLen(1000) // Set default array length for 3PK generation
+	// Set default array length for 3PK generation
+	pipeline.SetGlobalArrayLen(1000)
 
 	// Valid CSV row with all required fields (10 fields: id_str, created_at, user_id_str, retweet_count, text, retweeted, at, http, hashtag, words)
 	validCSV := `"123456789","Mon Jan 2 15:04:05 -0700 2006","user123","0","This is a test tweet with some interesting words","False","0","0","0","this is a test tweet with some interesting words"`
