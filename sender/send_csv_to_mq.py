@@ -14,6 +14,8 @@ import pika
 import glob
 import yaml
 import time
+import csv
+import io
 from atomic_file import update_sender_status, get_sender_status
 
 
@@ -111,9 +113,44 @@ def send_csv_rows_to_mq(directory, status_file=None, queue_name='tweet_in', max_
             update_sender_status(status_file, csv_file)
         
         with open(csv_file, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.rstrip('\n')
-                if not line:
+            reader = csv.reader(f)
+            # Skip header row if it exists
+            try:
+                first_row = next(reader)
+                if first_row[0] == 'id_str':
+                    print(f"Skipping header row in {os.path.basename(csv_file)}")
+                else:
+                    # Not a header, process this row
+                    line = ','.join(first_row)
+                    if line.strip():
+                        # Check queue depth more frequently (every 1000 messages) to prevent overflow
+                        if total_sent % 1000 == 0:
+                            queue_depth = get_queue_depth(queue_name)
+                            if queue_depth >= max_queue_depth:
+                                if flow_control_pauses % 10 == 0:  # Log every 10th pause to avoid spam
+                                    print(f"Queue depth {queue_depth} >= {max_queue_depth}, pausing for {pause_duration}s...")
+                                time.sleep(pause_duration)
+                                flow_control_pauses += 1
+                                continue
+                        
+                        channel.basic_publish(
+                            exchange='',
+                            routing_key=queue_name,
+                            body=line.encode('utf-8'),
+                            properties=pika.BasicProperties(delivery_mode=2)  # make message persistent
+                        )
+                        total_sent += 1
+                        if total_sent % 1000 == 0:
+                            queue_depth = get_queue_depth(queue_name)
+                            print(f"Sent {total_sent} messages... (queue depth: {queue_depth}) [DEBUG: raw_value={queue_depth}]", end='\r', flush=True)
+            except StopIteration:
+                # Empty file
+                continue
+            
+            # Process remaining rows
+            for line_num, row in enumerate(reader, 2):  # Start from 2 since we already processed the first row
+                line = ','.join(row)
+                if not line.strip():
                     continue
                 
                 # Check queue depth more frequently (every 1000 messages) to prevent overflow
@@ -136,6 +173,8 @@ def send_csv_rows_to_mq(directory, status_file=None, queue_name='tweet_in', max_
                 if total_sent % 1000 == 0:
                     queue_depth = get_queue_depth(queue_name)
                     print(f"Sent {total_sent} messages... (queue depth: {queue_depth}) [DEBUG: raw_value={queue_depth}]", end='\r', flush=True)
+                
+
     
     print(f"\nDone. Sent {total_sent} messages in total.")
     if flow_control_pauses > 0:

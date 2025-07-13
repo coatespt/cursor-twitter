@@ -35,7 +35,7 @@ def process_json_file(input_path, output_path, global_tweet_count):
             with gzip.open(input_path, 'rt', encoding=encoding, errors='replace') as f_in, \
                  open(output_path, 'w', newline='', encoding='utf-8') as f_out:
                 
-                writer = csv.writer(f_out)
+                writer = csv.writer(f_out, lineterminator='\n')
                 
                 # Write CSV header
                 writer.writerow([
@@ -82,6 +82,15 @@ def process_json_file(input_path, output_path, global_tweet_count):
                             retweet_count = tweet.get('retweet_count', 0)
                             text = tweet.get('text', '')
                             retweeted = tweet.get('retweeted', False)
+                            
+                            # Clean up the text to prevent CSV parsing issues
+                            # Replace newlines with spaces
+                            text = text.replace('\n', ' ').replace('\r', ' ')
+                            # Replace double quotes with single quotes to avoid CSV quoting issues
+                            text = text.replace('"', "'")
+                            # Remove any remaining control characters
+                            text = ''.join(char for char in text if ord(char) >= 32 or char in '\t\n\r')
+                            
                             # Count patterns
                             at_count = text.count('@')
                             http_count = text.count('http')

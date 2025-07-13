@@ -837,34 +837,15 @@ func printStats() {
 // tokenizes the text, generates ThreePartKeys, and updates the global
 // token counter.
 func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
-	// Clean the input row to handle common CSV issues
-	cleanedRow := cleanCSVRow(row)
-
-	reader := csv.NewReader(strings.NewReader(cleanedRow))
+	reader := csv.NewReader(strings.NewReader(row))
 	reader.FieldsPerRecord = -1
-	reader.LazyQuotes = true    // Allow unescaped quotes
-	reader.FieldsPerRecord = -1 // Allow variable number of fields
-
 	record, err := reader.Read()
 	if err != nil {
-		// Log the parsing error and raw data for investigation
-		slog.Warn("CSV parsing failed, attempting lenient parsing",
-			"error", err.Error(),
-			"raw_row_length", len(row),
-			"raw_row_preview", truncateString(row, 100))
-		// If CSV parsing fails, try a more lenient approach
-		return parseCSVToTweetLenient(row, cfg)
+		return nil, err
 	}
-
 	if len(record) < 10 {
-		// Log field count issues for investigation
-		slog.Warn("CSV field count mismatch",
-			"expected_fields", 10,
-			"actual_fields", len(record),
-			"raw_row_preview", truncateString(row, 100))
 		return nil, fmt.Errorf("expected at least 10 fields, got %d", len(record))
 	}
-
 	// Skip header rows
 	if record[0] == "id_str" || record[1] == "created_at" {
 		return nil, fmt.Errorf("header row detected, skipping")
@@ -884,7 +865,7 @@ func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
 		Unix:         createdAt.Unix(),
 		UserIDStr:    record[2],
 		Text:         record[4],
-		Retweeted:    len(record) > 5 && record[5] == "True",
+		Retweeted:    record[5] == "True",
 		RetweetCount: 0,   // TODO: parse record[3] as int
 		Tokens:       nil, // We'll fill this in below
 	}
@@ -914,120 +895,6 @@ func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
 	// For now, we'll use a default of 15 minutes if not configured
 
 	return tweet, nil
-}
-
-// truncateString truncates a string to maxLen and adds "..." if truncated
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
-
-// cleanCSVRow attempts to fix common CSV formatting issues
-func cleanCSVRow(row string) string {
-	// Remove any null bytes or other control characters that might cause issues
-	row = strings.Map(func(r rune) rune {
-		if r < 32 && r != '\t' && r != '\n' && r != '\r' {
-			return -1 // Remove control characters except tab, newline, carriage return
-		}
-		return r
-	}, row)
-
-	// Replace common problematic quote patterns
-	// Replace unescaped quotes in the middle of fields with escaped quotes
-	// This is a simple heuristic - more complex cases may need more sophisticated handling
-
-	return row
-}
-
-// parseCSVToTweetLenient is a fallback parser for severely malformed CSV
-func parseCSVToTweetLenient(row string, cfg *Config) (*tweets.Tweet, error) {
-	// Split by comma, but be more careful about quoted fields
-	fields := splitCSVLenient(row)
-
-	if len(fields) < 5 {
-		return nil, fmt.Errorf("lenient parsing: expected at least 5 fields, got %d", len(fields))
-	}
-
-	// Skip header rows
-	if fields[0] == "id_str" || fields[1] == "created_at" {
-		return nil, fmt.Errorf("header row detected, skipping")
-	}
-
-	// Normalize all whitespace to a single space
-	cleanTime := normalizeWhitespace(fields[1])
-
-	createdAt, err := time.Parse("Mon Jan 2 15:04:05 -0700 2006", cleanTime)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse CreatedAt: %v", err)
-	}
-
-	// Create the Tweet struct and fill in the basic fields from the CSV
-	tweet := &tweets.Tweet{
-		IDStr:        fields[0],
-		Unix:         createdAt.Unix(),
-		UserIDStr:    fields[2],
-		Text:         fields[4],
-		Retweeted:    len(fields) > 5 && fields[5] == "True",
-		RetweetCount: 0,
-		Tokens:       nil,
-	}
-
-	// Tokenize the tweet text
-	tokens := simpleTokenize(tweet.Text, cfg)
-	tweet.Tokens = tokens
-
-	// Update global stats counters
-	TotalTweetsRead++
-	TotalTokensCounted += len(tokens)
-
-	return tweet, nil
-}
-
-// splitCSVLenient splits a CSV row more leniently, handling quoted fields
-func splitCSVLenient(row string) []string {
-	var fields []string
-	var currentField strings.Builder
-	inQuotes := false
-	escapeNext := false
-
-	for i, char := range row {
-		if escapeNext {
-			currentField.WriteRune(char)
-			escapeNext = false
-			continue
-		}
-
-		switch char {
-		case '"':
-			if inQuotes {
-				// Check if this is an escaped quote
-				if i+1 < len(row) && row[i+1] == '"' {
-					currentField.WriteRune('"')
-					escapeNext = true
-				} else {
-					inQuotes = false
-				}
-			} else {
-				inQuotes = true
-			}
-		case ',':
-			if !inQuotes {
-				fields = append(fields, strings.TrimSpace(currentField.String()))
-				currentField.Reset()
-			} else {
-				currentField.WriteRune(char)
-			}
-		default:
-			currentField.WriteRune(char)
-		}
-	}
-
-	// Add the last field
-	fields = append(fields, strings.TrimSpace(currentField.String()))
-
-	return fields
 }
 
 // simpleTokenize splits text into tokens for this project.
