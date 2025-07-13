@@ -1,8 +1,7 @@
 # Session Notes
+ 
 
-## Project Architecture & Workflow
-
-### Cursor Principles 
+# Cursor Principles 
 
 Never, under any circumstances do any git operation for any reason. Even if you think I have asked you to, don't do it. I will never ask you to do a git operation under any circumstances. Assume you misunderstood me. 
 
@@ -22,15 +21,20 @@ If any changes seem to involve multiple threads, be sure to get my agreement bef
 
 
 
-### Goal
-The project is a way to read the Twitter firehose and find new subjects appearing in the 
-Tweet stream. The underlying insight is that it would be essentially useless to 
-analyse all the subjects that are active at one time because this number is in the 
-tens of thousands--at least 100x too much for a human to grasp.  
+# Project Goal
+The project is a way to read the Twitter firehose and find new subjects appearing in the Tweet stream in near real time. Ideally, significant new subjects will be identified within seconds of their surging into the stream.
 
-Fortunately, new subjects actually arrive at a manageable rate. Depending upon exactly how you define "subject," new subjects arrive perhaps every few seconds. By exposing only the stream of new subjects (and the Tweets they are in) you see a useful, evolving view of what people are talking about. With reasonable parameterization of the definition of "subject" you get something about like the Times Square News Ticker.
+The underlying insight is that it would be essentially useless to 
+analyse all the subjects that are active at any one time because this number is in the tens of thousands--at least 100x too much for a human to grasp.  
 
-To find subjects by characterizing the semantics of thousands of Tweets per second, and then group them together based upon subject likeness would be a daunting task computationally. Certainly it would be extremely difficult to do in real time. Fortunately, however, groups of meaningful words used together are an excellent proxy for semantics. 
+However, if one settles for only seeing new subjects as they arrive:
+- The amount of data for a human to be exposed to is vastly smaller
+- You asymptotically approach getting **all** subjects with the most useful first.
+- The subjects arrive most-important-first
+
+Fortunately, new subjects actually arrive at a manageable rate. Depending upon exactly how you parameterize the definition of "subject," new subjects arrive perhaps every few seconds. Tuned well, you get something with about the information density of the Times Square News Ticker.
+
+To find subjects by characterizing the semantics of thousands of Tweets per second, and then grouping them together based upon subject similarity would be a daunting task computationally. Certainly it would be extremely difficult to do in real time. Fortunately, however, groups of meaningful words used together are an excellent proxy for semantics. 
 
 Interestingly, a subject is easiest to identify not by grouping based upon the most frequently used words, but by spotting less frequencly used words that being used are anomalously frequently at the moment. 
 
@@ -232,10 +236,8 @@ If you see a config file anywhere else, delete it or move its contents into the 
 - ✅ **High throughput achieved** - "slamming messages through"
 - ✅ **No bottlenecks** - blocking consumer handling load efficiently
 - ✅ **Real-time capability** - ready for Twitter firehose rates
-
-## Things Known To Be Wrong 
-
-## Useful Commands
+ 
+# Useful Commands
 
 - ** Build and Run the Golang JSON->CSV Parser--
 
@@ -257,119 +259,7 @@ This program reads CSV files to ensure that we can create Tweets from them.
 
 go run tests/csv_tweet_parse_test.go <path_to_your_csv_file>
 
-## TODO / Next Steps
 
-- Clustering
-  - Graph-based clustering parameterized by minimum shared busy words and similarity threshold.
-  - DBSCAN, hierarchical, k-means, not good.
-
-- Comments Key areas need to be commented to keep out don't touch, etc.
-
-- Clean up the excessive logging and print outs
-
-- Make tests around everything.
-
-- Build out the offensive word detection mechanism. Check. This is in the tokenizer. There is a file of explicit words. There is also some generic activities, like a minimum token length in config.yaml. 
-
-- Find the Tweets that the set of busy words applies to and do the clustering.
-
-
-### Biggest Thing to Do: The Main Counts/Frequency Mechanism Is Too Short a Window.
-
-The low quality of busy words we are computing is probably in part because the frequency counters are working over a tiny window. I think there should be millions of Tweets--like an hour's worth or more--in the window.
-
-Right now it's something like 300k. It should probably be in the millions. However, each million Tweets is probably at least a gigabyte of memory. 
-
-#### Some facts and assumptions  
-  - A file is typically about 100k Tweets. So if a window is in the right ballpark of size it will represent many file, e.g. 10 to 30 files.
-  - This is too long to wait for startup, and a lot of Tweets too keep in memory. Figure a Tweeit is probably a kilobyte, that's gigabytes of memory.
- 
-
-#### Proposed new design
-  There is a tiny element of cheating in this compared to how it would have to work in real life, because in real life, the stream of Tweets would keep flowing even if the stored data structures were way out of date. But it is perfectly legit for handling historical data. 
- 
- The scheme is this:
-
-  - There is a queue of tokens fed by main and read by FCT. Unlke now, there is no stream of age-out tokens. The FCT will manage aging tokens out by storing N tokens on disk in uniform size bite-size files, say, 50k.
-
-  - The FCT will also store the accumulated count data, frequency filters, and 3pk to token mappings on disk.  If there is a set present when it starts, it will read them in before main processing can start (other than to send tokens on the queue.)
-
-  - Main can't run until the FCT has installed a set of filters. But it can receive Tweets. Until the filters are installed, it just puts each incoming Tweet on the queue. It can not  pass tokens to the busy word queues without the filters.
-
-  - When the FCT starts:
-    - It looks for existing files of counts, frequency filters, and 3pk mappings.
-    - If it finds them, it loads the counter array, frequency filters, and 3pk mappings from disk.
-    - If it doesn't find the files on disk:
-      - It reads Tweets put on a queue by main until it has read enough to build those data structures. This takes a long time. At 3000 Tweets/second, that's five to seven minutes per million.
-      - Note that it is continually logging all the tokens it reads fromthe queue to the tokenlog files at say, 50 or 100k per file (configureable.)
-    -When it has received enough Tweets and built the datastructures it:
-      - Writes the data structures to disk
-      - installs the filters for main to use, which allows main to start feeding the busy word filters.
-
-  - FCT is always on a loop to read incoming tokens from the queue unless it is building the datastructures, in which case, the tokens just build up on the queue until it is able to consume them. 
-
-  Note, unless it's a fresh start, there should be counts, frequency filters, 3pk, and N 50k files of tokens.  
-  
-  There will also be a file indicating the last file read by the sender. That file should only be of concern to thesender.
-   
-  - When the system starts, main main always starts writing every inbound Tweet to the queue read by the FCT.
-
-  - The FCT may or may not have created the filters yet. Probably not because it takes a couple of minutes to build them.  Until the filters are ready, main doesn't put tokens on the busyword queues. All it does is write the tokens to the new token queue for the FCT. 
-
-  - Once the frequency filters are present, it can start feeding the busy word processor queues.
-
-  - The Sender always logs the latest file it has processed in a disk file. This tells it where to pick up sending Tweets next time it starts. It will start with the next file after that when it runs again. 
-
-  In steady state, the FCT is 
-  - Registering all the incoming tokens in the counter map
-  - Periodically writing a 50k file to disk.
-  - Periodically re-creating the filters and writing the datastructures to disk.
-  
-  Note that in steady state, every time it writes a tokenlog file, it also read the oldest one in and deletes the file from disk. The tokens from the file are then used to decrement the token counts. 
-
-  The recomputation of data structures should happen on the tokenlog boundaries, but not necessarily on every boundary.
-  - Tokenlog files might be written, say every 100k tokens, which would be about 10k Tweets worth.
-  - The recomputation interval might be every millon tokens, i.e., every 100k Tweets.
-  - These numbers are totally made up. The exact values will be in config.yaml.
-
-
-  #### Orderly Shutdown
-  There should be a way to set a flag of some kind, e.g., a disk file, to tell the sender and the processor to shut down in an orderly way. This is a little tricky because both sender and FCT are probably mid cycle. 
-
-  - The sender should check for the shutdown flag file before opening the next CSV file. If the flag is set, it quits.
-
-  - The FCT should check for the flag whenever it finds the input queue empty. It could be empty because of a lull in sending, but usually if there are no Tweets to pick up, it will be because the sender stopped sending.  
-  
-  - When it finds the queue empty and the shutdown flag set, it will always be in the Tweet-reading part of its cycle, not the recomputing part. It will then should then write all the files to disk and alert the main loop to shut down.
-
-  - In this way, when processing starts again
-    - The sender will be able to read its record of the last file consumed, so it knows where to start sending. This could be thousands of files into the dataset.
-
-    - The FCT will see it's files and load them. 
-
-    - By the time it has got the data structures built, there may be a lonq queue of Tweets on its queue, but that's ok. 
-
-    - It might be good to have the sender check for the presence of the files that the FCT writes. 
-      - If they are present,it means that the FCT will be spending some time loading the datastructures, and therefore it could delay for some number of seconds before sending anything.
-      - If they are not present, it means nothing can happen until the processor receives millions of Tweets, so start sending ASAP.
-
-## Features of new Window Processing implented
-- Sender logging latest file processed is working
-- We have a function to write out the data structures to disk.
-- We have a function to read the data structures from disk.
-- The above are about to be tested with a command line flag to turn on a test.
-- 
-
-## Notes On Dealing with Cursor
-- If you start a new session, paste relevant parts of this file into the chat to restore context for the AI assistant.
-
-- Always check that files created in Cursor are saved to disk (visible in Finder) to avoid data loss.
-
-- Every time you get to a settled point, commit it all to git.  Cursor will very likely fuck it all up, so do it frequently.
-
-- I'm using git branches and somewhat less frequently, pulling them back into main.
-
- 
 # Volume Issues
 -- Volume decahose = 500/sec
 
@@ -394,9 +284,8 @@ Right now it's something like 300k. It should probably be in the millions. Howev
   
 # Building and Running Everything
     
-The codebase is in ~/python-work/cursor-twitter. Data that it writes to persist data structures, etc. is configured to be in ~/python-work/data, i.e., at the same level as the project root. You can change this in config/config.yaml.  Using relative paths is treacherous.
-
-The following is how to run/mangage the major components.
+The codebase is in ~/python-work/cursor-twitter. Data that it writes in order to persist data structures, etc. is configured to be in ~/python-work/data, i.e., at the same level as the project root. You can change this in config/config.yaml.  Using relative paths is treacherous.
+ 
 
 ## Creating the CSV from GZ files
 The original data is JSON in gzip'ed files. We send it to the analysis program as CSV files. The program described below unpacks the gzip'ed JSON, extracts the fields we care about int a csc, and writes each to a similarly named uncompressed CSV file.
@@ -572,24 +461,9 @@ The Cartesian product of the indexes is taken, giving a set of triples of indexe
 The spurious 3pk's are discarded, and the ones that are legit are collected and passed on to another queue to be processed further.
 
 When this process is done, each thread hits a "barrier."  When all threaads have reached he barrier, they can wipe their counters and go back to collecting more 3pk data.
+ 
 
-## Finding and clustering the Relevant Tweets
-
-NOT YET IMPLEMENTED.
-### Next TO DO 
-- Fill in the functionality of the analysis thread
-  - finding the relevant tweets
-  - clustering
-  - what does the output look like?
-
-- Profile to find out why it's so slow now. there should be a profile file in the directory by AM.
-
-- Fix the delay in processing when it starts up. See below.
-
-
-# Things to Do/Fix
-- We start the recomputation of frequency data after a certain number of file writes. But this isn't necessary when you have just read in the stored counts.  It wastes a lot of time waiting for half a window to go by when it could create the frequency data structures immediately.
--Testing now.  Meanwhile, don't implement, but let me tell you a problem. I thought we fixed this but I guess not. In the config file, window is a number of tokens to process as a rolling window.  Token_persist_files is a number of files, like 20, that all those tokens are logged to disk in.  In steady state, when (window/token_persist_files) tokens come in, they are logged as a new file, and the oldest of the files is read in, and the disk file deleted. Those read-in tokens are used to decrement the counter map.  This keeps the counter map step-wise up to date.  The FCT kicks of making new filters every time it reads rebuild_every_files number of files.  The thing is, if it's just read in the count map, there is no reason to wait for all those files to be written.  In the case where there the state is persisted, it can make them immediately. 
+ 
 
 # Some Sample Code for PTC's Edification
 sample of how to do mutex to protect the data structures
@@ -646,3 +520,59 @@ This is if it only exists locally.
 
  git branch -d branch-name
  
+
+# TODO / Next Steps
+
+This section categorizes things to do, bug fixes, and upcoming development tasks.
+
+## Minor   
+
+## Ongoing 
+- Comments Key areas need to be commented to keep out don't touch, etc.
+
+- Clean up the excessive logging and print outs
+
+- Make tests around everything.
+
+## Possible Errors
+
+- Consider if the logic around writing token files is correct w.r.t. restarts: token_batch_002309.txt. I think it is--it picks up as closely as possible to where the new feed will be. BUT that's only if the restart is fast. If a significant amount of time has elapsed, both these files and the countmap will be far from accurate. Consider how long before this is likely to be a problem.  At some point, you have to bite the bullet and do a cold restart.  Also how long does it take to completely recover? I don't think the countermap ever does.
+
+## Things That are Stubbed or Partially Built
+- Build out the offensive word detection mechanism. Check. This is in the tokenizer. There is a file of explicit words. There is also some generic activities, like a minimum token length in config.yaml. 
+
+- The busy words contain a lot of dreck. 
+ 
+
+## The Analysis Thread
+Right now it just logs the busy words that were found in the previous cycle.
+
+What it should do is look for tweets using a minimum number of those words in the Tweet window we maintain. Not necessarily the whole window--probably just in a configured amount of the newest tweets. One or two "batches" worth of tweets.
+
+With that set, which hopefully is a small proportion of all the tweets, we perform clustering to group those tweets together based on how many of the busy words appear in them.
+
+The idea is to get the high-level clusters that have the most use of busywords but are as different as possible from the other high-level clusters.
+
+Beneath those clusters, we could recursively group into sub-clusters along similar lines.
+
+To be clear, this is entirely confined to the back end of the analysis thread. Nothing ahead of the analysis thread should know anything about it.
+   
+## Notes On Dealing with Cursor
+- If you start a new session, paste relevant parts of this file into the chat to restore context for the AI assistant.
+
+- Always check that files created in Cursor are saved to disk (visible in Finder) to avoid data loss.
+
+- Every time you get to a settled point, commit it all to git.  Cursor will very likely fuck it all up, so do it frequently.
+
+- I'm using git branches and somewhat less frequently, pulling them back into main.
+
+- Cursor is recommending the Louvain method for finding communities. It is
+  - hierarchical
+  - can collapse each community back into a super node
+
+- Cursor recommends gonum/graph for Louvain it has
+  - Good documentation
+  - Active development
+  - Performs well
+  - Has hierarchical clustering
+

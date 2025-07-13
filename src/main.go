@@ -78,6 +78,11 @@ type Config struct {
 	Sender struct {
 		StatusFile string `yaml:"status_file"`
 	} `yaml:"sender"`
+
+	Analysis struct {
+		ClusteringWindowBatches int `yaml:"clustering_window_batches"` // Number of batches of recent tweets to use for clustering
+		MinBusyWordsPerTweet    int `yaml:"min_busy_words_per_tweet"`  // Minimum number of busy words a tweet must contain to be included in clustering
+	} `yaml:"analysis"`
 }
 
 // GlobalTokenCounter keeps track of token counts in the current window.
@@ -142,7 +147,7 @@ var (
 )
 
 // Analysis thread for processing busy word results
-func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult) {
+func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Config) {
 	go func() {
 		resultCount := 0
 
@@ -157,7 +162,7 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult) {
 			if currentBatchNumber != result.BatchNumber {
 				// Print summary of previous batch if it exists
 				if currentBatchNumber >= 0 {
-					printBatchSummary(currentBatch, currentBatchNumber)
+					printBatchSummary(currentBatch, currentBatchNumber, cfg)
 				}
 
 				// Start new batch
@@ -190,7 +195,7 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult) {
 
 		// Print final batch summary
 		if currentBatchNumber >= 0 {
-			printBatchSummary(currentBatch, currentBatchNumber)
+			printBatchSummary(currentBatch, currentBatchNumber, cfg)
 		}
 
 		fmt.Printf("[ANALYSIS] Analysis thread stopped after processing %d results\n", resultCount)
@@ -198,7 +203,7 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult) {
 }
 
 // printBatchSummary prints a summary of all busy words found in a batch
-func printBatchSummary(classResults map[int][]string, batchNumber int) {
+func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Config) {
 	totalBusyWords := 0
 	classesWithWords := 0
 
@@ -227,6 +232,81 @@ func printBatchSummary(classResults map[int][]string, batchNumber int) {
 
 	fmt.Printf("\nTOTAL: %d busy words across %d classes\n", totalBusyWords, classesWithWords)
 	fmt.Printf("Would search %d tweets for these busy words\n", recentTweetWindow.Len())
+
+	// Get the recent tweets for clustering analysis
+	// Use configured number of batches worth of tweets
+	k := cfg.Analysis.ClusteringWindowBatches
+	if k <= 0 {
+		k = 1 // Default to 1 batch if not configured
+	}
+	recentTweets := recentTweetWindow.GetRecentTweets(k * cfg.BatchSize)
+	fmt.Printf("*** CLUSTERING: Retrieved %d tweets from recent window ***\n", len(recentTweets))
+
+	// Filter tweets to only include those with busy words
+	minBusyWords := cfg.Analysis.MinBusyWordsPerTweet
+	if minBusyWords <= 0 {
+		minBusyWords = 1 // Default to 1 if not configured
+	}
+
+	// Collect all busy words from all classes
+	allBusyWords := make(map[string]bool)
+	for _, words := range classResults {
+		for _, word := range words {
+			allBusyWords[word] = true
+		}
+	}
+
+	// Filter tweets that contain at least minBusyWords busy words
+	var tweetsWithBusyWords []*tweets.Tweet
+	busyWordDistribution := make(map[int]int) // count -> number of tweets
+
+	for _, tweet := range recentTweets {
+		busyWordCount := 0
+		for _, token := range tweet.Tokens {
+			if allBusyWords[token] {
+				busyWordCount++
+			}
+		}
+		busyWordDistribution[busyWordCount]++
+		if busyWordCount >= minBusyWords {
+			tweetsWithBusyWords = append(tweetsWithBusyWords, tweet)
+		}
+	}
+
+	// Print breakdown of busy word distribution
+	fmt.Printf("*** CLUSTERING: Busy word distribution:\n")
+	for i := 0; i <= 10; i++ { // Show up to 10+ busy words
+		if count, exists := busyWordDistribution[i]; exists && count > 0 {
+			if i == 10 {
+				fmt.Printf("  %d+ busy words: %d tweets\n", i, count)
+			} else {
+				fmt.Printf("  %d busy words: %d tweets\n", i, count)
+			}
+		}
+	}
+
+	fmt.Printf("*** CLUSTERING: Filtered to %d tweets with busy words (min=%d) ***\n", len(tweetsWithBusyWords), minBusyWords)
+
+	// Sanity checks before proceeding with clustering
+	if len(tweetsWithBusyWords) == 0 {
+		fmt.Printf("*** CLUSTERING: No tweets with busy words found - skipping clustering ***\n")
+		fmt.Printf(strings.Repeat("=", 80) + "\n\n")
+		return
+	}
+
+	if len(tweetsWithBusyWords) < 2 {
+		fmt.Printf("*** CLUSTERING: Only %d tweet with busy words - need at least 2 for clustering ***\n", len(tweetsWithBusyWords))
+		fmt.Printf(strings.Repeat("=", 80) + "\n\n")
+		return
+	}
+
+	if len(allBusyWords) == 0 {
+		fmt.Printf("*** CLUSTERING: No busy words found - skipping clustering ***\n")
+		fmt.Printf(strings.Repeat("=", 80) + "\n\n")
+		return
+	}
+
+	fmt.Printf("*** CLUSTERING: Ready for clustering with %d tweets and %d busy words ***\n", len(tweetsWithBusyWords), len(allBusyWords))
 	fmt.Printf(strings.Repeat("=", 80) + "\n\n")
 }
 
@@ -272,6 +352,26 @@ func (w *RecentTweetWindow) Len() int {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return len(w.tweets)
+}
+
+// GetRecentTweets returns the k most recent tweets in the window
+// Returns all tweets if k is greater than the window size
+func (w *RecentTweetWindow) GetRecentTweets(k int) []*tweets.Tweet {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	if k >= len(w.tweets) {
+		// Return all tweets if k is greater than or equal to window size
+		copyTweets := make([]*tweets.Tweet, len(w.tweets))
+		copy(copyTweets, w.tweets)
+		return copyTweets
+	}
+
+	// Return the k most recent tweets (from the end of the slice)
+	startIndex := len(w.tweets) - k
+	copyTweets := make([]*tweets.Tweet, k)
+	copy(copyTweets, w.tweets[startIndex:])
+	return copyTweets
 }
 
 // getCurrentWorkingDir returns the current working directory for debugging
@@ -519,7 +619,7 @@ func main() {
 	defer freqClassProcessor.Stop()
 
 	// Start the analysis thread
-	startAnalysisThread(freqClassProcessor.GetResultChannel())
+	startAnalysisThread(freqClassProcessor.GetResultChannel(), cfg)
 
 	setupSignalHandling()
 
