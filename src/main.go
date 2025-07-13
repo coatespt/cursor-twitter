@@ -240,7 +240,7 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 		k = 1 // Default to 1 batch if not configured
 	}
 	recentTweets := recentTweetWindow.GetRecentTweets(k * cfg.BatchSize)
-	fmt.Printf("*** CLUSTERING: Retrieved %d tweets from recent window ***\n", len(recentTweets))
+	fmt.Printf("*** CLUSTERING: Retrieved %d tweets from recent window (k=%d, batch=%d, total=%d) ***\n", len(recentTweets), k, cfg.BatchSize, k*cfg.BatchSize)
 
 	// Filter tweets to only include those with busy words
 	minBusyWords := cfg.Analysis.MinBusyWordsPerTweet
