@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,11 +16,12 @@ import (
 )
 
 // BusyWordResult represents the output from a busy word processor
-// Contains batch number, frequency class, and list of busy word 3PKs
+// Contains batch number, frequency class, list of busy word 3PKs, and z-score info
 type BusyWordResult struct {
 	BatchNumber    int
 	FrequencyClass int
 	BusyWord3PKs   []tweets.ThreePartKey
+	ZScoreInfo     string
 }
 
 // ThreePartKeyQueue is a thread-safe queue for ThreePartKeys
@@ -377,7 +379,16 @@ func (fcp *FrequencyClassProcessor) printBatchSummary(classResults map[int][]str
 	fmt.Printf("BATCH %d SUMMARY: %d frequency classes completed\n",
 		fcp.batchNumber, fcp.numClasses)
 
-	for classIndex, words := range classResults {
+	// Get sorted class indices to ensure consistent ordering
+	classIndices := make([]int, 0, len(classResults))
+	for classIndex := range classResults {
+		classIndices = append(classIndices, classIndex)
+	}
+	sort.Ints(classIndices)
+
+	// Print classes in sorted order
+	for _, classIndex := range classIndices {
+		words := classResults[classIndex]
 		totalBusyWords += len(words)
 		if len(words) > 0 {
 			// Print class count and busy words on the same line
@@ -544,32 +555,14 @@ func (bwp *BusyWordProcessor) performCoordinatedZComputation() {
 	part2HighZScores := bwp.CalculateZScores(bwp.part2Counters, part2Stats, bwp.zScoreThreshold)
 	part3HighZScores := bwp.CalculateZScores(bwp.part3Counters, part3Stats, bwp.zScoreThreshold)
 
-	// Debug: Show highest z-scores found
-	maxZ1 := 0.0
-	maxZ2 := 0.0
-	maxZ3 := 0.0
-	for _, z := range part1HighZScores {
-		if z > maxZ1 {
-			maxZ1 = z
-		}
-	}
-	for _, z := range part2HighZScores {
-		if z > maxZ2 {
-			maxZ2 = z
-		}
-	}
-	for _, z := range part3HighZScores {
-		if z > maxZ3 {
-			maxZ3 = z
-		}
-	}
-	fmt.Printf("Class %d (Batch %d): Highest z-scores: part1=%.2f, part2=%.2f, part3=%.2f (threshold=%.2f)\n",
-		bwp.classIndex, bwp.freqClassProcessor.batchNumber, maxZ1, maxZ2, maxZ3, bwp.zScoreThreshold)
-
 	// Find busy words
 	busyWords := bwp.FindBusyWords(part1HighZScores, part2HighZScores, part3HighZScores)
 
 	slog.Debug("Found busy words", "class_index", bwp.classIndex, "count", len(busyWords))
+
+	// Create z-score info string
+	zScoreInfo := fmt.Sprintf("Class %d: part1_high=%d, part2_high=%d, part3_high=%d, threshold=%.2f",
+		bwp.classIndex, len(part1HighZScores), len(part2HighZScores), len(part3HighZScores), bwp.zScoreThreshold)
 
 	// Wipe all counter arrays to zero
 	for i := 0; i < bwp.arrayLen; i++ {
@@ -583,6 +576,7 @@ func (bwp *BusyWordProcessor) performCoordinatedZComputation() {
 		BatchNumber:    bwp.freqClassProcessor.batchNumber,
 		FrequencyClass: bwp.classIndex,
 		BusyWord3PKs:   busyWords,
+		ZScoreInfo:     zScoreInfo,
 	}
 
 	// Send result to batch coordinator

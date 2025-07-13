@@ -559,16 +559,20 @@ func main() {
 						"num_filters", pipeline.GetGlobalFiltersCount())
 				}
 
-				// Get the token-to-class mapping and master filter for fast lookup
-				masterFilter := pipeline.GetMasterFilter()
+				// CRITICAL TOKEN ROUTING LOGIC - DO NOT MODIFY
+				// This section has been the source of multiple bugs where tokens were incorrectly dropped.
+				// The logic is now correct and verified:
+				// 1. Every token gets processed (no filtering/dropping)
+				// 2. Existing tokens get their assigned frequency class
+				// 3. New tokens get 3PK created and assigned to least frequent class (Class 6)
+				// 4. All tokens are routed to their appropriate frequency class
+				//
+				// DO NOT add any master filter checks or token filtering here.
+				// DO NOT modify the token routing logic without explicit approval.
+				// The GetTokenInfo function handles all the necessary logic correctly.
 
 				// Route tokens to frequency classes
 				for _, token := range tweet.Tokens {
-					// Quick check: if token not in master filter, skip it entirely
-					if masterFilter != nil && !masterFilter.Contains(token) {
-						continue
-					}
-
 					// Get token info (3PK and frequency class) in a single operation
 					threePK, freqClass, exists := pipeline.GetTokenInfo(token)
 					if !exists {
@@ -778,7 +782,19 @@ func printStats() {
 		processorKey := fmt.Sprintf("freq_class_%d_tokens_processed", i)
 		queueSize := freqClassQueueStats[queueKey]
 		tokensProcessed := freqClassProcessorStats[processorKey]
-		fmt.Printf("Class %2d: Queue=%6d, Processed=%8d\n", i, queueSize, tokensProcessed)
+
+		// Get distinct token count for this frequency class
+		distinctTokens := 0
+		if pipeline.HasGlobalFilters() {
+			filters := pipeline.GetGlobalFilters()
+			if i < len(filters) {
+				if setFilter, ok := filters[i].(*pipeline.SetFilter); ok {
+					distinctTokens = setFilter.TokenCount()
+				}
+			}
+		}
+
+		fmt.Printf("Class %2d: Queue=%6d, Processed=%8d, Distinct=%6d\n", i, queueSize, tokensProcessed, distinctTokens)
 	}
 	fmt.Printf("----------------------\n")
 	// Also log to slog

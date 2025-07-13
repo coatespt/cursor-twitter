@@ -26,7 +26,8 @@ token_persist_files: 20
 rebuild_every_files: 10
 
 # The number of tweets to process in each busy-word process cycle
-batch: 15000
+# This had been 1500 but I'm trying a significantly bigger size 
+batch: 100000
 
 # Number of batches to keep in the sliding tweet window
 window_batches: 3
@@ -41,10 +42,10 @@ log_dir: /Users/petercoates/python-work/cursor-twitter/logs
 # I think this is typically a very high value--in two digits. AFAIK the 
 # Distributionis not necessarily Gaussian.
 # TODO: there may be a better way to estimate weirdness.
-z_score: 3.5
+z_score: 4.5
 
 # The number of frequency classes to create
-freq_classes: 7
+freq_classes: 12
 
 # The length of the busy word processor counter arrays
 # This quantity cubed is the size of the 3pk space. 1000^3 = 1 billion.
@@ -82,12 +83,12 @@ sender:
   # it's actually next to the data/state directory. Confusing.
   status_file: "/Users/petercoates/python-work/data/sender/sender_status.txt"
   # Maximum number of messages in RabbitMQ queue before pausing sender
-  max_queue_depth: 15000
+  max_queue_depth: 10000
   # Duration to pause when queue is full (seconds)
   pause_duration: 1.0
 
 # The minimum length of a token to be considered
-min_token_len: 2
+min_token_len: 3
 
 # Token filtering configuration
 token_filters:
