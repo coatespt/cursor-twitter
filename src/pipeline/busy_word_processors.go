@@ -181,6 +181,16 @@ type BusyWordProcessor struct {
 
 // NewFrequencyClassProcessor creates a new processor with the specified number of classes
 func NewFrequencyClassProcessor(numClasses int, arrayLen int, zScoreThreshold float64, skipClasses []int, logDir string) *FrequencyClassProcessor {
+	// Create array with single z-score for all classes (legacy support)
+	zScores := make([]float64, numClasses)
+	for i := 0; i < numClasses; i++ {
+		zScores[i] = zScoreThreshold
+	}
+	return NewFrequencyClassProcessorWithZScores(numClasses, arrayLen, zScores, skipClasses, logDir)
+}
+
+// NewFrequencyClassProcessorWithZScores creates a new processor with per-class z-scores
+func NewFrequencyClassProcessorWithZScores(numClasses int, arrayLen int, zScores []float64, skipClasses []int, logDir string) *FrequencyClassProcessor {
 	queues := make([]*ThreePartKeyQueue, numClasses)
 	processors := make([]*BusyWordProcessor, numClasses)
 
@@ -188,6 +198,12 @@ func NewFrequencyClassProcessor(numClasses int, arrayLen int, zScoreThreshold fl
 	skipMap := make(map[int]bool)
 	for _, class := range skipClasses {
 		skipMap[class] = true
+	}
+
+	// Use the first z-score as the default for logging (legacy compatibility)
+	zScoreMin := 0.0
+	if len(zScores) > 0 {
+		zScoreMin = zScores[0]
 	}
 
 	fcp := &FrequencyClassProcessor{
@@ -199,13 +215,20 @@ func NewFrequencyClassProcessor(numClasses int, arrayLen int, zScoreThreshold fl
 		batchResults:  make(chan BusyWordResult, numClasses), // Buffer for all processors
 		resultChannel: make(chan BusyWordResult, numClasses), // Buffer for analysis thread
 		startTime:     time.Now(),
-		zScoreMin:     zScoreThreshold,
+		zScoreMin:     zScoreMin,
 		logDir:        logDir,
 	}
 
 	for i := 0; i < numClasses; i++ {
 		queues[i] = NewThreePartKeyQueue()
-		processors[i] = NewBusyWordProcessor(i, queues[i], arrayLen, zScoreThreshold, fcp)
+		// Use class-specific z-score, fallback to first z-score if not available
+		zScore := 0.0
+		if i < len(zScores) {
+			zScore = zScores[i]
+		} else if len(zScores) > 0 {
+			zScore = zScores[0]
+		}
+		processors[i] = NewBusyWordProcessor(i, queues[i], arrayLen, zScore, fcp)
 	}
 
 	return fcp
@@ -274,9 +297,9 @@ func (fcp *FrequencyClassProcessor) Stop() {
 
 // createCSVFile creates a CSV file for logging busy words
 func (fcp *FrequencyClassProcessor) createCSVFile() error {
-	// Create filename with timestamp and z-score
+	// Create filename with timestamp (removed z-score since we now have per-class z-scores)
 	timestamp := fcp.startTime.Format("20060102_150405")
-	filename := fmt.Sprintf("bw_%s_%.1f.csv", timestamp, fcp.zScoreMin)
+	filename := fmt.Sprintf("bw_%s.csv", timestamp)
 	filepath := filepath.Join(fcp.logDir, filename)
 
 	// Create the file
@@ -324,6 +347,12 @@ func (fcp *FrequencyClassProcessor) writeToCSV(classResults map[int][]string) {
 			slog.Error("Failed to write to CSV", "error", err)
 			return
 		}
+	}
+
+	// Add an empty row after each batch for visual separation
+	if err := fcp.csvWriter.Write([]string{}); err != nil {
+		slog.Error("Failed to write empty row to CSV", "error", err)
+		return
 	}
 
 	fcp.csvWriter.Flush()

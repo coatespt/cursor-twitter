@@ -259,14 +259,11 @@ go run tests/csv_tweet_parse_test.go <path_to_your_csv_file>
 
 ## TODO / Next Steps
 
+- Clustering
+  - Graph-based clustering parameterized by minimum shared busy words and similarity threshold.
+  - DBSCAN, hierarchical, k-means, not good.
 
-- Useful Comments
-Let's make a practice of saying what each module does
-at the top of the file.  Comment as if I'm an idiot.
-   
- 
-
-- Check that 'sorted order' for the file names is the same as the order given by the times embeddede in the file names.
+- Comments Key areas need to be commented to keep out don't touch, etc.
 
 - Clean up the excessive logging and print outs
 
@@ -275,6 +272,7 @@ at the top of the file.  Comment as if I'm an idiot.
 - Build out the offensive word detection mechanism. Check. This is in the tokenizer. There is a file of explicit words. There is also some generic activities, like a minimum token length in config.yaml. 
 
 - Find the Tweets that the set of busy words applies to and do the clustering.
+
 
 ### Biggest Thing to Do: The Main Counts/Frequency Mechanism Is Too Short a Window.
 

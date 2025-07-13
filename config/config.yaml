@@ -23,11 +23,11 @@ token_persist_files: 20
 # Rebuild the frequency classes every this many files 
 # The frequency classes, therefore, can be build more often than the size
 # of the window. 
-rebuild_every_files: 10
+rebuild_every_files: 4
 
 # The number of tweets to process in each busy-word process cycle
 # This had been 1500 but I'm trying a significantly bigger size 
-batch: 100000
+batch: 50000
 
 # Number of batches to keep in the sliding tweet window
 window_batches: 3
@@ -38,14 +38,14 @@ verbose: true
 # The directory to log to
 log_dir: /Users/petercoates/python-work/cursor-twitter/logs
 
-# The minimum Z score for a 3pk element to be considered anomalous
-# I think this is typically a very high value--in two digits. AFAIK the 
-# Distributionis not necessarily Gaussian.
-# TODO: there may be a better way to estimate weirdness.
-z_score: 4.5
+# Array of z-scores for each frequency class (must match freq_classes count)
+# Higher values = more restrictive (require bigger surges to be "busy")
+# Lower values = less restrictive (easier to detect anomalies)
+z_scores: [4.0, 4.0, 4.0, 4.0, 3.5, 3.5, 3.5, 3.5, 3.5, 3.0]
+
 
 # The number of frequency classes to create
-freq_classes: 12
+freq_classes: 10
 
 # The length of the busy word processor counter arrays
 # This quantity cubed is the size of the 3pk space. 1000^3 = 1 billion.
