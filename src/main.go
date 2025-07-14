@@ -151,6 +151,10 @@ var (
 	apostropheRegex *regexp.Regexp
 )
 
+// Add at the top-level globals:
+var clusterOutputFilePath string
+var clusterOutputFileOnce sync.Once
+
 // Analysis thread for processing busy word results
 func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Config) {
 	go func() {
@@ -209,12 +213,21 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 
 // printBatchSummary prints a summary of all busy words found in a batch
 func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Config) {
+	// Create a buffer to capture all output
+	var output strings.Builder
+
+	// Helper function to write to both buffer and stdout
+	writeOutput := func(format string, args ...interface{}) {
+		line := fmt.Sprintf(format, args...)
+		output.WriteString(line + "\n")
+		fmt.Print(line + "\n")
+	}
 	totalBusyWords := 0
 	classesWithWords := 0
 
-	fmt.Printf("\n" + strings.Repeat("=", 80) + "\n")
-	fmt.Printf("BATCH %d ANALYSIS SUMMARY\n", batchNumber)
-	fmt.Printf(strings.Repeat("=", 80) + "\n")
+	writeOutput("\n" + strings.Repeat("=", 80))
+	writeOutput("BATCH %d ANALYSIS SUMMARY", batchNumber)
+	writeOutput(strings.Repeat("=", 80))
 
 	// Get sorted class indices to ensure consistent ordering
 	classIndices := make([]int, 0, len(classResults))
@@ -229,14 +242,14 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 		totalBusyWords += len(words)
 		if len(words) > 0 {
 			classesWithWords++
-			fmt.Printf("Class %d: %d busy words - %s\n", classIndex, len(words), strings.Join(words, ", "))
+			writeOutput("Class %d: %d busy words - %s", classIndex, len(words), strings.Join(words, ", "))
 		} else {
-			fmt.Printf("Class %d: %d busy words\n", classIndex, len(words))
+			writeOutput("Class %d: %d busy words", classIndex, len(words))
 		}
 	}
 
-	fmt.Printf("\nTOTAL: %d busy words across %d classes\n", totalBusyWords, classesWithWords)
-	fmt.Printf("Would search %d tweets for these busy words\n", recentTweetWindow.Len())
+	writeOutput("\nTOTAL: %d busy words across %d classes", totalBusyWords, classesWithWords)
+	writeOutput("Would search %d tweets for these busy words", recentTweetWindow.Len())
 
 	// Get the recent tweets for clustering analysis
 	// Use configured number of batches worth of tweets
@@ -245,7 +258,7 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 		k = 1 // Default to 1 batch if not configured
 	}
 	recentTweets := recentTweetWindow.GetRecentTweets(k * cfg.BatchSize)
-	fmt.Printf("*** CLUSTERING: Retrieved %d tweets from recent window (k=%d, batch=%d, total=%d) ***\n", len(recentTweets), k, cfg.BatchSize, k*cfg.BatchSize)
+	writeOutput("*** CLUSTERING: Retrieved %d tweets from recent window (k=%d, batch=%d, total=%d) ***", len(recentTweets), k, cfg.BatchSize, k*cfg.BatchSize)
 
 	// Filter tweets to only include those with busy words
 	minBusyWords := cfg.Analysis.MinBusyWordsPerTweet
@@ -260,15 +273,15 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 	// Validate busyword_classes are within valid range (1 to freq_classes)
 	for _, class := range cfg.BusywordClasses {
 		if class < 1 || class > cfg.FreqClasses {
-			fmt.Printf("*** WARNING: Invalid busyword_class %d (valid range: 1-%d) - skipping ***\n", class, cfg.FreqClasses)
+			writeOutput("*** WARNING: Invalid busyword_class %d (valid range: 1-%d) - skipping ***", class, cfg.FreqClasses)
 			continue
 		}
 		allowedClasses[class] = true
 	}
 
 	if len(allowedClasses) == 0 {
-		fmt.Printf("*** ERROR: No valid busyword_classes found - all classes were out of range (1-%d) ***\n", cfg.FreqClasses)
-		fmt.Printf(strings.Repeat("=", 80) + "\n\n")
+		writeOutput("*** ERROR: No valid busyword_classes found - all classes were out of range (1-%d) ***", cfg.FreqClasses)
+		writeOutput(strings.Repeat("=", 80) + "\n")
 		return
 	}
 
@@ -281,7 +294,7 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 		}
 	}
 
-	fmt.Printf("*** CLUSTERING: Using busy words from classes: %v ***\n", cfg.BusywordClasses)
+	writeOutput("*** CLUSTERING: Using busy words from classes: %v ***", cfg.BusywordClasses)
 
 	// Filter tweets that contain at least minBusyWords busy words
 	var tweetsWithBusyWords []*tweets.Tweet
@@ -301,54 +314,54 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 	}
 
 	// Print breakdown of busy word distribution
-	fmt.Printf("*** CLUSTERING: Busy word distribution:\n")
+	writeOutput("*** CLUSTERING: Busy word distribution:")
 	for i := 0; i <= 10; i++ { // Show up to 10+ busy words
 		if count, exists := busyWordDistribution[i]; exists && count > 0 {
 			if i == 10 {
-				fmt.Printf("  %d+ busy words: %d tweets\n", i, count)
+				writeOutput("  %d+ busy words: %d tweets", i, count)
 			} else {
-				fmt.Printf("  %d busy words: %d tweets\n", i, count)
+				writeOutput("  %d busy words: %d tweets", i, count)
 			}
 		}
 	}
 
-	fmt.Printf("*** CLUSTERING: Filtered to %d tweets with busy words (min=%d) ***\n", len(tweetsWithBusyWords), minBusyWords)
+	writeOutput("*** CLUSTERING: Filtered to %d tweets with busy words (min=%d) ***", len(tweetsWithBusyWords), minBusyWords)
 
 	// Sanity checks before proceeding with clustering
 	if len(tweetsWithBusyWords) == 0 {
-		fmt.Printf("*** CLUSTERING: No tweets with busy words found - skipping clustering ***\n")
-		fmt.Printf(strings.Repeat("=", 80) + "\n\n")
+		writeOutput("*** CLUSTERING: No tweets with busy words found - skipping clustering ***")
+		writeOutput(strings.Repeat("=", 80) + "\n")
 		return
 	}
 
 	if len(tweetsWithBusyWords) < 2 {
-		fmt.Printf("*** CLUSTERING: Only %d tweet with busy words - need at least 2 for clustering ***\n", len(tweetsWithBusyWords))
-		fmt.Printf(strings.Repeat("=", 80) + "\n\n")
+		writeOutput("*** CLUSTERING: Only %d tweet with busy words - need at least 2 for clustering ***", len(tweetsWithBusyWords))
+		writeOutput(strings.Repeat("=", 80) + "\n")
 		return
 	}
 
 	if len(allBusyWords) == 0 {
-		fmt.Printf("*** CLUSTERING: No busy words found - skipping clustering ***\n")
-		fmt.Printf(strings.Repeat("=", 80) + "\n\n")
+		writeOutput("*** CLUSTERING: No busy words found - skipping clustering ***")
+		writeOutput(strings.Repeat("=", 80) + "\n")
 		return
 	}
 
-	fmt.Printf("*** CLUSTERING: Ready for clustering with %d tweets and %d busy words ***\n", len(tweetsWithBusyWords), len(allBusyWords))
+	writeOutput("*** CLUSTERING: Ready for clustering with %d tweets and %d busy words ***", len(tweetsWithBusyWords), len(allBusyWords))
 
 	// Debug: Show some of the busy words being used
-	fmt.Printf("*** CLUSTERING: Sample busy words: ")
+	writeOutput("*** CLUSTERING: Sample busy words: ")
 	wordCount := 0
 	for word := range allBusyWords {
 		if wordCount < 10 { // Show first 10 busy words
-			fmt.Printf("%s, ", word)
+			writeOutput("%s, ", word)
 			wordCount++
 		} else {
-			fmt.Printf("... (and %d more)\n", len(allBusyWords)-10)
+			writeOutput("... (and %d more)", len(allBusyWords)-10)
 			break
 		}
 	}
 	if wordCount <= 10 {
-		fmt.Printf("\n")
+		writeOutput("")
 	}
 
 	// Perform optimized clustering
@@ -360,14 +373,14 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 	result := clusterer.ClusterTweets(tweetsWithBusyWords, allBusyWords)
 
 	// Print clustering results with ASCII visualization
-	fmt.Printf("*** CLUSTERING RESULTS ***\n")
-	fmt.Printf("Clusters found: %d\n", len(result.Clusters))
-	fmt.Printf("Graph density: %.4f\n", result.Stats.GraphDensity)
-	fmt.Printf("Total edges: %d\n", result.Stats.TotalEdges)
-	fmt.Printf("Processing time: %.3f seconds\n", result.Stats.ProcessingTime)
+	writeOutput("*** CLUSTERING RESULTS ***")
+	writeOutput("Clusters found: %d", len(result.Clusters))
+	writeOutput("Graph density: %.4f", result.Stats.GraphDensity)
+	writeOutput("Total edges: %d", result.Stats.TotalEdges)
+	writeOutput("Processing time: %.3f seconds", result.Stats.ProcessingTime)
 
 	if len(result.Clusters) > 0 {
-		fmt.Printf("\n📊 CLUSTER VISUALIZATION:\n")
+		writeOutput("\n📊 CLUSTER VISUALIZATION:")
 		for i, cluster := range result.Clusters {
 			// Show shared busy words if available
 			busyWordsStr := ""
@@ -375,9 +388,9 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 				busyWordsStr = fmt.Sprintf(" [%s]", strings.Join(cluster.BusyWords, ", "))
 			} else {
 				// Debug: Show why no busy words are displayed
-				fmt.Printf("*** DEBUG: Cluster %d has no shared busy words across all %d tweets ***\n", i+1, cluster.Size)
+				writeOutput("*** DEBUG: Cluster %d has no shared busy words across all %d tweets ***", i+1, cluster.Size)
 			}
-			fmt.Printf("┌─ Cluster %d (%d tweets)%s\n", i+1, cluster.Size, busyWordsStr)
+			writeOutput("┌─ Cluster %d (%d tweets)%s", i+1, cluster.Size, busyWordsStr)
 
 			// Show first few tweets in each cluster
 			maxTweetsToShow := 20
@@ -431,15 +444,15 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 					text := item.Tweet.Text
 
 					if item.Count > 1 {
-						fmt.Printf("%s \"%s\" (%d instances)\n", prefix, text, item.Count)
+						writeOutput("%s \"%s\" (%d instances)", prefix, text, item.Count)
 					} else {
-						fmt.Printf("%s \"%s\"\n", prefix, text)
+						writeOutput("%s \"%s\"", prefix, text)
 					}
 				}
 
 				// Show if we have more deduplicated tweets than shown
 				if len(deduplicated) > maxTweetsToShow {
-					fmt.Printf("│  └─ ... and %d more unique tweets\n", len(deduplicated)-maxTweetsToShow)
+					writeOutput("│  └─ ... and %d more unique tweets", len(deduplicated)-maxTweetsToShow)
 				}
 			} else {
 				// Original behavior - show all tweets
@@ -453,21 +466,34 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 					// Show full tweet text without truncation
 					text := tweet.Text
 
-					fmt.Printf("%s \"%s\"\n", prefix, text)
+					writeOutput("%s \"%s\"", prefix, text)
 				}
 
 				// Show shared busy words if we have more tweets than shown
 				if len(cluster.Tweets) > maxTweetsToShow {
-					fmt.Printf("│  └─ ... and %d more tweets\n", len(cluster.Tweets)-maxTweetsToShow)
+					writeOutput("│  └─ ... and %d more tweets", len(cluster.Tweets)-maxTweetsToShow)
 				}
 			}
 
-			fmt.Printf("│\n")
+			writeOutput("│")
 		}
-		fmt.Printf("└─ End of clusters\n")
+		writeOutput("└─ End of clusters")
 	}
 
-	fmt.Printf(strings.Repeat("=", 80) + "\n\n")
+	writeOutput(strings.Repeat("=", 80) + "\n")
+
+	// Append the captured output to the global cluster output file
+	clusterOutputFileOnce.Do(func() {
+		// Ensure the file is created (truncated if exists)
+		_ = os.WriteFile(clusterOutputFilePath, []byte{}, 0644)
+	})
+	f, err := os.OpenFile(clusterOutputFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Printf("*** ERROR: Failed to write cluster output to %s: %v ***\n", clusterOutputFilePath, err)
+	} else {
+		_, _ = f.WriteString(output.String())
+		f.Close()
+	}
 }
 
 // normalizeTweetForComparison removes leading @mentions, RT prefixes, trailing URLs, and normalizes whitespace
@@ -800,6 +826,11 @@ func main() {
 
 	// Start the analysis thread
 	startAnalysisThread(freqClassProcessor.GetResultChannel(), cfg)
+
+	timestamp := time.Now().Format("20060102_150405")
+	clusterFileName := fmt.Sprintf("clusters_%s.txt", timestamp)
+	clusterOutputFilePath = filepath.Join(cfg.LogDir, clusterFileName)
+	fmt.Printf("*** CLUSTER OUTPUT WILL BE SAVED TO: %s ***\n", clusterOutputFilePath)
 
 	setupSignalHandling()
 
@@ -1153,7 +1184,8 @@ func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
 
 	// Filter by language if language filtering is enabled
 	if cfg.Analysis.LanguageFilter != "" && cfg.Analysis.LanguageFilter != "all" {
-		if tweet.Language != cfg.Analysis.LanguageFilter {
+		// Case-insensitive comparison
+		if strings.ToLower(tweet.Language) != strings.ToLower(cfg.Analysis.LanguageFilter) {
 			return nil, fmt.Errorf("tweet language '%s' filtered out (filter: %s)", tweet.Language, cfg.Analysis.LanguageFilter)
 		}
 	}

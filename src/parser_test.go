@@ -3,6 +3,7 @@ package main
 import (
 	"cursor-twitter/src/pipeline"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,12 @@ func testConfig() *Config {
 			Enabled: false,
 		},
 	}
+}
+
+func init() {
+	// Initialize regex patterns for tests
+	urlRegex = regexp.MustCompile(`(https?://[^\s]+|www\.[^\s]+)`)
+	apostropheRegex = regexp.MustCompile(`'.*`)
 }
 
 // TestParseCSVToTweetValid tests parsing valid CSV tweet data.
@@ -201,6 +208,39 @@ func TestParseCSVToTweetLanguageFilter(t *testing.T) {
 		},
 	}
 
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tweet, err := parseCSVToTweet(tc.csvData, cfg)
+
+			if tc.shouldPass {
+				if err != nil {
+					t.Errorf("Expected tweet to pass, got error: %v", err)
+					return
+				}
+				if tweet == nil {
+					t.Error("Expected tweet to be parsed, got nil")
+					return
+				}
+				// Extract language from CSV data (last field)
+				parts := strings.Split(tc.csvData, `","`)
+				if len(parts) >= 11 {
+					expectedLang := strings.Trim(parts[10], `"`)
+					if tweet.Language != expectedLang {
+						t.Errorf("Expected language '%s', got '%s'", expectedLang, tweet.Language)
+					}
+				}
+			} else {
+				if err == nil {
+					t.Error("Expected error for non-English tweet, got nil")
+					return
+				}
+				if !contains(err.Error(), tc.expected) {
+					t.Errorf("Expected error containing '%s', got '%s'", tc.expected, err.Error())
+				}
+			}
+		})
+	}
+
 	// Test with "all" languages setting
 	t.Run("AllLanguages", func(t *testing.T) {
 		cfg := testConfig()
@@ -238,35 +278,6 @@ func TestParseCSVToTweetLanguageFilter(t *testing.T) {
 			t.Errorf("Expected error containing 'tweet language 'en' filtered out (filter: es)', got '%s'", err.Error())
 		}
 	})
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			tweet, err := parseCSVToTweet(tc.csvData, cfg)
-
-			if tc.shouldPass {
-				if err != nil {
-					t.Errorf("Expected tweet to pass, got error: %v", err)
-					return
-				}
-				if tweet == nil {
-					t.Error("Expected tweet to be parsed, got nil")
-					return
-				}
-				if tweet.Language != strings.Trim(tc.csvData, `"`)[strings.LastIndex(tc.csvData, `","`)+2:strings.LastIndex(tc.csvData, `"`)] {
-					t.Errorf("Expected language to match CSV field")
-				}
-			} else {
-				if err == nil {
-					t.Error("Expected error for non-English tweet, got nil")
-					return
-				}
-				if !contains(err.Error(), tc.expected) {
-					t.Errorf("Expected error containing '%s', got '%s'", tc.expected, err.Error())
-				}
-			}
-		})
-	}
 }
 
 // TestSimpleTokenizeBasic tests basic tokenization functionality with filters disabled
@@ -401,12 +412,12 @@ func TestParseCSVToTweetRetweetedField(t *testing.T) {
 	}{
 		{
 			name:     "Retweeted True",
-			csvData:  `"123456789","Mon Jan 2 15:04:05 -0700 2006","user123","0","test tweet","True","0","0","0","test tweet"`,
+			csvData:  `"123456789","Mon Jan 2 15:04:05 -0700 2006","user123","0","test tweet","True","0","0","0","test tweet","en"`,
 			expected: true,
 		},
 		{
 			name:     "Retweeted False",
-			csvData:  `"123456789","Mon Jan 2 15:04:05 -0700 2006","user123","0","test tweet","False","0","0","0","test tweet"`,
+			csvData:  `"123456789","Mon Jan 2 15:04:05 -0700 2006","user123","0","test tweet","False","0","0","0","test tweet","en"`,
 			expected: false,
 		},
 	}
