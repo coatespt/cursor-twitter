@@ -40,7 +40,7 @@ def process_json_file(input_path, output_path, global_tweet_count):
                 # Write CSV header
                 writer.writerow([
                     'id_str', 'created_at', 'user_id_str', 'retweet_count', 
-                    'text', 'retweeted', 'at', 'http', 'hashtag', 'words'
+                    'text', 'retweeted', 'at', 'http', 'hashtag', 'words', 'lang'
                 ])
                 
                 for line_num, line in enumerate(f_in, 1):
@@ -100,9 +100,13 @@ def process_json_file(input_path, output_path, global_tweet_count):
                                 word.lower() for word in text.split()
                                 if word.isalpha() and len(word) > 1
                             ])
+                            
+                            # Extract language from user object
+                            lang = tweet.get('user', {}).get('lang', '')
+                            
                             writer.writerow([
                                 id_str, created_at, user_id_str, retweet_count,
-                                text, retweeted, at_count, http_count, hashtag_count, words
+                                text, retweeted, at_count, http_count, hashtag_count, words, lang
                             ])
                             tweet_count += 1
                             if tweet_count % 1000 == 0:

@@ -16,4 +16,5 @@ type Tweet struct {
 	Tokens       []string `json:"tokens"`
 	Retweeted    bool     `json:"retweeted"`
 	RetweetCount int      `json:"retweet_count"`
+	Language     string   `json:"lang"`
 }

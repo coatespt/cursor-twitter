@@ -101,6 +101,9 @@ analysis:
   suppress_duplicates: true
   # Similarity threshold for considering tweets as duplicates (0.0-1.0)
   duplicate_similarity_threshold: 0.9
+  # Language filtering: "en" for English only, "all" for all languages, or any other language code
+  # Examples: "en", "es", "fr", "de", "all"
+  language_filter: "all"
 
 # The minimum length of a token to be considered
 min_token_len: 3

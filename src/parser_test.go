@@ -3,6 +3,7 @@ package main
 import (
 	"cursor-twitter/src/pipeline"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,8 +30,8 @@ func TestParseCSVToTweetValid(t *testing.T) {
 	// Set default array length for 3PK generation
 	pipeline.SetGlobalArrayLen(1000)
 
-	// Valid CSV row with all required fields (10 fields: id_str, created_at, user_id_str, retweet_count, text, retweeted, at, http, hashtag, words)
-	validCSV := `"123456789","Mon Jan 2 15:04:05 -0700 2006","user123","0","This is a test tweet with some interesting words","False","0","0","0","this is a test tweet with some interesting words"`
+	// Valid CSV row with all required fields (11 fields: id_str, created_at, user_id_str, retweet_count, text, retweeted, at, http, hashtag, words, lang)
+	validCSV := `"123456789","Mon Jan 2 15:04:05 -0700 2006","user123","0","This is a test tweet with some interesting words","False","0","0","0","this is a test tweet with some interesting words","en"`
 
 	cfg := testConfig()
 	tweet, err := parseCSVToTweet(validCSV, cfg)
@@ -84,7 +85,7 @@ func TestParseCSVToTweetInvalidFieldCount(t *testing.T) {
 		{
 			name:     "Too few fields",
 			csvData:  `"123","Mon Jan 2 15:04:05 -0700 2006","user123"`,
-			expected: "expected at least 10 fields",
+			expected: "expected at least 11 fields",
 		},
 		{
 			name:     "Empty CSV",
@@ -94,7 +95,7 @@ func TestParseCSVToTweetInvalidFieldCount(t *testing.T) {
 		{
 			name:     "Single field",
 			csvData:  `"123"`,
-			expected: "expected at least 10 fields",
+			expected: "expected at least 11 fields",
 		},
 	}
 
@@ -120,10 +121,10 @@ func TestParseCSVToTweetInvalidFieldCount(t *testing.T) {
 // processing them as data.
 func TestParseCSVToTweetHeaderRow(t *testing.T) {
 	headerRows := []string{
-		// Full 10-field header row
-		`"id_str","created_at","user_id_str","retweet_count","text","retweeted","at","http","hashtag","words"`,
-		// Another 10-field header row with plausible values
-		`"id_str","Mon Jan 2 15:04:05 -0700 2006","user123","0","test","False","0","0","0","test"`,
+		// Full 11-field header row
+		`"id_str","created_at","user_id_str","retweet_count","text","retweeted","at","http","hashtag","words","lang"`,
+		// Another 11-field header row with plausible values
+		`"id_str","Mon Jan 2 15:04:05 -0700 2006","user123","0","test","False","0","0","0","test","en"`,
 	}
 
 	for i, headerRow := range headerRows {
@@ -147,7 +148,7 @@ func TestParseCSVToTweetHeaderRow(t *testing.T) {
 // invalid date formats are handled gracefully with clear error messages, preventing
 // silent failures that could corrupt data processing.
 func TestParseCSVToTweetInvalidDate(t *testing.T) {
-	invalidDateCSV := `"123456789","invalid-date-string","user123","0","test tweet","False","0","0","0","test tweet"`
+	invalidDateCSV := `"123456789","invalid-date-string","user123","0","test tweet","False","0","0","0","test tweet","en"`
 
 	cfg := testConfig()
 	_, err := parseCSVToTweet(invalidDateCSV, cfg)
@@ -157,6 +158,114 @@ func TestParseCSVToTweetInvalidDate(t *testing.T) {
 	}
 	if !contains(err.Error(), "failed to parse CreatedAt") {
 		t.Errorf("Expected 'failed to parse CreatedAt' error, got '%s'", err.Error())
+	}
+}
+
+// TestParseCSVToTweetLanguageFilter tests language filtering functionality.
+//
+// Rationale: Language filtering is important for focusing analysis on specific languages.
+// This test ensures that tweets are properly filtered based on the configured language filter.
+func TestParseCSVToTweetLanguageFilter(t *testing.T) {
+	cfg := testConfig()
+	cfg.Analysis.LanguageFilter = "en"
+
+	testCases := []struct {
+		name       string
+		csvData    string
+		expected   string
+		shouldPass bool
+	}{
+		{
+			name:       "English tweet should pass",
+			csvData:    `"123456789","Mon Jan 2 15:04:05 -0700 2006","user123","0","This is an English tweet","False","0","0","0","this is an english tweet","en"`,
+			expected:   "",
+			shouldPass: true,
+		},
+		{
+			name:       "Spanish tweet should be filtered",
+			csvData:    `"123456789","Mon Jan 2 15:04:05 -0700 2006","user123","0","Este es un tweet en español","False","0","0","0","este es un tweet en español","es"`,
+			expected:   "tweet language 'es' filtered out (filter: en)",
+			shouldPass: false,
+		},
+		{
+			name:       "Turkish tweet should be filtered",
+			csvData:    `"123456789","Mon Jan 2 15:04:05 -0700 2006","user123","0","Bu Türkçe bir tweet","False","0","0","0","bu türkçe bir tweet","tr"`,
+			expected:   "tweet language 'tr' filtered out (filter: en)",
+			shouldPass: false,
+		},
+		{
+			name:       "Empty language should pass (treat as English)",
+			csvData:    `"123456789","Mon Jan 2 15:04:05 -0700 2006","user123","0","Tweet with no language","False","0","0","0","tweet with no language",""`,
+			expected:   "",
+			shouldPass: true,
+		},
+	}
+
+	// Test with "all" languages setting
+	t.Run("AllLanguages", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.Analysis.LanguageFilter = "all"
+
+		// Spanish tweet should pass when filter is "all"
+		spanishCSV := `"123456789","Mon Jan 2 15:04:05 -0700 2006","user123","0","Este es un tweet en español","False","0","0","0","este es un tweet en español","es"`
+		tweet, err := parseCSVToTweet(spanishCSV, cfg)
+		if err != nil {
+			t.Errorf("Expected Spanish tweet to pass with 'all' filter, got error: %v", err)
+			return
+		}
+		if tweet == nil {
+			t.Error("Expected Spanish tweet to be parsed with 'all' filter, got nil")
+			return
+		}
+		if tweet.Language != "es" {
+			t.Errorf("Expected language 'es', got '%s'", tweet.Language)
+		}
+	})
+
+	// Test with Spanish filter
+	t.Run("SpanishFilter", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.Analysis.LanguageFilter = "es"
+
+		// English tweet should be filtered when filter is "es"
+		englishCSV := `"123456789","Mon Jan 2 15:04:05 -0700 2006","user123","0","This is an English tweet","False","0","0","0","this is an english tweet","en"`
+		_, err := parseCSVToTweet(englishCSV, cfg)
+		if err == nil {
+			t.Error("Expected English tweet to be filtered with 'es' filter, got nil error")
+			return
+		}
+		if !contains(err.Error(), "tweet language 'en' filtered out (filter: es)") {
+			t.Errorf("Expected error containing 'tweet language 'en' filtered out (filter: es)', got '%s'", err.Error())
+		}
+	})
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tweet, err := parseCSVToTweet(tc.csvData, cfg)
+
+			if tc.shouldPass {
+				if err != nil {
+					t.Errorf("Expected tweet to pass, got error: %v", err)
+					return
+				}
+				if tweet == nil {
+					t.Error("Expected tweet to be parsed, got nil")
+					return
+				}
+				if tweet.Language != strings.Trim(tc.csvData, `"`)[strings.LastIndex(tc.csvData, `","`)+2:strings.LastIndex(tc.csvData, `"`)] {
+					t.Errorf("Expected language to match CSV field")
+				}
+			} else {
+				if err == nil {
+					t.Error("Expected error for non-English tweet, got nil")
+					return
+				}
+				if !contains(err.Error(), tc.expected) {
+					t.Errorf("Expected error containing '%s', got '%s'", tc.expected, err.Error())
+				}
+			}
+		})
 	}
 }
 

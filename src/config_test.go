@@ -58,8 +58,8 @@ skip_frequency_classes: [1, 2]
 	if cfg.BWArrayLen != 1000 {
 		t.Errorf("Expected BWArrayLen to be 1000, got %d", cfg.BWArrayLen)
 	}
-	if cfg.ZScore != 7.0 {
-		t.Errorf("Expected ZScore to be 7.0, got %f", cfg.ZScore)
+	if len(cfg.ZScores) != 1 || cfg.ZScores[0] != 7.0 {
+		t.Errorf("Expected ZScores to be [7.0], got %v", cfg.ZScores)
 	}
 }
 

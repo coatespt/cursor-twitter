@@ -86,7 +86,13 @@ func TestJaccardSimilarity(t *testing.T) {
 		Tokens: []string{"california", "earthquake", "major"},
 	}
 
-	similarity := clusterer.calculateJaccardSimilarity(tweet1, tweet2)
+	busyWords := map[string]bool{
+		"earthquake": true,
+		"california": true,
+		"breaking":   true,
+		"major":      true,
+	}
+	similarity := clusterer.calculateJaccardSimilarity(tweet1, tweet2, busyWords)
 
 	// Should have 2 shared words out of 4 unique words total
 	expected := 2.0 / 4.0 // 0.5

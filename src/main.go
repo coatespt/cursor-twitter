@@ -86,6 +86,7 @@ type Config struct {
 		MaxTweetsToCluster           int     `yaml:"max_tweets_to_cluster"`          // Maximum number of tweets to cluster (0 = no limit)
 		SuppressDuplicates           bool    `yaml:"suppress_duplicates"`            // Suppress duplicate tweets in visualization
 		DuplicateSimilarityThreshold float64 `yaml:"duplicate_similarity_threshold"` // Similarity threshold for duplicates
+		LanguageFilter               string  `yaml:"language_filter"`                // Language filter: "en", "es", "all", etc.
 	} `yaml:"analysis"`
 }
 
@@ -1122,8 +1123,8 @@ func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(record) < 10 {
-		return nil, fmt.Errorf("expected at least 10 fields, got %d", len(record))
+	if len(record) < 11 {
+		return nil, fmt.Errorf("expected at least 11 fields, got %d", len(record))
 	}
 	// Skip header rows
 	if record[0] == "id_str" || record[1] == "created_at" {
@@ -1145,8 +1146,16 @@ func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
 		UserIDStr:    record[2],
 		Text:         record[4],
 		Retweeted:    record[5] == "True",
-		RetweetCount: 0,   // TODO: parse record[3] as int
-		Tokens:       nil, // We'll fill this in below
+		RetweetCount: 0,          // TODO: parse record[3] as int
+		Language:     record[10], // Language field from CSV
+		Tokens:       nil,        // We'll fill this in below
+	}
+
+	// Filter by language if language filtering is enabled
+	if cfg.Analysis.LanguageFilter != "" && cfg.Analysis.LanguageFilter != "all" {
+		if tweet.Language != cfg.Analysis.LanguageFilter {
+			return nil, fmt.Errorf("tweet language '%s' filtered out (filter: %s)", tweet.Language, cfg.Analysis.LanguageFilter)
+		}
 	}
 
 	// Step 1: Tokenize the tweet text.
