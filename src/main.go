@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/csv"
-	"encoding/gob"
 	"flag"
 	"fmt"
 	"log"
@@ -50,6 +49,7 @@ type Config struct {
 	TokenPersistFiles    int       `yaml:"token_persist_files"`
 	RebuildEveryFiles    int       `yaml:"rebuild_every_files"`
 	MinCountThreshold    int       `yaml:"min_count_threshold"` // Minimum count for frequency class inclusion
+	BusywordClasses      []int     `yaml:"busyword_classes"`    // Frequency classes to use for clustering
 
 	Filter struct {
 		Enabled    bool   `yaml:"enabled"`
@@ -80,8 +80,12 @@ type Config struct {
 	} `yaml:"sender"`
 
 	Analysis struct {
-		ClusteringWindowBatches int `yaml:"clustering_window_batches"` // Number of batches of recent tweets to use for clustering
-		MinBusyWordsPerTweet    int `yaml:"min_busy_words_per_tweet"`  // Minimum number of busy words a tweet must contain to be included in clustering
+		ClusteringWindowBatches      int     `yaml:"clustering_window_batches"`      // Number of batches of recent tweets to use for clustering
+		MinBusyWordsPerTweet         int     `yaml:"min_busy_words_per_tweet"`       // Minimum number of busy words a tweet must contain to be included in clustering
+		MinJaccardSimilarity         float64 `yaml:"min_jaccard_similarity"`         // Minimum Jaccard similarity threshold for creating edges between tweets
+		MaxTweetsToCluster           int     `yaml:"max_tweets_to_cluster"`          // Maximum number of tweets to cluster (0 = no limit)
+		SuppressDuplicates           bool    `yaml:"suppress_duplicates"`            // Suppress duplicate tweets in visualization
+		DuplicateSimilarityThreshold float64 `yaml:"duplicate_similarity_threshold"` // Similarity threshold for duplicates
 	} `yaml:"analysis"`
 }
 
@@ -248,13 +252,35 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 		minBusyWords = 1 // Default to 1 if not configured
 	}
 
-	// Collect all busy words from all classes
+	// Collect busy words only from the specified frequency classes
 	allBusyWords := make(map[string]bool)
-	for _, words := range classResults {
-		for _, word := range words {
-			allBusyWords[word] = true
+	allowedClasses := make(map[int]bool)
+
+	// Validate busyword_classes are within valid range (1 to freq_classes)
+	for _, class := range cfg.BusywordClasses {
+		if class < 1 || class > cfg.FreqClasses {
+			fmt.Printf("*** WARNING: Invalid busyword_class %d (valid range: 1-%d) - skipping ***\n", class, cfg.FreqClasses)
+			continue
+		}
+		allowedClasses[class] = true
+	}
+
+	if len(allowedClasses) == 0 {
+		fmt.Printf("*** ERROR: No valid busyword_classes found - all classes were out of range (1-%d) ***\n", cfg.FreqClasses)
+		fmt.Printf(strings.Repeat("=", 80) + "\n\n")
+		return
+	}
+
+	// Only include busy words from allowed classes
+	for classIndex, words := range classResults {
+		if allowedClasses[classIndex] {
+			for _, word := range words {
+				allBusyWords[word] = true
+			}
 		}
 	}
+
+	fmt.Printf("*** CLUSTERING: Using busy words from classes: %v ***\n", cfg.BusywordClasses)
 
 	// Filter tweets that contain at least minBusyWords busy words
 	var tweetsWithBusyWords []*tweets.Tweet
@@ -307,7 +333,160 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 	}
 
 	fmt.Printf("*** CLUSTERING: Ready for clustering with %d tweets and %d busy words ***\n", len(tweetsWithBusyWords), len(allBusyWords))
+
+	// Debug: Show some of the busy words being used
+	fmt.Printf("*** CLUSTERING: Sample busy words: ")
+	wordCount := 0
+	for word := range allBusyWords {
+		if wordCount < 10 { // Show first 10 busy words
+			fmt.Printf("%s, ", word)
+			wordCount++
+		} else {
+			fmt.Printf("... (and %d more)\n", len(allBusyWords)-10)
+			break
+		}
+	}
+	if wordCount <= 10 {
+		fmt.Printf("\n")
+	}
+
+	// Perform optimized clustering
+	clusterer := pipeline.NewOptimizedTweetClusterer(
+		cfg.Analysis.MinJaccardSimilarity,
+		cfg.Analysis.MaxTweetsToCluster,
+	)
+
+	result := clusterer.ClusterTweets(tweetsWithBusyWords, allBusyWords)
+
+	// Print clustering results with ASCII visualization
+	fmt.Printf("*** CLUSTERING RESULTS ***\n")
+	fmt.Printf("Clusters found: %d\n", len(result.Clusters))
+	fmt.Printf("Graph density: %.4f\n", result.Stats.GraphDensity)
+	fmt.Printf("Total edges: %d\n", result.Stats.TotalEdges)
+	fmt.Printf("Processing time: %.3f seconds\n", result.Stats.ProcessingTime)
+
+	if len(result.Clusters) > 0 {
+		fmt.Printf("\n📊 CLUSTER VISUALIZATION:\n")
+		for i, cluster := range result.Clusters {
+			// Show shared busy words if available
+			busyWordsStr := ""
+			if len(cluster.BusyWords) > 0 {
+				busyWordsStr = fmt.Sprintf(" [%s]", strings.Join(cluster.BusyWords, ", "))
+			} else {
+				// Debug: Show why no busy words are displayed
+				fmt.Printf("*** DEBUG: Cluster %d has no shared busy words across all %d tweets ***\n", i+1, cluster.Size)
+			}
+			fmt.Printf("┌─ Cluster %d (%d tweets)%s\n", i+1, cluster.Size, busyWordsStr)
+
+			// Show first few tweets in each cluster
+			maxTweetsToShow := 20
+			if len(cluster.Tweets) < maxTweetsToShow {
+				maxTweetsToShow = len(cluster.Tweets)
+			}
+
+			// Apply deduplication if enabled
+			if cfg.Analysis.SuppressDuplicates {
+				// Group tweets by normalized text
+				groups := make(map[string][]*tweets.Tweet)
+
+				for _, tweet := range cluster.Tweets {
+					normalized := normalizeTweetForComparison(tweet.Text)
+					groups[normalized] = append(groups[normalized], tweet)
+				}
+
+				// Convert to sorted list
+				type tweetGroup struct {
+					Tweet *tweets.Tweet
+					Count int
+				}
+				var deduplicated []tweetGroup
+
+				for _, group := range groups {
+					deduplicated = append(deduplicated, tweetGroup{
+						Tweet: group[0], // Use first tweet as representative
+						Count: len(group),
+					})
+				}
+
+				// Sort by count (descending) then by text
+				sort.Slice(deduplicated, func(i, j int) bool {
+					if deduplicated[i].Count != deduplicated[j].Count {
+						return deduplicated[i].Count > deduplicated[j].Count
+					}
+					return deduplicated[i].Tweet.Text < deduplicated[j].Tweet.Text
+				})
+
+				for j, item := range deduplicated {
+					if j >= maxTweetsToShow {
+						break
+					}
+
+					prefix := "│  ├─"
+					if j == len(deduplicated)-1 || j == maxTweetsToShow-1 {
+						prefix = "│  └─"
+					}
+
+					// Show full tweet text without truncation
+					text := item.Tweet.Text
+
+					if item.Count > 1 {
+						fmt.Printf("%s \"%s\" (%d instances)\n", prefix, text, item.Count)
+					} else {
+						fmt.Printf("%s \"%s\"\n", prefix, text)
+					}
+				}
+
+				// Show if we have more deduplicated tweets than shown
+				if len(deduplicated) > maxTweetsToShow {
+					fmt.Printf("│  └─ ... and %d more unique tweets\n", len(deduplicated)-maxTweetsToShow)
+				}
+			} else {
+				// Original behavior - show all tweets
+				for j := 0; j < maxTweetsToShow; j++ {
+					tweet := cluster.Tweets[j]
+					prefix := "│  ├─"
+					if j == maxTweetsToShow-1 {
+						prefix = "│  └─"
+					}
+
+					// Show full tweet text without truncation
+					text := tweet.Text
+
+					fmt.Printf("%s \"%s\"\n", prefix, text)
+				}
+
+				// Show shared busy words if we have more tweets than shown
+				if len(cluster.Tweets) > maxTweetsToShow {
+					fmt.Printf("│  └─ ... and %d more tweets\n", len(cluster.Tweets)-maxTweetsToShow)
+				}
+			}
+
+			fmt.Printf("│\n")
+		}
+		fmt.Printf("└─ End of clusters\n")
+	}
+
 	fmt.Printf(strings.Repeat("=", 80) + "\n\n")
+}
+
+// normalizeTweetForComparison removes leading @mentions, RT prefixes, trailing URLs, and normalizes whitespace
+func normalizeTweetForComparison(text string) string {
+	// Remove leading "RT @username: " patterns
+	rtRegex := regexp.MustCompile(`^RT\s+@\w+:\s*`)
+	text = rtRegex.ReplaceAllString(text, "")
+
+	// Remove leading @mentions at the start
+	leadingMentionRegex := regexp.MustCompile(`^@\w+\s*`)
+	text = leadingMentionRegex.ReplaceAllString(text, "")
+
+	// Remove trailing URLs
+	urlRegex := regexp.MustCompile(`\s+https?://\S+$`)
+	text = urlRegex.ReplaceAllString(text, "")
+
+	// Normalize whitespace (multiple spaces to single space, trim)
+	text = strings.Join(strings.Fields(text), " ")
+
+	return strings.TrimSpace(text)
 }
 
 // RecentTweetWindow is a thread-safe, fixed-size queue for recent tweets
@@ -1338,13 +1517,11 @@ func loadPersistedState(stateDir string, freqClasses int, cfg *Config) {
 	// Check if any of the files exist
 	tokenCounterPath := filepath.Join(stateDir, "token_counter.json")
 	freqClassPath := filepath.Join(stateDir, "frequency_classes.json")
-	threePKPath := filepath.Join(stateDir, "threepartkey_mappings.json")
 
 	// If none of the files exist, just return and let the normal program run
 	_, err1 := os.Stat(tokenCounterPath)
 	_, err2 := os.Stat(freqClassPath)
-	_, err3 := os.Stat(threePKPath)
-	if os.IsNotExist(err1) && os.IsNotExist(err2) && os.IsNotExist(err3) {
+	if os.IsNotExist(err1) && os.IsNotExist(err2) {
 		fmt.Println("No persisted state files found. Starting fresh.")
 		fmt.Println("=== PERSISTED STATE LOADING COMPLETE ===")
 		return
@@ -1406,28 +1583,4 @@ func loadPersistedState(stateDir string, freqClasses int, cfg *Config) {
 	}
 
 	fmt.Println("=== PERSISTED STATE LOADING COMPLETE ===")
-}
-
-// loadThreePartKeyMappingsFromFile loads ThreePartKey mappings from a file
-func loadThreePartKeyMappingsFromFile(filename string, mappings map[string]tweets.ThreePartKey) error {
-	// Open the file
-	file, err := os.Open(filename)
-	if err != nil {
-		return fmt.Errorf("failed to open file %s: %v", filename, err)
-	}
-	defer file.Close()
-
-	// Decode into a temporary map first
-	var tempMappings map[string]tweets.ThreePartKey
-	decoder := gob.NewDecoder(file)
-	if err := decoder.Decode(&tempMappings); err != nil {
-		return fmt.Errorf("failed to decode mappings from %s: %v", filename, err)
-	}
-
-	// Copy the data to the target map
-	for k, v := range tempMappings {
-		mappings[k] = v
-	}
-
-	return nil
 }

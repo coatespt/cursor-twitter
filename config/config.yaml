@@ -62,7 +62,7 @@ min_count_threshold: 0
 # Busyword classes to consider in clustering.
 # There is probably no point in using words from the most frequent classes.
 # 
-busyword_classes: [2,3,4,5,6]
+busyword_classes: [4,5,6,7,8,9,10]
 
 # Word filtering configuration
 filter:
@@ -93,6 +93,14 @@ analysis:
   clustering_window_batches: 1
   # Minimum number of busy words a tweet must contain to be included in clustering
   min_busy_words_per_tweet: 2
+  # Minimum Jaccard similarity threshold for creating edges between tweets (0.0-1.0)
+  min_jaccard_similarity: 0.3
+  # Maximum number of tweets to cluster (0 = no limit, for performance safety)
+  max_tweets_to_cluster: 10000
+  # Suppress duplicate tweets in cluster visualization (removes leading @mentions, RT, trailing URLs)
+  suppress_duplicates: true
+  # Similarity threshold for considering tweets as duplicates (0.0-1.0)
+  duplicate_similarity_threshold: 0.9
 
 # The minimum length of a token to be considered
 min_token_len: 3
