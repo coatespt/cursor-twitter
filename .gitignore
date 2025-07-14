@@ -22,3 +22,7 @@ data/state/
 src/data/state/
 *.json
 *.prof
+bw_*.csv			
+pipeline_*.log	
+stats.csv
+*.log
