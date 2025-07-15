@@ -383,13 +383,16 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 		writeOutput("\n📊 CLUSTER VISUALIZATION:")
 		for i, cluster := range result.Clusters {
 			// Show shared busy words if available
-			busyWordsStr := ""
-			if len(cluster.BusyWords) > 0 {
-				busyWordsStr = fmt.Sprintf(" [%s]", strings.Join(cluster.BusyWords, ", "))
-			} else {
-				// Debug: Show why no busy words are displayed
-				writeOutput("*** DEBUG: Cluster %d has no shared busy words across all %d tweets ***", i+1, cluster.Size)
+			busyWordsWithClass := make([]string, 0, len(cluster.BusyWords))
+			for _, word := range cluster.BusyWords {
+				_, class, ok := pipeline.GetTokenInfo(word)
+				if ok && class > 0 {
+					busyWordsWithClass = append(busyWordsWithClass, fmt.Sprintf("%s %d", word, class))
+				} else {
+					busyWordsWithClass = append(busyWordsWithClass, word)
+				}
 			}
+			busyWordsStr := fmt.Sprintf(" [%s]", strings.Join(busyWordsWithClass, ", "))
 			writeOutput("┌─ Cluster %d (%d tweets)%s", i+1, cluster.Size, busyWordsStr)
 
 			// Show first few tweets in each cluster

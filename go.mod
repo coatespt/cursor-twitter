@@ -8,4 +8,8 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require github.com/bits-and-blooms/bitset v1.10.0 // indirect
+require (
+	github.com/bits-and-blooms/bitset v1.10.0 // indirect
+	github.com/muesli/clusters v0.0.0-20180605185049-a07a36e67d36 // indirect
+	github.com/muesli/kmeans v0.3.1 // indirect
+)

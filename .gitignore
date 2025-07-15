@@ -26,3 +26,4 @@ bw_*.csv
 pipeline_*.log	
 stats.csv
 *.log
+logs/

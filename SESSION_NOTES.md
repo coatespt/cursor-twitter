@@ -1,5 +1,40 @@
 # Session Notes
  
+# TTD
+- 100% of the clusters appear to be in Spanish (or maybe some Portuguese) Need to see if English Tweets are really so rare? 
+  - This seems to be dependent on the Z scores.  
+  - z_scores: [4.0, 5.0, 4.0, 3.5, 3.5, 3.5, 3.5, 3.5, 3.5, 3.0]  got mucho Spanish clusters.
+  - z_scores: [5.0, 5.0, 5.0, 5.0, 3.5, 3.5, 3.5, 3.0, 2.5, 2.5]  got mucho English clusters.
+
+- Print out the busywords in each Tweet the is in the output after "Class n:" and before the Tweet text.
+
+- The application is running on two or three days of tweets now. Hopefully the Orgulo Herbeldes, Lion King, Whitney Houston stuff will happen in that inverval. 
+
+- The language field is worthless. Look into whether the parser could estimate the language and mark the tweets accordingly.  English v non-English would be enough.
+
+# Other Tuning
+- The window is now 20m tokens, or about 2m Tweets. That's about 66 minutes of the decahose, or about 28 minutes of actual time at the rate we consume.  66 minutes seems like a reasonable turnover. How far out of sync with the day would you get in an hour? But it could be shorter.  Worth trying.
+- Batch size is now 10,000. Verify in the code that it really is Tweets and not tokens. 10k Tweets is 20 seconds of decahose. That's a short time. Try a larger value. It might make the true outliers stand out more crisply by reducing variance.
+
+- Examine the de-duplication functionality in the cluster display. Make sure it does what it's supposed to. The purpose is to not show a zillion copies.
+
+- Jacquard similarity for the clustering seems to be applied to all the tokens in the Tweets. 
+  - Is that true, and if so, is it correct? 
+  - Maybe it should be only on the busywords. 
+  - In which case, Jacquard similarity might not be important. Maybe just the raw occurrences?
+
+- I could swear that I used k-means clustering before and had good results. Think about swapping in a k-means implementation and being able to swtich among them.
+
+- There are a lot of tweets like the following, filled with ???. Maybe the should be stripped out in the tokeininzing phase?  Pehaps even have the entire Tweet discarded as they usually seem to dominate the Tweet they are in.
+
+│
+┌─ Cluster 2 (15 tweets) [earthquake, jishin]
+│  ├─ "RT @eew_jp: ???? 2012/01/29 16:46???????????????20km????????4.6???????????????????????3??? http://t.co/qk0HXUfl #jishin #earthquake" (13 instances)
+│  ├─ "????(&gt;_&lt; ) RT @eq_tokyo: ??????????(??20km)?M3.7????????????????0??(16:47:03)?????????????#saigai #eqjp #earthquake #jishin #?? #??"
+│  └─ "RT @eq_tokyo: ??????????(??20km)?M3.7????????????????0??(16:47:03)?????????????#saigai #eqjp #earthquake #jishin #?? #??"
+│
+
+
 
 # Cursor Principles 
 
@@ -510,6 +545,125 @@ Y: 27021 to 44298119
 
 - The Tweets get ACKed, so rabbitMQ manages to never let the queue get very long--it seems to never get up to 50.
   
-- Google says a modern mac could probably do about 10x as fast as this antique iMac. So, a new machine should handle multiple fire hoses.
+- Google says a modern Mac could probably do about 10x as fast as this antique iMac. So, a new machine should handle multiple fire hoses.
 
 - We have about 350 hours of decahose. At 2.5 decahoses, we could process the entire data set on this machine in about 140 hours or a little under six days. Which seems about right--I think it took a more than two weeks to collect it.
+
+# Toy Golang Code for using K-means
+Here's a complete, self-contained Go program that demonstrates how to:
+
+    Represent short sentences as feature vectors based on selected important words
+
+    Cluster them using k-means
+
+    Print the cluster assignments
+
+It uses the github.com/muesli/kmeans library.
+✅ What This Code Does
+
+    Input: short "sentences", each with 1–5 "important words"
+
+    Output: sentences grouped by k-means cluster
+
+    Uses Euclidean distance, but you can swap in Cosine if needed
+
+🧱 Example Go Program
+
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"github.com/muesli/clustering/distance"
+	"github.com/muesli/kmeans"
+)
+
+// Data: sentences and their key words
+var data = map[string][]string{
+	"I love pizza and pasta":        {"pizza", "pasta"},
+	"She likes ramen and sushi":     {"ramen", "sushi"},
+	"Cat sleeps all day":            {"cat", "sleeps"},
+	"Dogs bark in the park":         {"dog", "bark", "park"},
+	"I enjoy Italian food":          {"pizza", "italian"},
+	"Japanese food is delicious":    {"sushi", "ramen"},
+	"Dog plays fetch":               {"dog", "plays"},
+	"Cat chases laser":              {"cat", "chases"},
+	"He walks in the dog park":      {"dog", "walks", "park"},
+	"She naps beside the cat":       {"cat", "naps"},
+}
+
+func main() {
+	// Step 1: Build vocabulary
+	wordToIndex := make(map[string]int)
+	idx := 0
+	for _, words := range data {
+		for _, word := range words {
+			if _, exists := wordToIndex[word]; !exists {
+				wordToIndex[word] = idx
+				idx++
+			}
+		}
+	}
+	vocabSize := len(wordToIndex)
+
+	// Step 2: Build vectors
+	sentences := make([]string, 0, len(data))
+	vectors := make([]kmeans.Observation, 0, len(data))
+
+	for sentence, words := range data {
+		vec := make([]float64, vocabSize)
+		for _, word := range words {
+			if i, ok := wordToIndex[word]; ok {
+				vec[i] = 1.0
+			}
+		}
+		sentences = append(sentences, sentence)
+		vectors = append(vectors, vec)
+	}
+
+	// Step 3: Cluster
+	model := kmeans.New()
+	clusters, err := model.Partition(vectors, 3, distance.Euclidean)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Step 4: Output
+	for i, cluster := range clusters {
+		fmt.Printf("\nCluster %d:\n", i)
+		for _, obs := range cluster.Observations {
+			// Find sentence corresponding to this observation
+			for j, v := range vectors {
+				if sameVector(v, obs) {
+					fmt.Println("-", sentences[j])
+				}
+			}
+		}
+	}
+}
+
+// Helper: compare two vectors
+func sameVector(a, b kmeans.Observation) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+🛠 To Run This:
+
+    Install the dependency:
+
+go get github.com/muesli/kmeans
+
+    Save the program to main.go
+
+    Run it:
+
+go run main.go
