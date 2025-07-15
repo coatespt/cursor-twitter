@@ -35,10 +35,10 @@ rebuild_every_files: 4
 # Note 20k seems to reduce the number of clusters and the number 
 # of elements in a cluster.
 # Hmm. 5k seems also to get fewer clusters. 
-batch: 5000
+batch: 9000
 
 # Number of batches to keep in the sliding tweet window
-window_batches: 3
+window_batches: 4
 
 # Whether to log to the console
 verbose: true 
@@ -53,7 +53,7 @@ log_dir: /Users/petercoates/python-work/cursor-twitter/logs
 # This seems to get more English language clusters. Not sure why The common words 
 #    are more restricted, and the rarest words less restricted.
 #    But it also gets relatively few clusters overall.
-z_scores: [5.0, 5.0, 5.0, 3.5, 3.5, 3.5, 4.5, 5.5, 6.5, 3.2]
+z_scores: [5.0, 5.0, 5.0, 3.5, 3.5, 3.0, 4.0, 4.0, 4.0, 3.0]
 
 
 # The number of frequency classes to create
@@ -76,7 +76,7 @@ min_count_threshold: 0
 # Busyword classes to consider in clustering.
 # There is probably no point in using words from the most frequent classes.
 # 
-busyword_classes: [4,5,6,7,8,9,10]
+busyword_classes: [5,6,7,8,9,10]
 
 # Word filtering configuration
 filter:
@@ -106,13 +106,16 @@ sender:
 
 # Analysis and clustering configuration
 analysis:
+  # Clustering method: "graph" (default, Louvain/modularity) or "kmeans" (busy word vector k-means)
+  clustering_method: graph  # Options: 'graph' (Louvain/modularity), 'kmeans' (busy word vectors)
+  # Number of clusters for k-means (only used if clustering_method is "kmeans")
+  kmeans_k: 5
   # Number of batches of recent tweets to use for clustering
-  clustering_window_batches: 2
+  clustering_window_batches: 3
   # Minimum number of busy words a tweet must contain to be included in clustering
-  min_busy_words_per_tweet: 1
+  min_busy_words_per_tweet: 2
   # Minimum Jaccard similarity threshold for creating edges between tweets (0.0-1.0)
-  # WARNING: Not clear what is being measured. Is it all the words in the tweets or just the busywords?
-  min_jaccard_similarity: 0.3
+  min_jaccard_similarity: 0.2
   # Maximum number of tweets to cluster (0 = no limit, for performance safety)
   max_tweets_to_cluster: 10000
   # Suppress duplicate tweets in cluster visualization (removes leading @mentions, RT, trailing URLs)
@@ -121,9 +124,8 @@ analysis:
   duplicate_similarity_threshold: 0.9
   # Language filtering: "en" for English only, "all" for all languages, or any other language code
   # Examples: "en", "es", "fr", "de", "all"
-  # Anything but "all" seems to be useless. Most of the language fields bear no
-  #    relationship to the actual language of the Tweet.
   language_filter: "all"
+  kmeans_use_all_words: false  # If true, k-means uses all words in tweets; if false, only busy words
 
 # The minimum length of a token to be considered
 min_token_len: 3

@@ -796,3 +796,10 @@ func (bwp *BusyWordProcessor) existsInGlobalTokenMapping(key tweets.ThreePartKey
 
 	return exists
 }
+
+// kMeansClustering clusters tweets using k-means on busy word vectors.
+// TODO: Implement the actual algorithm.
+func kMeansClustering(vectors [][]int, k int) [][]int {
+	// Placeholder: returns empty clusters
+	return [][]int{}
+}

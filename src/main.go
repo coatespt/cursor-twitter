@@ -14,6 +14,9 @@ import (
 	"sync"
 	"time"
 
+	amqp "github.com/rabbitmq/amqp091-go"
+	"gopkg.in/yaml.v3"
+
 	"cursor-twitter/src/filter"
 	"cursor-twitter/src/pipeline"
 	"cursor-twitter/src/tweets"
@@ -23,9 +26,6 @@ import (
 	"syscall"
 
 	"runtime/pprof"
-
-	amqp "github.com/rabbitmq/amqp091-go"
-	"gopkg.in/yaml.v3"
 )
 
 // Config struct for YAML config file (add log_dir)
@@ -87,6 +87,9 @@ type Config struct {
 		SuppressDuplicates           bool    `yaml:"suppress_duplicates"`            // Suppress duplicate tweets in visualization
 		DuplicateSimilarityThreshold float64 `yaml:"duplicate_similarity_threshold"` // Similarity threshold for duplicates
 		LanguageFilter               string  `yaml:"language_filter"`                // Language filter: "en", "es", "all", etc.
+		ClusteringMethod             string  `yaml:"clustering_method"`              // Method for clustering: "graph" or "kmeans"
+		KmeansK                      int     `yaml:"kmeans_k"`                       // Number of clusters for k-means clustering
+		KmeansUseAllWords            bool    `yaml:"kmeans_use_all_words"`           // Use all words in tweet vectors for k-means clustering
 	} `yaml:"analysis"`
 }
 
@@ -364,138 +367,156 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 		writeOutput("")
 	}
 
-	// Perform optimized clustering
-	clusterer := pipeline.NewOptimizedTweetClusterer(
-		cfg.Analysis.MinJaccardSimilarity,
-		cfg.Analysis.MaxTweetsToCluster,
-	)
-
-	result := clusterer.ClusterTweets(tweetsWithBusyWords, allBusyWords)
-
-	// Print clustering results with ASCII visualization
-	writeOutput("*** CLUSTERING RESULTS ***")
-	writeOutput("Clusters found: %d", len(result.Clusters))
-	writeOutput("Graph density: %.4f", result.Stats.GraphDensity)
-	writeOutput("Total edges: %d", result.Stats.TotalEdges)
-	writeOutput("Processing time: %.3f seconds", result.Stats.ProcessingTime)
-
-	if len(result.Clusters) > 0 {
-		writeOutput("\n📊 CLUSTER VISUALIZATION:")
-		for i, cluster := range result.Clusters {
-			// Show shared busy words if available
-			busyWordsWithClass := make([]string, 0, len(cluster.BusyWords))
-			for _, word := range cluster.BusyWords {
-				_, class, ok := pipeline.GetTokenInfo(word)
-				if ok && class > 0 {
-					busyWordsWithClass = append(busyWordsWithClass, fmt.Sprintf("%s %d", word, class))
-				} else {
-					busyWordsWithClass = append(busyWordsWithClass, word)
-				}
-			}
-			busyWordsStr := fmt.Sprintf(" [%s]", strings.Join(busyWordsWithClass, ", "))
-			writeOutput("┌─ Cluster %d (%d tweets)%s", i+1, cluster.Size, busyWordsStr)
-
-			// Show first few tweets in each cluster
-			maxTweetsToShow := 20
-			if len(cluster.Tweets) < maxTweetsToShow {
-				maxTweetsToShow = len(cluster.Tweets)
-			}
-
-			// Apply deduplication if enabled
-			if cfg.Analysis.SuppressDuplicates {
-				// Group tweets by normalized text
-				groups := make(map[string][]*tweets.Tweet)
-
-				for _, tweet := range cluster.Tweets {
-					normalized := normalizeTweetForComparison(tweet.Text)
-					groups[normalized] = append(groups[normalized], tweet)
-				}
-
-				// Convert to sorted list
-				type tweetGroup struct {
-					Tweet *tweets.Tweet
-					Count int
-				}
-				var deduplicated []tweetGroup
-
-				for _, group := range groups {
-					deduplicated = append(deduplicated, tweetGroup{
-						Tweet: group[0], // Use first tweet as representative
-						Count: len(group),
-					})
-				}
-
-				// Sort by count (descending) then by text
-				sort.Slice(deduplicated, func(i, j int) bool {
-					if deduplicated[i].Count != deduplicated[j].Count {
-						return deduplicated[i].Count > deduplicated[j].Count
-					}
-					return deduplicated[i].Tweet.Text < deduplicated[j].Tweet.Text
-				})
-
-				for j, item := range deduplicated {
-					if j >= maxTweetsToShow {
-						break
-					}
-
-					prefix := "│  ├─"
-					if j == len(deduplicated)-1 || j == maxTweetsToShow-1 {
-						prefix = "│  └─"
-					}
-
-					// Show full tweet text without truncation
-					text := item.Tweet.Text
-
-					if item.Count > 1 {
-						writeOutput("%s \"%s\" (%d instances)", prefix, text, item.Count)
-					} else {
-						writeOutput("%s \"%s\"", prefix, text)
-					}
-				}
-
-				// Show if we have more deduplicated tweets than shown
-				if len(deduplicated) > maxTweetsToShow {
-					writeOutput("│  └─ ... and %d more unique tweets", len(deduplicated)-maxTweetsToShow)
-				}
-			} else {
-				// Original behavior - show all tweets
-				for j := 0; j < maxTweetsToShow; j++ {
-					tweet := cluster.Tweets[j]
-					prefix := "│  ├─"
-					if j == maxTweetsToShow-1 {
-						prefix = "│  └─"
-					}
-
-					// Show full tweet text without truncation
-					text := tweet.Text
-
-					writeOutput("%s \"%s\"", prefix, text)
-				}
-
-				// Show shared busy words if we have more tweets than shown
-				if len(cluster.Tweets) > maxTweetsToShow {
-					writeOutput("│  └─ ... and %d more tweets", len(cluster.Tweets)-maxTweetsToShow)
-				}
-			}
-
-			writeOutput("│")
-		}
-		writeOutput("└─ End of clusters")
+	// In printBatchSummary, after filtering and before clustering:
+	clusteringMethod := "graph"
+	if cfg.Analysis.ClusteringMethod != "" {
+		clusteringMethod = cfg.Analysis.ClusteringMethod
 	}
 
-	writeOutput(strings.Repeat("=", 80) + "\n")
+	writeOutput("*** CLUSTERING METHOD: %s ***", strings.ToUpper(clusteringMethod))
 
-	// Append the captured output to the global cluster output file
-	clusterOutputFileOnce.Do(func() {
-		// Ensure the file is created (truncated if exists)
-		_ = os.WriteFile(clusterOutputFilePath, []byte{}, 0644)
-	})
-	f, err := os.OpenFile(clusterOutputFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		fmt.Printf("*** ERROR: Failed to write cluster output to %s: %v ***\n", clusterOutputFilePath, err)
-	} else {
-		_, _ = f.WriteString(output.String())
-		f.Close()
+	switch clusteringMethod {
+	case "kmeans":
+		runKMeansClusteringGo(tweetsWithBusyWords, allBusyWords, cfg, writeOutput)
+		writeOutput(strings.Repeat("=", 80) + "\n")
+		break
+	case "graph":
+		fallthrough
+	default:
+		// Perform optimized graph clustering (existing code)
+		clusterer := pipeline.NewOptimizedTweetClusterer(
+			cfg.Analysis.MinJaccardSimilarity,
+			cfg.Analysis.MaxTweetsToCluster,
+		)
+		result := clusterer.ClusterTweets(tweetsWithBusyWords, allBusyWords)
+
+		// Print clustering results with ASCII visualization (existing code)
+		writeOutput("*** CLUSTERING RESULTS ***")
+		writeOutput("Clusters found: %d", len(result.Clusters))
+		writeOutput("Graph density: %.4f", result.Stats.GraphDensity)
+		writeOutput("Total edges: %d", result.Stats.TotalEdges)
+		writeOutput("Processing time: %.3f seconds", result.Stats.ProcessingTime)
+
+		if len(result.Clusters) > 0 {
+			writeOutput("\n📊 CLUSTER VISUALIZATION:")
+			for i, cluster := range result.Clusters {
+				busyWordsWithClass := make([]string, 0, len(cluster.BusyWords))
+				for _, word := range cluster.BusyWords {
+					_, class, ok := pipeline.GetTokenInfo(word)
+					if ok && class > 0 {
+						busyWordsWithClass = append(busyWordsWithClass, fmt.Sprintf("%s %d", word, class))
+					} else {
+						busyWordsWithClass = append(busyWordsWithClass, word)
+					}
+				}
+				busyWordsStr := fmt.Sprintf(" [%s]", strings.Join(busyWordsWithClass, ", "))
+				// Get the date/time of the first tweet in the cluster
+				firstTweet := cluster.Tweets[0]
+				timeStr := time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
+				writeOutput("┌─ Cluster %d (%d tweets, first tweet: %s)%s", i+1, cluster.Size, timeStr, busyWordsStr)
+
+				// Show first few tweets in each cluster
+				maxTweetsToShow := 20
+				if len(cluster.Tweets) < maxTweetsToShow {
+					maxTweetsToShow = len(cluster.Tweets)
+				}
+
+				// Apply deduplication if enabled
+				if cfg.Analysis.SuppressDuplicates {
+					// Group tweets by normalized text
+					groups := make(map[string][]*tweets.Tweet)
+
+					for _, tweet := range cluster.Tweets {
+						normalized := normalizeTweetForComparison(tweet.Text)
+						groups[normalized] = append(groups[normalized], tweet)
+					}
+
+					// Convert to sorted list
+					type tweetGroup struct {
+						Tweet *tweets.Tweet
+						Count int
+					}
+					var deduplicated []tweetGroup
+
+					for _, group := range groups {
+						deduplicated = append(deduplicated, tweetGroup{
+							Tweet: group[0], // Use first tweet as representative
+							Count: len(group),
+						})
+					}
+
+					// Sort by count (descending) then by text
+					sort.Slice(deduplicated, func(i, j int) bool {
+						if deduplicated[i].Count != deduplicated[j].Count {
+							return deduplicated[i].Count > deduplicated[j].Count
+						}
+						return deduplicated[i].Tweet.Text < deduplicated[j].Tweet.Text
+					})
+
+					for j, item := range deduplicated {
+						if j >= maxTweetsToShow {
+							break
+						}
+
+						prefix := "│  ├─"
+						if j == len(deduplicated)-1 || j == maxTweetsToShow-1 {
+							prefix = "│  └─"
+						}
+
+						// Show full tweet text without truncation
+						text := item.Tweet.Text
+
+						if item.Count > 1 {
+							writeOutput("%s \"%s\" (%d instances)", prefix, text, item.Count)
+						} else {
+							writeOutput("%s \"%s\"", prefix, text)
+						}
+					}
+
+					// Show if we have more deduplicated tweets than shown
+					if len(deduplicated) > maxTweetsToShow {
+						writeOutput("│  └─ ... and %d more unique tweets", len(deduplicated)-maxTweetsToShow)
+					}
+				} else {
+					// Original behavior - show all tweets
+					for j := 0; j < maxTweetsToShow; j++ {
+						tweet := cluster.Tweets[j]
+						prefix := "│  ├─"
+						if j == maxTweetsToShow-1 {
+							prefix = "│  └─"
+						}
+
+						// Show full tweet text without truncation
+						text := tweet.Text
+
+						writeOutput("%s \"%s\"", prefix, text)
+					}
+
+					// Show shared busy words if we have more tweets than shown
+					if len(cluster.Tweets) > maxTweetsToShow {
+						writeOutput("│  └─ ... and %d more tweets", len(cluster.Tweets)-maxTweetsToShow)
+					}
+				}
+
+				writeOutput("│")
+			}
+			writeOutput("└─ End of clusters")
+		}
+
+		writeOutput(strings.Repeat("=", 80) + "\n")
+
+		// Append the captured output to the global cluster output file
+		clusterOutputFileOnce.Do(func() {
+			// Ensure the file is created (truncated if exists)
+			_ = os.WriteFile(clusterOutputFilePath, []byte{}, 0644)
+		})
+		f, err := os.OpenFile(clusterOutputFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Printf("*** ERROR: Failed to write cluster output to %s: %v ***\n", clusterOutputFilePath, err)
+		} else {
+			_, _ = f.WriteString(output.String())
+			f.Close()
+		}
 	}
 }
 
@@ -1627,4 +1648,217 @@ func loadPersistedState(stateDir string, freqClasses int, cfg *Config) {
 	}
 
 	fmt.Println("=== PERSISTED STATE LOADING COMPLETE ===")
+}
+
+// Simple k-means implementation for busy word vectors
+func runKMeansClusteringGo(tweets []*tweets.Tweet, busyWords map[string]bool, cfg *Config, writeOutput func(string, ...interface{})) {
+	writeOutput("*** K-MEANS CLUSTERING (Go implementation) ***")
+	if len(tweets) == 0 || len(busyWords) == 0 {
+		writeOutput("No tweets or busy words to cluster.")
+		return
+	}
+
+	useAllWords := false
+	if cfg.Analysis.KmeansUseAllWords {
+		useAllWords = true
+	}
+	if useAllWords {
+		writeOutput("[KMEANS] Using ALL words in tweet vectors.")
+	} else {
+		writeOutput("[KMEANS] Using only BUSY words in tweet vectors.")
+	}
+
+	// Build vocabulary: busy word -> index
+	wordToIndex := make(map[string]int)
+	idx := 0
+	if useAllWords {
+		// Collect all unique tokens from all tweets
+		uniqueWords := make(map[string]bool)
+		for _, tweet := range tweets {
+			for _, token := range tweet.Tokens {
+				uniqueWords[token] = true
+			}
+		}
+		for word := range uniqueWords {
+			wordToIndex[word] = idx
+			idx++
+		}
+	} else {
+		for word := range busyWords {
+			wordToIndex[word] = idx
+			idx++
+		}
+	}
+
+	// Build vectors for each tweet (binary vector)
+	vectors := make([][]int, len(tweets))
+	for i, tweet := range tweets {
+		vec := make([]int, len(wordToIndex))
+		for _, token := range tweet.Tokens {
+			if j, ok := wordToIndex[token]; ok {
+				vec[j] = 1
+			}
+		}
+		vectors[i] = vec
+	}
+
+	k := cfg.Analysis.KmeansK
+	if k <= 0 {
+		k = 10 // fallback default
+	}
+	if k > len(tweets) {
+		k = len(tweets)
+	}
+
+	clusters := kMeansClusteringGo(vectors, k)
+
+	// Map cluster index to tweet indices
+	clusterToTweets := make(map[int][]int)
+	for i, c := range clusters {
+		clusterToTweets[c] = append(clusterToTweets[c], i)
+	}
+
+	writeOutput("Clusters found: %d", len(clusterToTweets))
+	writeOutput("")
+	// For each cluster, print header, top busy words, and tweets
+	clusterNum := 1
+	for _, tweetIndices := range clusterToTweets {
+		if len(tweetIndices) == 0 {
+			continue
+		}
+		// Compute centroid for this cluster
+		centroid := make([]float64, len(wordToIndex))
+		for _, idx := range tweetIndices {
+			for j, v := range vectors[idx] {
+				centroid[j] += float64(v)
+			}
+		}
+		for j := 0; j < len(centroid); j++ {
+			centroid[j] /= float64(len(tweetIndices))
+		}
+		// Find top busy words for this cluster (centroid features)
+		topWords := topBusyWordsFromCentroidGo(centroid, wordToIndex, 10)
+		busyWordsStr := ""
+		if len(topWords) > 0 {
+			busyWordsStr = fmt.Sprintf(" [%s]", strings.Join(topWords, ", "))
+		}
+		// Get the date/time of the first tweet in the cluster
+		firstTweet := tweets[tweetIndices[0]]
+		timeStr := time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
+		writeOutput("┌─ Cluster %d (%d tweets, first tweet: %s)%s", clusterNum, len(tweetIndices), timeStr, busyWordsStr)
+		maxTweetsToShow := 20
+		for j, idx := range tweetIndices {
+			if j >= maxTweetsToShow {
+				writeOutput("│  └─ ... and %d more tweets", len(tweetIndices)-maxTweetsToShow)
+				break
+			}
+			prefix := "│  ├─"
+			if j == maxTweetsToShow-1 || j == len(tweetIndices)-1 {
+				prefix = "│  └─"
+			}
+			writeOutput("%s \"%s\"", prefix, tweets[idx].Text)
+		}
+		writeOutput("│")
+		clusterNum++
+	}
+	writeOutput("└─ End of clusters")
+}
+
+// kMeansClusteringGo clusters binary vectors using a simple k-means algorithm (Hamming distance)
+func kMeansClusteringGo(vectors [][]int, k int) []int {
+	if len(vectors) == 0 || k <= 0 {
+		return nil
+	}
+	N := len(vectors)
+	D := len(vectors[0])
+	// Initialize centroids randomly
+	centroids := make([][]float64, k)
+	for i := 0; i < k; i++ {
+		centroids[i] = make([]float64, D)
+		idx := i % N
+		for j := 0; j < D; j++ {
+			centroids[i][j] = float64(vectors[idx][j])
+		}
+	}
+	assignments := make([]int, N)
+	changed := true
+	maxIters := 100
+	for iter := 0; iter < maxIters && changed; iter++ {
+		changed = false
+		// Assignment step
+		for i, vec := range vectors {
+			minDist := math.MaxFloat64
+			best := 0
+			for c, centroid := range centroids {
+				dist := hammingDistanceFloat(vec, centroid)
+				if dist < minDist {
+					minDist = dist
+					best = c
+				}
+			}
+			if assignments[i] != best {
+				assignments[i] = best
+				changed = true
+			}
+		}
+		// Update step
+		counts := make([]int, k)
+		newCentroids := make([][]float64, k)
+		for c := 0; c < k; c++ {
+			newCentroids[c] = make([]float64, D)
+		}
+		for i, vec := range vectors {
+			c := assignments[i]
+			counts[c]++
+			for j, v := range vec {
+				newCentroids[c][j] += float64(v)
+			}
+		}
+		for c := 0; c < k; c++ {
+			if counts[c] > 0 {
+				for j := 0; j < D; j++ {
+					newCentroids[c][j] /= float64(counts[c])
+				}
+			} else {
+				// Reinitialize empty cluster to a random vector
+				idx := c % N
+				for j := 0; j < D; j++ {
+					newCentroids[c][j] = float64(vectors[idx][j])
+				}
+			}
+		}
+		centroids = newCentroids
+	}
+	return assignments
+}
+
+// hammingDistanceFloat computes Hamming distance between int vector and float centroid
+func hammingDistanceFloat(vec []int, centroid []float64) float64 {
+	dist := 0.0
+	for i, v := range vec {
+		if (centroid[i] >= 0.5 && v == 0) || (centroid[i] < 0.5 && v == 1) {
+			dist += 1.0
+		}
+	}
+	return dist
+}
+
+// topBusyWordsFromCentroidGo returns the top N busy words from a centroid vector
+func topBusyWordsFromCentroidGo(centroid []float64, wordToIndex map[string]int, n int) []string {
+	type wordScore struct {
+		word  string
+		score float64
+	}
+	var scores []wordScore
+	for word, idx := range wordToIndex {
+		scores = append(scores, wordScore{word, centroid[idx]})
+	}
+	sort.Slice(scores, func(i, j int) bool {
+		return scores[i].score > scores[j].score
+	})
+	result := make([]string, 0, n)
+	for i := 0; i < n && i < len(scores); i++ {
+		result = append(result, scores[i].word)
+	}
+	return result
 }

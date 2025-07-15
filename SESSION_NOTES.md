@@ -1,14 +1,17 @@
 # Session Notes
+
  
 # TTD
-- 100% of the clusters appear to be in Spanish (or maybe some Portuguese) Need to see if English Tweets are really so rare? 
-  - This seems to be dependent on the Z scores.  
-  - z_scores: [4.0, 5.0, 4.0, 3.5, 3.5, 3.5, 3.5, 3.5, 3.5, 3.0]  got mucho Spanish clusters.
-  - z_scores: [5.0, 5.0, 5.0, 5.0, 3.5, 3.5, 3.5, 3.0, 2.5, 2.5]  got mucho English clusters.
+
+- Current clustering is graph-based Louvain/modularity. 
+  - Add k-means based on the busy words alone.
+  - Possibly add Louvain/modularity based only on the busy words, not the tweet text as an option.
+  - Cursor is implementing k-means now. The go libraries for it apparently are missing critical pieces. It should not be a stretch to implement.
+
 
 - Print out the busywords in each Tweet the is in the output after "Class n:" and before the Tweet text.
 
-- The application is running on two or three days of tweets now. Hopefully the Orgulo Herbeldes, Lion King, Whitney Houston stuff will happen in that inverval. 
+- The application is running on two or three days of tweets now. Unfortunately, the Orgulo Herbeldes, Lion King, Whitney Houston stuff does not happen in the inverval I unpacked. Grrr.. 
 
 - The language field is worthless. Look into whether the parser could estimate the language and mark the tweets accordingly.  English v non-English would be enough.
 
@@ -33,6 +36,26 @@
 │  ├─ "????(&gt;_&lt; ) RT @eq_tokyo: ??????????(??20km)?M3.7????????????????0??(16:47:03)?????????????#saigai #eqjp #earthquake #jishin #?? #??"
 │  └─ "RT @eq_tokyo: ??????????(??20km)?M3.7????????????????0??(16:47:03)?????????????#saigai #eqjp #earthquake #jishin #?? #??"
 │
+
+# Notes on Issues That Have Come Up in Development
+## Cluster Quality
+The clusters don't seem nearly as good as they were with the old Java implementation.
+
+## Language
+
+It would be great to be able to run for only a certain language. Unfortunately, there is no good way to do this at present.
+
+### Language Field
+The language field in the Tweets is worse than worthless. No apparant relationship to the actual language of the tweet.
+
+Detecting the language on the fly would probably be a big slow-down, but it might be possible to do it in the original parser.
+
+### Language Imbalance in Clusters
+
+100% of the clusters appear to be in Spanish (or maybe some Portuguese) Need to see if English Tweets are really so rare? Investigation suggests
+  - This seems to be dependent on the Z scores. (?!?)
+  - z_scores: [4.0, 5.0, 4.0, 3.5, 3.5, 3.5, 3.5, 3.5, 3.5, 3.0]  got mucho Spanish clusters.
+  - z_scores: [5.0, 5.0, 5.0, 5.0, 3.5, 3.5, 3.5, 3.0, 2.5, 2.5]  got mucho English clusters and only some Spanish and Portuguese.
 
 
 
