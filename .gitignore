@@ -27,3 +27,4 @@ pipeline_*.log
 stats.csv
 *.log
 logs/
+whitney.txt

@@ -8,10 +8,12 @@
   - Possibly add Louvain/modularity based only on the busy words, not the tweet text as an option.
   - Cursor is implementing k-means now. The go libraries for it apparently are missing critical pieces. It should not be a stretch to implement.
 
+- The full set of Tweets is parsed into msg_input_3. Whitney Houston's death is announce somewhere about here. Look for the Orgulo Herbeldes, Lion King, Whitney Houston
+
+../twits/msg_output_3/gnip.csv_1329005955894_1329006255894.csv
 
 - Print out the busywords in each Tweet the is in the output after "Class n:" and before the Tweet text.
 
-- The application is running on two or three days of tweets now. Unfortunately, the Orgulo Herbeldes, Lion King, Whitney Houston stuff does not happen in the inverval I unpacked. Grrr.. 
 
 - The language field is worthless. Look into whether the parser could estimate the language and mark the tweets accordingly.  English v non-English would be enough.
 
@@ -345,14 +347,16 @@ CD to the root cursor-twitter diectory.
 
 Note, this assumes you are in the root. Sometimes cursor wants to run it from src which is not right. It is better to build and run from the root directory. Don't let cursor run it at all.
 
-cd /Users/petercoates/python-work/cursor-twitter
-go build -o main src/main.go 
-./main  -config ./config/config.yaml -print-tweets=false 
+- cd /Users/petercoates/python-work/cursor-twitter
+
+- go build -o main src/main.go 
+
+- ./main  -config ./config/config.yaml -print-tweets=false 
 
 IMPORTANT FLAGS:
--profile  causes it to produce profiler output (see section on profiling). Profiling slows the whole thing down--the results are relative.
+- profile  causes it to produce profiler output (see section on profiling). Profiling slows the whole thing down--the results are relative.
 
--load-state  Causes it to load the state from disk. Without this it takes some minutes to build up enought tweets to start computing busy-words.
+- load-state  Causes it to load the state from disk. Without this it takes some minutes to build up enought tweets to start computing busy-words.
 
 ## Shutting down the main
 
