@@ -90,6 +90,7 @@ type Config struct {
 		ClusteringMethod             string  `yaml:"clustering_method"`              // Method for clustering: "graph" or "kmeans"
 		KmeansK                      int     `yaml:"kmeans_k"`                       // Number of clusters for k-means clustering
 		KmeansUseAllWords            bool    `yaml:"kmeans_use_all_words"`           // Use all words in tweet vectors for k-means clustering
+		MinClusterSize               int     `yaml:"min_cluster_size"`               // Minimum number of tweets in a cluster for it to be included in the output
 	} `yaml:"analysis"`
 }
 
@@ -400,6 +401,9 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 		if len(result.Clusters) > 0 {
 			writeOutput("\n📊 CLUSTER VISUALIZATION:")
 			for i, cluster := range result.Clusters {
+				if cluster.Size < cfg.Analysis.MinClusterSize {
+					continue
+				}
 				busyWordsWithClass := make([]string, 0, len(cluster.BusyWords))
 				for _, word := range cluster.BusyWords {
 					_, class, ok := pipeline.GetTokenInfo(word)
@@ -1723,7 +1727,7 @@ func runKMeansClusteringGo(tweets []*tweets.Tweet, busyWords map[string]bool, cf
 	// For each cluster, print header, top busy words, and tweets
 	clusterNum := 1
 	for _, tweetIndices := range clusterToTweets {
-		if len(tweetIndices) == 0 {
+		if len(tweetIndices) < cfg.Analysis.MinClusterSize {
 			continue
 		}
 		// Compute centroid for this cluster

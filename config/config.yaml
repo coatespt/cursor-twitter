@@ -147,4 +147,7 @@ token_filters:
   all_caps_lower_limit: 5
   remove_urls: true
 
+# Only print clusters with at least this many tweets
+min_cluster_size: 3
+
 
