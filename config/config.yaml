@@ -7,34 +7,25 @@ mq_port: 5672
 mq_queue: tweet_in
 
 # The number of tokens (not tweets) in the rolling window. Twenty million tokens is only
-#  about two million tweets, or about seven minute of the Decahose this was recorded on.  
+# about two million tweets, or about seven minute of the Decahose this was recorded on.  
 # A more realistic window would be maybe half anhour to an hour--enough to keep up with 
-#   the changes over the course of a day.
+# the changes over the course of a day.
 # The idea is to keep it short enough to reflect changes but long enough to have 
 # all the reasonably common word show up. 
 window: 20000000
 
-# Number of token files to keep before using the oldest to age token files age out of the 
-# the window. At steady state, every time a token file is written, the oldest is 
-# deleted. 
+# Number of token files to keep before using the oldest files age tokens out of the 
+# the window. At steady state, every time a token file is written, the oldest is deleted. 
 # The number of tokens in a file is calculated as: window / token_persist_files
 token_persist_files: 20
 
 
-# Frequency class rebuild interval (in token files)
-# Rebuild the frequency classes every this many files 
-# The frequency classes, therefore, can be build more often than the size
-# of the window. 
+# Frequency class rebuild interval (expressed as token files).
+# Rebuild the frequency classes every this many files The frequency classes, 
+# therefore, can be build more often than the size of the window. 
 rebuild_every_files: 4
 
-# The number of tweets to process in each busy-word process cycle
-# This had been 1500 but I'm trying a significantly bigger size 
-# Bumping this up from 10k. We were getting reasonable results with 10k
-# Wondering if increasing this value lowers the variance and thus makes
-# the outliers stand out better.
-# Note 20k seems to reduce the number of clusters and the number 
-# of elements in a cluster.
-# Hmm. 5k seems also to get fewer clusters. 
+# The number of tweets to process in each busy-word process cycle. 
 batch: 9000
 
 # Number of batches to keep in the sliding tweet window
@@ -127,6 +118,9 @@ analysis:
   language_filter: "all"
   kmeans_use_all_words: false  # If true, k-means uses all words in tweets; if false, only busy words
 
+# Set to true to enable language detection in the Python parser 
+# WARNING: slows parsing to a crawl!!! like 275/second. 
+detect_language: true
 # The minimum length of a token to be considered
 min_token_len: 3
 
@@ -155,4 +149,5 @@ token_filters:
   # Only reject all-caps if token length >= this value
   all_caps_lower_limit: 5
   remove_urls: true
+
 

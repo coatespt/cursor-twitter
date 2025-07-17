@@ -3,6 +3,9 @@
  
 # TTD
 
+- Try
+	- Increasing the number of frequency classes. Say to 20 or 25. This would narrow the frequency range in each and perhaps make it possible to up the minimum Z score. You wouldn't want many busywords in each class fo sho.
+
 - Current clustering is graph-based Louvain/modularity. 
   - Add k-means based on the busy words alone.
   - Possibly add Louvain/modularity based only on the busy words, not the tweet text as an option.

@@ -10,6 +10,14 @@ from pathlib import Path
 import time
 import tempfile
 import shutil
+# Requires: langid (pip install langid)
+import langid
+import yaml  # For reading config
+
+# Load config.yaml to check if language detection should be enabled
+with open(os.path.join(os.path.dirname(__file__), '../config/config.yaml')) as f:
+    config = yaml.safe_load(f)
+detect_language = config.get('detect_language', False)
 
 def process_json_file(input_path, output_path, global_tweet_count):
     """Process a single gzipped JSON file and convert to CSV."""
@@ -90,10 +98,20 @@ def process_json_file(input_path, output_path, global_tweet_count):
                                     word.lower() for word in text.split()
                                     if word.isalpha() and len(word) > 1
                                 ])
-                                lang = tweet.get('user', {}).get('lang', '')
+                                # Detect language of tweet text if enabled in config
+                                if detect_language:
+                                    tweet_text = tweet.get('text', '')
+                                    if tweet_text.strip():
+                                        detected_lang, _ = langid.classify(tweet_text)
+                                    else:
+                                        detected_lang = 'xx'
+                                    lang_out = detected_lang
+                                else:
+                                    # Use original lang field (may be inaccurate)
+                                    lang_out = tweet.get('user', {}).get('lang', '')
                                 writer.writerow([
                                     id_str, created_at, user_id_str, retweet_count,
-                                    text, retweeted, at_count, http_count, hashtag_count, words, lang
+                                    text, retweeted, at_count, http_count, hashtag_count, words, lang_out
                                 ])
                                 tweet_count += 1
                                 if tweet_count % 1000 == 0:
