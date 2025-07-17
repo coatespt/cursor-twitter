@@ -7,17 +7,13 @@ mq_port: 5672
 mq_queue: tweet_in
 
 # The number of tokens (not tweets) in the rolling window. Twenty million tokens is only
-# about two million tweets, or about seven minute of the Decahose this was recorded on.  
-# A more realistic window would be maybe half anhour to an hour--enough to keep up with 
-# the changes over the course of a day.
-# The idea is to keep it short enough to reflect changes but long enough to have 
-# all the reasonably common word show up. 
+# about two million tweets.
 window: 20000000
 
 # Number of token files to keep before using the oldest files age tokens out of the 
 # the window. At steady state, every time a token file is written, the oldest is deleted. 
 # The number of tokens in a file is calculated as: window / token_persist_files
-token_persist_files: 20
+token_persist_files: 40
 
 
 # Frequency class rebuild interval (expressed as token files).
@@ -44,11 +40,12 @@ log_dir: /Users/petercoates/python-work/cursor-twitter/logs
 # This seems to get more English language clusters. Not sure why The common words 
 #    are more restricted, and the rarest words less restricted.
 #    But it also gets relatively few clusters overall.
-z_scores: [5.0, 5.0, 5.0, 3.5, 3.5, 3.0, 4.0, 4.0, 4.0, 3.0]
+# z_scores: [5.0, 5.0, 5.0, 3.5, 3.5, 3.0, 4.0, 4.0, 4.0, 3.0]
+z_scores: [5.0, 5.0, 6.0, 5.5, 5.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0,4.0,4.0,4.0,4.0,4.0] 
 
 
 # The number of frequency classes to create
-freq_classes: 10
+freq_classes: 24
 
 # The length of the busy word processor counter arrays
 # This quantity cubed is the size of the 3pk space. 1000^3 = 1 billion.
