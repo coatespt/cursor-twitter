@@ -378,18 +378,22 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 
 	switch clusteringMethod {
 	case "kmeans":
+		// Debug: Print min_cluster_size value
+		writeOutput("[DEBUG] min_cluster_size from config: %d", cfg.Analysis.MinClusterSize)
 		runKMeansClusteringGo(tweetsWithBusyWords, allBusyWords, cfg, writeOutput)
 		writeOutput(strings.Repeat("=", 80) + "\n")
 		break
 	case "graph":
 		fallthrough
 	default:
+		// Debug: Print min_cluster_size value
+		writeOutput("[DEBUG] min_cluster_size from config: %d", cfg.Analysis.MinClusterSize)
 		// Perform optimized graph clustering (existing code)
 		clusterer := pipeline.NewOptimizedTweetClusterer(
 			cfg.Analysis.MinJaccardSimilarity,
 			cfg.Analysis.MaxTweetsToCluster,
 		)
-		result := clusterer.ClusterTweets(tweetsWithBusyWords, allBusyWords)
+		result := clusterer.ClusterTweets(tweetsWithBusyWords, allBusyWords, cfg.Analysis.MinClusterSize)
 
 		// Print clustering results with ASCII visualization (existing code)
 		writeOutput("*** CLUSTERING RESULTS ***")
@@ -801,6 +805,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+
+	// Debug: Print config file path and loaded Analysis struct
+	fmt.Printf("[DEBUG] Loaded config file: %s\n", *configPath)
+	fmt.Printf("[DEBUG] cfg.Analysis: %+v\n", cfg.Analysis)
 
 	fmt.Printf("*** CONFIG LOADED SUCCESSFULLY ***\n")
 

@@ -41,8 +41,7 @@ log_dir: /Users/petercoates/python-work/cursor-twitter/logs
 #    are more restricted, and the rarest words less restricted.
 #    But it also gets relatively few clusters overall.
 # z_scores: [5.0, 5.0, 5.0, 3.5, 3.5, 3.0, 4.0, 4.0, 4.0, 3.0]
-z_scores: [5.0, 5.0, 6.0, 5.5, 5.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0,4.0,4.0,4.0,4.0,4.0] 
-
+z_scores: [6.0, 6.0, 7.0, 6.5, 6.5, 5.5, 5.5, 5.5, 5.5, 5.5, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0,5.0,5.0,5.0,5.0] 
 
 # The number of frequency classes to create
 freq_classes: 24
@@ -92,6 +91,8 @@ sender:
   # Duration to pause when queue is full (seconds)
   pause_duration: 1.0
 
+
+
 # Analysis and clustering configuration
 analysis:
   # Clustering method: "graph" (default, Louvain/modularity) or "kmeans" (busy word vector k-means)
@@ -114,6 +115,7 @@ analysis:
   # Examples: "en", "es", "fr", "de", "all"
   language_filter: "all"
   kmeans_use_all_words: false  # If true, k-means uses all words in tweets; if false, only busy words
+  min_cluster_size: 3
 
 # Set to true to enable language detection in the Python parser 
 # WARNING: slows parsing to a crawl!!! like 275/second. 
@@ -148,6 +150,4 @@ token_filters:
   remove_urls: true
 
 # Only print clusters with at least this many tweets
-min_cluster_size: 3
-
 

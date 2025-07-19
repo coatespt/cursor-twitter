@@ -2,6 +2,7 @@
 
  
 # TTD
+- With the language detection turned on, it parses about 285/second which is one million an hour. There are 139 million Tweets in the corpus, so call it six days to parse the entire corpus with language detection.  Without language detection it is in the thousands per second. 
 
 - Try
 	- Increasing the number of frequency classes. Say to 20 or 25. This would narrow the frequency range in each and perhaps make it possible to up the minimum Z score. You wouldn't want many busywords in each class fo sho.

@@ -48,7 +48,7 @@ func NewOptimizedTweetClusterer(minJaccardSimilarity float64, maxTweetsToCluster
 }
 
 // ClusterTweets performs optimized clustering on tweets with busy words
-func (c *OptimizedTweetClusterer) ClusterTweets(tweets []*tweets.Tweet, busyWords map[string]bool) ClusteringResult {
+func (c *OptimizedTweetClusterer) ClusterTweets(tweets []*tweets.Tweet, busyWords map[string]bool, minClusterSize int) ClusteringResult {
 	startTime := time.Now()
 
 	slog.Info("Starting optimized clustering",
@@ -82,7 +82,7 @@ func (c *OptimizedTweetClusterer) ClusterTweets(tweets []*tweets.Tweet, busyWord
 
 	// Step 4: Perform clustering (placeholder for now - will implement Louvain)
 	clusterStart := time.Now()
-	clusters := c.performClustering(filteredTweets, edges, busyWords)
+	clusters := c.performClustering(filteredTweets, edges, busyWords, minClusterSize)
 	clusterDuration := time.Since(clusterStart)
 
 	// Calculate total time
@@ -258,7 +258,7 @@ func (c *OptimizedTweetClusterer) calculateJaccardSimilarity(tweet1, tweet2 *twe
 }
 
 // performClustering performs the actual clustering (placeholder for Louvain implementation)
-func (c *OptimizedTweetClusterer) performClustering(tweetList []*tweets.Tweet, edges []Edge, busyWords map[string]bool) []TweetCluster {
+func (c *OptimizedTweetClusterer) performClustering(tweetList []*tweets.Tweet, edges []Edge, busyWords map[string]bool, minClusterSize int) []TweetCluster {
 	// TODO: Implement Louvain clustering using gonum/graph
 	// For now, return a simple clustering based on connected components
 
@@ -267,13 +267,13 @@ func (c *OptimizedTweetClusterer) performClustering(tweetList []*tweets.Tweet, e
 		"edges", len(edges))
 
 	// Simple connected components clustering as placeholder
-	clusters := c.simpleConnectedComponents(tweetList, edges, busyWords)
+	clusters := c.simpleConnectedComponents(tweetList, edges, busyWords, minClusterSize)
 
 	return clusters
 }
 
 // simpleConnectedComponents implements basic connected components clustering
-func (c *OptimizedTweetClusterer) simpleConnectedComponents(tweetList []*tweets.Tweet, edges []Edge, busyWords map[string]bool) []TweetCluster {
+func (c *OptimizedTweetClusterer) simpleConnectedComponents(tweetList []*tweets.Tweet, edges []Edge, busyWords map[string]bool, minClusterSize int) []TweetCluster {
 	// Build adjacency list
 	adjacency := make(map[int][]int)
 	for _, edge := range edges {
@@ -289,16 +289,12 @@ func (c *OptimizedTweetClusterer) simpleConnectedComponents(tweetList []*tweets.
 		if !visited[tweetIdx] {
 			var component []int
 			c.dfs(tweetIdx, adjacency, visited, &component)
-
 			if len(component) > 1 { // Only clusters with multiple tweets
 				clusterTweets := make([]*tweets.Tweet, len(component))
 				for i, idx := range component {
 					clusterTweets[i] = tweetList[idx]
 				}
-
-				// Find shared busy words in this cluster
 				sharedWords := c.findSharedBusyWords(clusterTweets, busyWords)
-
 				clusters = append(clusters, TweetCluster{
 					Tweets:    clusterTweets,
 					BusyWords: sharedWords,
