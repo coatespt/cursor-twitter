@@ -887,12 +887,24 @@ func main() {
 	startStatsPrinter()
 
 	for msg := range msgs {
-
-		tweet, err := parseCSVToTweet(string(msg.Body), cfg)
+		row := string(msg.Body)
+		if cfg.Analysis.LanguageFilter != "" && cfg.Analysis.LanguageFilter != "all" {
+			langSuffix := "," + strings.ToLower(cfg.Analysis.LanguageFilter)
+			if !strings.HasSuffix(strings.ToLower(strings.TrimSpace(row)), langSuffix) {
+				msg.Ack(false)
+				continue
+			}
+		}
+		tweet, err := parseCSVToTweet(row, cfg)
 		if err != nil {
 			// Log parse errors and reject the message (don't requeue)
-			slog.Warn("Failed to parse tweet, rejecting message", "error", err, "raw_row", string(msg.Body))
+			slog.Warn("Failed to parse tweet, rejecting message", "error", err, "raw_row", row)
 			msg.Reject(false) // false = don't requeue
+			continue
+		}
+		if tweet == nil {
+			// Tweet was filtered out (e.g., by language); acknowledge and continue
+			msg.Ack(false)
 			continue
 		}
 		// Only print the tweet if the flag is set
@@ -1126,7 +1138,8 @@ func printStats() {
 	}
 
 	// Print frequency class stats (ordered from lowest to highest class number)
-	fmt.Printf("--- Frequency Class Stats ---\n")
+	// fmt.Printf("--- Frequency Class Stats ---\n")
+	slog.Info("--- Frequency Class Stats ---")
 	for i := 0; i < freqClasses; i++ {
 		queueKey := fmt.Sprintf("freq_class_%d_queue_size", i)
 		processorKey := fmt.Sprintf("freq_class_%d_tokens_processed", i)
@@ -1144,9 +1157,12 @@ func printStats() {
 			}
 		}
 
-		fmt.Printf("Class %2d: Queue=%6d, Processed=%8d, Distinct=%6d\n", i, queueSize, tokensProcessed, distinctTokens)
+		// fmt.Printf("Class %2d: Queue=%6d, Processed=%8d, Distinct=%6d\n", i, queueSize, tokensProcessed, distinctTokens)
+		slog.Info("Frequency Class Stats", "class", i, "queue", queueSize, "processed", tokensProcessed, "distinct", distinctTokens)
 	}
-	fmt.Printf("----------------------\n")
+	// fmt.Printf("----------------------\n")
+	slog.Info("----------------------")
+
 	// Also log to slog
 	slog.Info("Pipeline stats",
 		"tweets", totalTweets,
@@ -1222,7 +1238,7 @@ func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
 	if cfg.Analysis.LanguageFilter != "" && cfg.Analysis.LanguageFilter != "all" {
 		// Case-insensitive comparison
 		if strings.ToLower(tweet.Language) != strings.ToLower(cfg.Analysis.LanguageFilter) {
-			return nil, fmt.Errorf("tweet language '%s' filtered out (filter: %s)", tweet.Language, cfg.Analysis.LanguageFilter)
+			return nil, nil // Not an error, just skip this tweet
 		}
 	}
 

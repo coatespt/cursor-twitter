@@ -2,30 +2,31 @@
 
  
 # TTD
-- With the language detection turned on, it parses about 285/second which is one million an hour. There are 139 million Tweets in the corpus, so call it six days to parse the entire corpus with language detection.  Without language detection it is in the thousands per second. 
+ 
+## Tuning
 
-- Try
-	- Increasing the number of frequency classes. Say to 20 or 25. This would narrow the frequency range in each and perhaps make it possible to up the minimum Z score. You wouldn't want many busywords in each class fo sho.
+- Poor busy word detection.
+	- Increasing the number of frequency classes. Say to 20 or 25.
+		- I upped it from 10 to 24 and it seems to be better. 
+		- More experimentation is in order
+		- Who knows, maybe more?  But you start to get too many busy words, so it probably interacts with the Z scores.
 
 - Current clustering is graph-based Louvain/modularity. 
   - Add k-means based on the busy words alone.
-  - Possibly add Louvain/modularity based only on the busy words, not the tweet text as an option.
-  - Cursor is implementing k-means now. The go libraries for it apparently are missing critical pieces. It should not be a stretch to implement.
+	- k-means didn't see to work very well.
+	- Still worth fiddling with to see if it's just a tuning problem.
+	- Couldn't find a good k-means library that worked so Cursor wrote the routine.
 
-- The full set of Tweets is parsed into msg_input_3. Whitney Houston's death is announce somewhere about here. Look for the Orgulo Herbeldes, Lion King, Whitney Houston
+  
+## Other Tuning
+- The window is now 20m tokens, or about 2m Tweets. 
+	- That's about 66 minutes of the decahose, or about 28 minutes of actual time at the rate we consume.  
+	- 66 minutes seems like a reasonable turnover. How far out of sync with the day would you get in an hour? But it could be shorter.  Worth trying.
+- Batch size is now 10,000. 
+	- Verify in the code that it really is Tweets and not tokens. 
+	- 10k Tweets is 20 seconds of decahose. That's a short time. Try a larger value. 
 
-../twits/msg_output_3/gnip.csv_1329005955894_1329006255894.csv
-
-- Print out the busywords in each Tweet the is in the output after "Class n:" and before the Tweet text.
-
-
-- The language field is worthless. Look into whether the parser could estimate the language and mark the tweets accordingly.  English v non-English would be enough.
-
-# Other Tuning
-- The window is now 20m tokens, or about 2m Tweets. That's about 66 minutes of the decahose, or about 28 minutes of actual time at the rate we consume.  66 minutes seems like a reasonable turnover. How far out of sync with the day would you get in an hour? But it could be shorter.  Worth trying.
-- Batch size is now 10,000. Verify in the code that it really is Tweets and not tokens. 10k Tweets is 20 seconds of decahose. That's a short time. Try a larger value. It might make the true outliers stand out more crisply by reducing variance.
-
-- Examine the de-duplication functionality in the cluster display. Make sure it does what it's supposed to. The purpose is to not show a zillion copies.
+- Examine the de-duplication functionality in the cluster display. Make sure it does what it's supposed to. The purpose is to not show a zillion copies of basically the same Tweet.
 
 - Jacquard similarity for the clustering seems to be applied to all the tokens in the Tweets. 
   - Is that true, and if so, is it correct? 
@@ -42,24 +43,23 @@
 │  ├─ "????(&gt;_&lt; ) RT @eq_tokyo: ??????????(??20km)?M3.7????????????????0??(16:47:03)?????????????#saigai #eqjp #earthquake #jishin #?? #??"
 │  └─ "RT @eq_tokyo: ??????????(??20km)?M3.7????????????????0??(16:47:03)?????????????#saigai #eqjp #earthquake #jishin #?? #??"
 │
-
-# Notes on Issues That Have Come Up in Development
+ 
 ## Cluster Quality
-The clusters don't seem nearly as good as they were with the old Java implementation.
+- The clusters don't seem nearly as good as they were with the old Java implementation.
 
 ## Language
 
-It would be great to be able to run for only a certain language. Unfortunately, there is no good way to do this at present.
+The language field in the JSON is worthless. The parser has a flag to detect language but it makes it run at a small fraction of the speed. 
 
-### Language Field
-The language field in the Tweets is worse than worthless. No apparant relationship to the actual language of the tweet.
+The parser is now multi-threaded that speeds it up significantly, but it's still quite slow.
+ 
+Detecting language on the fly isn't even a starter.  It's dog slow.
 
-Detecting the language on the fly would probably be a big slow-down, but it might be possible to do it in the original parser.
+## Language Imbalance in Clusters
 
-### Language Imbalance in Clusters
+At some settings, 100% of the clusters appear to be in Spanish (or maybe some Portuguese). At other settings English Tweets show up better. 
 
-100% of the clusters appear to be in Spanish (or maybe some Portuguese) Need to see if English Tweets are really so rare? Investigation suggests
-  - This seems to be dependent on the Z scores. (?!?)
+This seems to be influenced by the Z scores. (?!?)
   - z_scores: [4.0, 5.0, 4.0, 3.5, 3.5, 3.5, 3.5, 3.5, 3.5, 3.0]  got mucho Spanish clusters.
   - z_scores: [5.0, 5.0, 5.0, 5.0, 3.5, 3.5, 3.5, 3.0, 2.5, 2.5]  got mucho English clusters and only some Spanish and Portuguese.
 
@@ -91,14 +91,12 @@ If any changes seem to involve multiple threads, be sure to get my agreement bef
 The project is a way to read the Twitter firehose and find new subjects appearing in the Tweet stream in near real time. Ideally, significant new subjects will be identified within seconds of their surging into the stream.
 
 The underlying insight is that it would be essentially useless to 
-analyse all the subjects that are active at any one time because this number is in the tens of thousands--at least 500x too much for a human to grasp.  
-
-However, if one settles for only seeing new subjects as they arrive:
+analyse all the subjects that are active at any one time because this number is in the tens of thousands--at least 500x too much for a human to grasp. However, if one settles for only seeing new subjects as they arrive:
 - The amount of data for a human to be exposed to is vastly smaller
 - The subjects arrive most-important-first
 - You asymptotically approach getting **all** subjects with the most useful first.
 
-Fortunately, new subjects actually arrive at a manageable rate. Depending upon exactly how you parameterize the definition of "subject," new subjects arrive perhaps every few seconds. Tuned well, you get something with about the information density of the Times Square News Ticker.
+Fortunately, new subjects tend to arrive at a manageable rate. Depending upon exactly how you parameterize the definition of "subject," new subjects arrive perhaps every few seconds. Tuned well, you get something with about the information density of the Times Square News Ticker.
 
 To find subjects by characterizing the semantics of thousands of Tweets per second, and then grouping them together based upon subject similarity would be a daunting task computationally. Certainly it would be extremely difficult to do in real time. Fortunately, however, groups of meaningful words used together are an excellent proxy for semantics. 
 
@@ -286,6 +284,7 @@ Run the following.
  
 python3 parser/parser.py ../twits/msg_input_3 ../twits/msg_output_3
 
+python parser.py input_dir output_dir --num-workers 8
 
 ## Test program for parsed data
 This program reads CSV files to ensure that we can create Tweets from them.

@@ -20,6 +20,15 @@ import multiprocessing
 with open(os.path.join(os.path.dirname(__file__), '../config/config.yaml')) as f:
     config = yaml.safe_load(f)
 detect_language = config.get('detect_language', False)
+drop_excessive_questions = config.get('drop_excessive_questions', False)
+
+def is_too_many_questions(text, threshold=0.2, min_count=10):
+    if not text:
+        return False
+    q_count = text.count('?')
+    if q_count >= min_count and (q_count / len(text)) > threshold:
+        return True
+    return False
 
 def process_json_file(input_path, output_path, global_tweet_count):
     """Process a single gzipped JSON file and convert to CSV."""
@@ -93,6 +102,9 @@ def process_json_file(input_path, output_path, global_tweet_count):
                                 text = text.replace('\n', ' ').replace('\r', ' ')
                                 text = text.replace('"', "'")
                                 text = ''.join(char for char in text if ord(char) >= 32 or char in '\t\n\r')
+                                # Drop tweets with excessive question marks if enabled
+                                if drop_excessive_questions and is_too_many_questions(text):
+                                    continue
                                 at_count = text.count('@')
                                 http_count = text.count('http')
                                 hashtag_count = text.count('#')

@@ -113,12 +113,14 @@ analysis:
   duplicate_similarity_threshold: 0.9
   # Language filtering: "en" for English only, "all" for all languages, or any other language code
   # Examples: "en", "es", "fr", "de", "all"
-  language_filter: "all"
+  language_filter: "en"
   kmeans_use_all_words: false  # If true, k-means uses all words in tweets; if false, only busy words
   min_cluster_size: 3
 
 # Set to true to enable language detection in the Python parser 
-# WARNING: slows parsing to a crawl!!! like 275/second. 
+# WARNING: slows parsing to a crawl!!! like 275/second.   Note, the parser is now multithreaded
+# so it runs six threads that do about 130/second each for about 700-800 second on my antique 
+# machine.
 detect_language: true
 # The minimum length of a token to be considered
 min_token_len: 3
@@ -150,4 +152,6 @@ token_filters:
   remove_urls: true
 
 # Only print clusters with at least this many tweets
+# If true, drop tweets where the text contains an excessive number of '?' characters (likely due to decoding errors or non-Latin scripts)
+drop_excessive_questions: true
 
