@@ -13,6 +13,8 @@ import shutil
 # Requires: langid (pip install langid)
 import langid
 import yaml  # For reading config
+import argparse
+import multiprocessing
 
 # Load config.yaml to check if language detection should be enabled
 with open(os.path.join(os.path.dirname(__file__), '../config/config.yaml')) as f:
@@ -151,44 +153,62 @@ def process_json_file(input_path, output_path, global_tweet_count):
     print()
     return tweet_count, (bracket_lines + comma_lines + delete_events + scrub_geo_events + json_decode_errors + missing_fields)
 
+def process_json_file_worker(args):
+    gz_file, csv_file = args
+    try:
+        tweets, skipped = process_json_file(gz_file, csv_file, 0)
+        return (gz_file, tweets, skipped, None)
+    except Exception as e:
+        return (gz_file, 0, 0, str(e))
+
+
 def main():
-    if len(sys.argv) != 3:
-        print("Usage: python parser.py <input_dir> <output_dir>")
-        sys.exit(1)
-    
-    input_dir = sys.argv[1]
-    output_dir = sys.argv[2]
-    
-    # Create output directory if it doesn't exist
+    parser = argparse.ArgumentParser(description="Parse gzipped JSON tweet files to CSV.")
+    parser.add_argument("input_dir", help="Input directory containing .json.gz files")
+    parser.add_argument("output_dir", help="Output directory for .csv files")
+    parser.add_argument("--num-workers", type=int, default=multiprocessing.cpu_count(),
+                        help="Number of worker processes (default: number of CPU cores)")
+    args = parser.parse_args()
+
+    input_dir = args.input_dir
+    output_dir = args.output_dir
+    num_workers = args.num_workers
+
     os.makedirs(output_dir, exist_ok=True)
-    
-    # Find all .json.gz files
     pattern = os.path.join(input_dir, "*.json.gz")
     files = glob.glob(pattern)
-    
+
     if not files:
         print(f"No .json.gz files found in {input_dir}")
         sys.exit(1)
-    
-    total_tweets = 0
-    total_skipped = 0
-    
+
+    # Prepare list of (input, output) pairs to process
+    file_pairs = []
     for gz_file in files:
         base_name = os.path.basename(gz_file)
         csv_file = os.path.join(output_dir, base_name.replace('.json.gz', '.csv'))
-        
-        # Skip if output CSV file already exists
         if os.path.exists(csv_file):
             print(f"Skipping {gz_file} - output file {csv_file} already exists")
             continue
-        
-        try:
-            tweets, skipped = process_json_file(gz_file, csv_file, total_tweets)
-            total_tweets += tweets
-            total_skipped += skipped
-        except Exception as e:
-            print(f"Failed to process {gz_file}: {e}")
-    
+        file_pairs.append((gz_file, csv_file))
+
+    total_tweets = 0
+    total_skipped = 0
+
+    if not file_pairs:
+        print("No files to process.")
+        return
+
+    print(f"Processing {len(file_pairs)} files with {num_workers} workers...")
+    with multiprocessing.Pool(processes=num_workers) as pool:
+        for result in pool.imap_unordered(process_json_file_worker, file_pairs):
+            gz_file, tweets, skipped, error = result
+            if error:
+                print(f"Failed to process {gz_file}: {error}")
+            else:
+                total_tweets += tweets
+                total_skipped += skipped
+
     print(f"Total: {total_tweets} tweets, {total_skipped} skipped")
 
 if __name__ == "__main__":
