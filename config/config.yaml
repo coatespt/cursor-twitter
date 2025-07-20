@@ -8,7 +8,7 @@ mq_queue: tweet_in
 
 # The number of tokens (not tweets) in the rolling window. Twenty million tokens is only
 # about two million tweets.
-window: 20000000
+window: 3000000
 
 # Number of token files to keep before using the oldest files age tokens out of the 
 # the window. At steady state, every time a token file is written, the oldest is deleted. 
