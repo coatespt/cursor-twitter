@@ -1,13 +1,28 @@
 # Session Notes
 
 # Verification
-The Whitney Stuff Seems to Start Around Here.
+- The Whitney Stuff Seems to Start Around Here.
 gnip.csv_1329008058666_1329008358666.csv:168498929640550400,Sun Feb 12 00:57:30 
 # TTD
 
-- Make a big list of all the useless busy words that come up. Ensure that the checker works efficiently. If it's just hundreds or a few thousand, a set is probably fine. If it gets much bigger, a Bloom filter might be good.
+- Make sure that the test_filters.txt file is used for dropping tokens from the counting and busy word processing pipeling. They should not be stripped out of the output.
+
+- Verify how tokens are checked against the test_filters.txt file. These words should go into a set against which inbound tokens can be checked.
+
+- RT's and @this_n_that
+Many Tweets are identical except for RT's, @this_and_that, #this_and_that. What would be the effect of removing these in the either the clustering or the display?
+
+- Filter Out Based on Character Diversity
+You get a lot of Tweets like this. Allmost all o, f, and d.   Is there a super-coarse filter for tossing a lot of these?
+
+"FOOD FOOD FOOR FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOF FOOD"
+
+- Still getting lots of ??????????????????????. I thought we were dropping those Tweets?
 
 ## Tuning
+
+- Apostrophes
+Consider whether it makes sense to simply drop the apostrophe and the s that follows, of whether it makes more sense to replace the apostrophe with nothing, so Bob's becomes bobs and don't becomes dont.
 
 - Poor busy word detection.
 	- Increasing the number of frequency classes. Say to 20 or 25.
@@ -164,7 +179,7 @@ The approch is inherently hampered by the need to do frequency calculation on th
 Global frequencies mean you must:
 - Count the frequencies of all words in a current window of time. This window must be fairly large in order to get enough Tweets to get a reliable distribution for all the common words.
 
-- Compute the curren relative frequencies for the words every few seconds.
+- Compute the current relative frequencies for the words every few seconds.
 
 - Compare the relative frequencies of the current window to those of previous window to compute usage-growth rates for every word.
 
@@ -178,26 +193,28 @@ You only have a few seconds to accomplish this before the set of Tweets that arr
 
 ## Word Frequency Computations
 
-The trick is to not put global frequency calculations in the processing path.
+The trick is to not put global frequency calculations in the processing path. 
+
+Without the need for such calculations, the limiting factor is getting sufficiently many Tweets for a cycle.  
 
 We use a periodic offline computation of global word frequency to divide the universe of words into F frequency classes, with the most frequently used words in the first class, and the least frequent words in the last class. The frequency classes comprise wildly diffent numbers of words, but they each represent approximately the same number of word usages.
 
-This frequency analysis is done outside of the processing of the stream of inbound Tweets and covers a larger time span than the seconds required for the heuristic itself. The purpose is to provide a background look at what normal word frequencies are at the particular time of day, day of week, etc. This large window comprises the tokens from a sustantial block of time, e.g. the last hour or the last half hour. It is kept up to date by aging old tokens out as new tokens are read in.
+This frequency analysis is done outside of the processing of the stream of inbound Tweets and covers a much larger time span than the seconds required for the heuristic itself. The purpose is to provide a background look at what normal word frequencies are at the particular time of day, day of week, etc. This large window comprises the tokens from a sustantial block of time, e.g. the last hour or the last half hour. It is kept up to date by continually aging old tokens out as new tokens are read in.
 
 The global computation of frequency classes is done at a less coarse grain, e.g., several minutes. The word freqencies are computed and the universe of words are divided into F equivalence classes according to frequency.  
 
-The frequency classes are used to construct a filter that allows an incoming word's background frequency to be identified. The frequency filter is transparently swapped in each time a new version is created.
+The frequency classes are used to construct a filter that allows an incoming word's background frequency to be quickly identified. (The frequency filter is transparently swapped in each time an updated version is created. This is typically done ever several minutes.)
 
-New words come along all the time, even after hours of the firehose. Between updates to the frequency filters, these remain unknown.  This is not a problem, howerver. Consider that any incoming word that doesn't match to any frequency class is necessarily rare, so it it can be treated as being in the least frequent class.  When the next update to the frequency class filters is made, it will no longer be an unknown word.
+New words come along all the time, even after hours of the firehose. Between updates to the frequency filters, these novel words remain unknown.  This is not a problem, howerver. Consider that because the big window time is something like a half hour to an hour, any incoming word that doesn't match to any frequency class is necessarily rare. Therefore, it it can be treated as being in the least frequent class.  Note that when the next update to the frequency class filters is made, it will no longer be an unknown word.
 
 Note that the word counts, frequency class computation, etc. are done on a separate thread, so none of it has any noticeable effect on processing speed. 
 
 ## Receiving Tweets
-The main routine reads inbound Tweets in CSV format. This detail is a convenience because the Tweet data is canned. They could be received in any format, including the native JSON. It parses them and converts them to Tweet structs in memory.
+The main routine reads inbound Tweets in CSV format. This detail is a convenience because the Tweet data is canned. They could be received in any format, including the native JSON. As each new Tweet is received, the main routine parses it and converts it to Tweet structs in memory.
 
 The receiving phase:
 
-- Maintains a sliding window of the latest W Tweets. This is not to be confused with the word-count window. It is much shorter and holds the entire Tweet struct for the last several cycles of busy-word processing. A batch is few seconds worth of Tweets, and W is chosen keep a few batches of Tweets available for the clustering phase that will happen a few seconds later. 
+- Maintains a sliding window of the latest Tweets. This is not to be confused with the word-count window. It is much shorter and holds the entire Tweet struct for the last several cycles of busy-word processing. A batch is few seconds worth of Tweets (e.g. 10) so this is less than the most recent minute's worth of Tweets. These Tweets are kept available for the clustering phase that will happen at the end of every busy word processing batch.
 
 - Extracts the words from each Tweet and normalizes them, unifying the case, discarding junk, etc.
 
@@ -211,22 +228,22 @@ Busy words are computed separatedly for each of the F frequency classes. Each bu
 
 - The busyword processors work on 3pk's, not tokens, so the 3pK's for the tokens are looked up and the handed off to a corresponding busyword queues.
 
-- When one "batch" of Tweets has been processed, the main processor puts a special 3pk on each queue to signal to the busyword processors that the batch is complete. They get the signal at the same place in the Tweet stream, which keeps them synchonized.
+- When one "batch" of Tweets has been processed, the main processor puts a special 3pk on each queue to signal to the busyword processors that the latest batch is complete. They get the signal at the same place in the Tweet stream, which keeps them synchonized.
 
-With the handing off of the 3pk's for the current Tweet to the busy-word processor queues, the main processing loop is at its end, so it starts over with the next Tweets. The queues for the frequency counting thread and the busy-word processing threads provide elasticity, so the no synchronization is necessary.
+With the handing off of the 3pk's for the current Tweet to the busy-word processor queues, the main processing loop is at its end, so it starts over with the next Tweets. The queues for the frequency counting thread and the busy-word processing threads provide elasticity, so the no synchronization is necessary. 
 
 In summary, we have the main loop receiving Tweet in CSV form as fast as they arrive. It turns them into tokens, which it passes to the frequency counting queue. Then it uses the frequency filters to pick a busy-word processor for each token, obtains the token's 3pk and hands it off the the corregt busy-word processing queue.
 
 Each time a busy-word processing Tweet count is reached, it puts a signal 3pk on all of the busy-word processor queues to tell them to compute a cluster.
 
 ## The 3pK's
-We haven't said exactly what a 3pk is.  It is an ordered triple of hashes for some token, or word.  The hashes are each parameterized with a different value, so it is really just three pseudo random numbers in a defined range.  This range is a parameter, but it is somewhere around a thousand or so. 
+We haven't said exactly what a 3pk is.  It is an ordered triple of hashes for some token, or word.  The hashes are each parameterized with a different value, so it is really just three pseudo random numbers in a defined range.  This size of this range is a parameter, but it is somewhere around a thousand or so. 
 
-As mentioned above, a global mapping of 3pk's to tokens, and tokens to 3pk's is maintained.
+As mentioned above, a global mapping of 3pk's to tokens, and tokens to 3pk's is maintained. If a 3pk corresponds to an existing token, it will always be in this mapping.
 
-If the 3pk hash range is 1000, that gives a 3pk space of a billion pseudo-random triples. There are a few million words in the global computation at any one time, so there is a small chance of a collision for any token. However, as we will see later, collisions are not very harmful.  
+If the 3pk hash range is 1000, that gives a 3pk space of a billion pseudo-random triples. There are only a few million words in the global computation at any one time, so there is a chance of a collision for any token. However, as we will see later, collisions are not very harmful.  
 
-The range can be increased to reduce this probablility farther, but there are computational costs to a larger range. Computing the optimal range size is an open question.
+The range can be increased to reduce this probablility farther, but there are computational costs to a larger range. How to compute the optimal range size is an open question.
 
 ## The Busyword Processor Threads
  
@@ -234,11 +251,11 @@ Each of the F busyword processors works the same way.
 
 The hashes from each 3pk are used to index into three arrays of C counters. (The array size is the same as the 3pk range.) One counter in each of the three arrays gets bumped for each incoming 3pk.
 
-Because the 3pk values are pseudo random, if every word had the same probability, the counters would be approximately equal with a Gaussian distribution.  However, we are assuming that some are anomalously busy. After all, that is the point of the exercise. Therefore, some of the counters will have exceptionally high counts.  For instance, if you have 10,000 Tweets in a batch, with an average of 10 tokens in each Tweet text, that's 100,000 tokens spread over, say, 24 busyword processors. This means the counter values would average about 3.3 when the signal 3pk is read (-1, -1, -1) and the processor suspends reading the queue and processes a batch.
+Because the 3pk values are pseudo random, if every word had the same probability, the counters would be approximately equal with a Gaussian distribution.  However, we are assuming that some are anomalously busy (after all, that is the point of the exercise.) Therefore, some of the counters will have exceptionally high counts.  For instance, if you have 10,000 Tweets in a batch, with an average of 10 tokens in each Tweet text, that's 100,000 tokens spread over, say, 24 busyword processors. This means the counter values would average about 3.3 when the signal 3pk is detected (-1, -1, -1) and the processor suspends reading the queue and processes a batch.
 
-- A Z-score is computed for each counter. A Z-score is a normalized value that corresponds to the standard deviation. This gives every counter position a Z score that gives the improbability of the count having been reached at random.  
+- A Z-score is computed for each counter. A Z-score is a normalized standard deviation. This gives every counter position a Z score that gives the improbability of the count having been reached at random.  
 
-The Z's average to 0, by definition, and the higher the Z, the less likely the value is just random variation. Any statistics book will give a fuller explanation.  
+The Z's average to 0, by definition (Z can be positive or negative), and the higher the Z, the less likely the value is just random variation. Any statistics book will give a fuller explanation.  
 
 Suffice it to say here that scores beyond 4.0 would very rarely occur if all words in the frequency class were arriving at their normal rate.  
 

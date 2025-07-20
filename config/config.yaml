@@ -63,7 +63,7 @@ min_count_threshold: 0
 # Busyword classes to consider in clustering.
 # There is probably no point in using words from the most frequent classes.
 # 
-busyword_classes: [5,6,7,8,9,10]
+busyword_classes: [5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
 
 # Word filtering configuration
 filter:
@@ -104,7 +104,7 @@ analysis:
   # Minimum number of busy words a tweet must contain to be included in clustering
   min_busy_words_per_tweet: 2
   # Minimum Jaccard similarity threshold for creating edges between tweets (0.0-1.0)
-  min_jaccard_similarity: 0.2
+  min_jaccard_similarity: 0.4
   # Maximum number of tweets to cluster (0 = no limit, for performance safety)
   max_tweets_to_cluster: 10000
   # Suppress duplicate tweets in cluster visualization (removes leading @mentions, RT, trailing URLs)
@@ -115,13 +115,13 @@ analysis:
   # Examples: "en", "es", "fr", "de", "all"
   language_filter: "en"
   kmeans_use_all_words: false  # If true, k-means uses all words in tweets; if false, only busy words
-  min_cluster_size: 3
+  min_cluster_size: 5
 
 # Set to true to enable language detection in the Python parser 
-# WARNING: slows parsing to a crawl!!! like 275/second.   Note, the parser is now multithreaded
-# so it runs six threads that do about 130/second each for about 700-800 second on my antique 
-# machine.
+# WARNING: slows parsing to a crawl!!! like 275/second.   
+# THIS DOES NOTHING IN THE MAIN PIPELINE. SEE language_filter: "en" above.
 detect_language: true
+
 # The minimum length of a token to be considered
 min_token_len: 3
 
@@ -149,9 +149,11 @@ token_filters:
   reject_all_caps_long: false
   # Only reject all-caps if token length >= this value
   all_caps_lower_limit: 5
-  remove_urls: true
 
-# Only print clusters with at least this many tweets
-# If true, drop tweets where the text contains an excessive number of '?' characters (likely due to decoding errors or non-Latin scripts)
+  remove_urls: true
+ 
+
+# If true, drop tweets where the text contains an excessive number of '?' characters 
+# (likely due to decoding errors or non-Latin scripts)
 drop_excessive_questions: true
 

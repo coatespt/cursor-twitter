@@ -1,11 +1,8 @@
-# Filtered Words List
-# This file contains words that should be excluded from anomaly detection
-# Format: one word per line, # for comments
+# This is just a staging file for words we don't want to see in the busy words
+# selection. They get dropped in the CSV parse, and never make it into the word
+# counts or the busy word processing. They don't (or should not) get filtered
+# from the output
 
-# Racial and ethnic slurs (examples - this is not comprehensive)
-# Note: This is a sample list - you would need a comprehensive list for production
-
-# Profanity and vulgar language
 fuck
 shit
 bitch
@@ -26,9 +23,10 @@ niggaz
 niggazz
 niggazzz
 niggazzzz
+nigga
+nig
+niggers
 
-
-# Common noise words that don't indicate new topics
 lol
 omg
 wtf
@@ -44,7 +42,6 @@ afk
 rofl
 lmao
 
-# Spam and bot indicators
 click
 here
 link
@@ -60,7 +57,6 @@ time
 act
 now
 
-# Common abbreviations that don't add value
 u
 ur
 yr
@@ -78,7 +74,6 @@ aka
 imo
 btw
 
-# Social media noise
 retweet
 rt
 fav
@@ -94,7 +89,6 @@ fake
 real
 verified
 
-# Common filler words
 just
 very
 really
@@ -110,9 +104,6 @@ totally
 extremely
 incredibly
 
-# Meaningful words with no clustering value
- Last login: Wed Jul 16 21:48:43 on ttys011
-  catch
 that
 eli
 this
@@ -223,4 +214,264 @@ they
 off
 on
 got
+please
+still
+start
+thanks
+miss
+let
+right
+look
+then
+into
+two
+then
+tho
+gotta
+nigga
+cant
+aint
+every
+let
+wait
+tho
+thats
+nigga
+tryna
+bitches
+bitch
+okay
+bitch
+thats
+fucked
+fuck
+again
+gotta
+ass
+bitch
+bout
+didn
+didnt
+fucking
+put
+miss
+man
+look
+guy
+jus
+anyone
+then
+mad
+then
+tho
+happy
+life
+still
+own
+online
+right
+those
+ass
+yea
+someone
+almost
+suck
+cause
+saying
+takes
+
+all
+and
+are
+back
+best
+big
+but
+can
+catch
+cine
+com
+come
+como
+con
+each
+eli
+even
+for
+from
+get
+girl
+good
+got
+had
+haha
+hahaha
+has
+have
+her 
+hers
+him
+his
+how
+its
+just
+know
+los
+lot 
+mais
+make 
+mas
+men
+more
+much
+need
+never
+new
+not
+now
+off
+on
+one
+only
+out
+para
+por
+pra
+que
+really
+said
+say
+says
+see
+ser
+she
+should
 some
+than
+that
+the
+them
+there
+these
+they
+thing
+this
+time
+too
+una
+via
+vida
+vou
+wanna
+want
+was
+well
+were
+what
+when
+who
+why
+will
+wish
+with
+with 
+would
+yeah
+you
+your
+because
+way
+could
+yes
+no
+been
+because
+our
+way
+here
+over
+does
+ever
+everyone
+hey
+actually
+such
+very
+esta
+dont
+here
+actually
+such
+since
+our
+wants 
+free 
+bit
+far 
+lmao 
+did 
+tell 
+take 
+use 
+down 
+nada 
+far 
+some
+always
+another
+tweets
+twitter
+tweet
+makes
+made
+having
+lets
+made
+makes
+being
+another
+soon
+went
+try
+keep
+made
+makes
+else
+before
+though
+most
+today
+tomorrow
+must
+same
+other
+must
+before
+same
+before
+after
+any
+xxx
+yuh
+yes
+yep
+away
+next
+same
+fun
+any
+last
+nothing
+something
+also
+gonna
+where
+around
+hahaha
+which
+might
+rather
+hehe
+plz
+their
+
