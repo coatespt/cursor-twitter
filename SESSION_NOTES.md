@@ -29,7 +29,7 @@ Perhaps something like
 - Attach the batch number to each Tweet in the union of all Tweets in the clusters
 - Cluster again
 - Identify the current clusters that link to earlier clusters.
-- Print the longevity value with each cluster.
+- Print the longevity value with each cluster. This would be how long similar tweets have survived as recognizable subjects.
 
 ### A Graphical Front End
 

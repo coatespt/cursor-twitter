@@ -91,6 +91,11 @@ type Config struct {
 		KmeansK                      int     `yaml:"kmeans_k"`                       // Number of clusters for k-means clustering
 		KmeansUseAllWords            bool    `yaml:"kmeans_use_all_words"`           // Use all words in tweet vectors for k-means clustering
 		MinClusterSize               int     `yaml:"min_cluster_size"`               // Minimum number of tweets in a cluster for it to be included in the output
+		// Persistence window configuration for tracking clusters across multiple batches
+		WindowBatchesPersistence      int `yaml:"window_batches_persistence"`       // M
+		WindowBatchesPersistenceCheck int `yaml:"window_batches_persistence_check"` // K
+		// Minimum number of shared busy words required for clusters to be considered related (for persistence tracking)
+		MinSharedBusyWordsForPersistence int `yaml:"min_shared_busywords_for_persistence"` // Relationship strength threshold
 	} `yaml:"analysis"`
 }
 
@@ -158,6 +163,14 @@ var (
 // Add at the top-level globals:
 var clusterOutputFilePath string
 var clusterOutputFileOnce sync.Once
+
+// Global variable to store the most recent busy words for persistence tracking
+var globalBusyWords map[string]bool
+var globalBusyWordsMutex sync.RWMutex
+
+// Global batch window for persistence tracking (managed by analysis thread)
+var batchWindow []*Batch
+var batchWindowMutex sync.RWMutex
 
 // Analysis thread for processing busy word results
 func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Config) {
@@ -300,6 +313,11 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 
 	writeOutput("*** CLUSTERING: Using busy words from classes: %v ***", cfg.BusywordClasses)
 
+	// Update global busy words for persistence tracking
+	globalBusyWordsMutex.Lock()
+	globalBusyWords = allBusyWords
+	globalBusyWordsMutex.Unlock()
+
 	// Filter tweets that contain at least minBusyWords busy words
 	var tweetsWithBusyWords []*tweets.Tweet
 	busyWordDistribution := make(map[int]int) // count -> number of tweets
@@ -380,8 +398,14 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 	case "kmeans":
 		// Debug: Print min_cluster_size value
 		writeOutput("[DEBUG] min_cluster_size from config: %d", cfg.Analysis.MinClusterSize)
-		runKMeansClusteringGo(tweetsWithBusyWords, allBusyWords, cfg, writeOutput)
+		// Run k-means clustering and get clusters for batch creation
+		kmeansClusters := runKMeansClusteringGo(tweetsWithBusyWords, allBusyWords, cfg, writeOutput, batchNumber)
 		writeOutput(strings.Repeat("=", 80) + "\n")
+
+		// Create batch from k-means clustering results for persistence tracking
+		if len(kmeansClusters) > 0 {
+			createBatchFromClusters(kmeansClusters, batchNumber, cfg)
+		}
 		break
 	case "graph":
 		fallthrough
@@ -402,7 +426,16 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 		writeOutput("Total edges: %d", result.Stats.TotalEdges)
 		writeOutput("Processing time: %.3f seconds", result.Stats.ProcessingTime)
 
+		// Create batch from clustering results for persistence tracking
 		if len(result.Clusters) > 0 {
+			createBatchFromClusters(result.Clusters, batchNumber, cfg)
+		}
+
+		if len(result.Clusters) > 0 {
+			// Sort clusters by size (number of tweets), largest first
+			sort.Slice(result.Clusters, func(i, j int) bool {
+				return result.Clusters[i].Size > result.Clusters[j].Size
+			})
 			writeOutput("\n📊 CLUSTER VISUALIZATION:")
 			for i, cluster := range result.Clusters {
 				if cluster.Size < cfg.Analysis.MinClusterSize {
@@ -421,7 +454,13 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 				// Get the date/time of the first tweet in the cluster
 				firstTweet := cluster.Tweets[0]
 				timeStr := time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
-				writeOutput("┌─ Cluster %d (%d tweets, first tweet: %s)%s", i+1, cluster.Size, timeStr, busyWordsStr)
+
+				// Get continuation information for this cluster
+				batchWindowMutex.RLock()
+				continuationInfo := getContinuationInfo(cluster, batchWindow, batchNumber, cfg)
+				batchWindowMutex.RUnlock()
+
+				writeOutput("┌─ Cluster %d (%d tweets, first tweet: %s)%s%s", i+1, cluster.Size, timeStr, busyWordsStr, continuationInfo)
 
 				// Find and print most typical tweets
 				if len(cluster.Tweets) > 1 {
@@ -860,6 +899,11 @@ func main() {
 
 	initializeGlobalState()
 
+	startStatsPrinter()
+
+	// Initialize global busy words for persistence tracking
+	globalBusyWords = make(map[string]bool)
+
 	err = initializePipeline(cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize pipeline: %v", err)
@@ -890,8 +934,6 @@ func main() {
 		slog.Error("Failed to set up RabbitMQ consumer", "error", err)
 		os.Exit(1)
 	}
-
-	startStatsPrinter()
 
 	for msg := range msgs {
 		row := string(msg.Body)
@@ -940,7 +982,7 @@ func main() {
 				// The logic is now correct and verified:
 				// 1. Every token gets processed (no filtering/dropping)
 				// 2. Existing tokens get their assigned frequency class
-				// 3. New tokens get 3PK created and assigned to least frequent class (Class 6)
+				// 3. New tokens get 3PK created and assign to least frequent class (Class 6)
 				// 4. All tokens are routed to their appropriate frequency class
 				//
 				// DO NOT add any master filter checks or token filtering here.
@@ -1010,6 +1052,155 @@ func main() {
 
 		// Acknowledge successful message processing
 		msg.Ack(false) // false = single acknowledgment
+	}
+}
+
+// createBatchFromClusters creates a batch from clustering results and adds it to the batch window
+func createBatchFromClusters(clusters []pipeline.TweetCluster, batchNumber int, cfg *Config) {
+	// Collect all tweets that were actually clustered
+	var clusteredTweets []*tweets.Tweet
+	for _, cluster := range clusters {
+		// Assign batch ID to each tweet in the cluster
+		for _, tweet := range cluster.Tweets {
+			tweet.BatchID = batchNumber
+		}
+		clusteredTweets = append(clusteredTweets, cluster.Tweets...)
+	}
+
+	// Create batch with only the tweets that were clustered
+	batch := &Batch{
+		BatchID:  batchNumber,
+		Tweets:   clusteredTweets,
+		Clusters: clusters,
+	}
+
+	// Add batch to the global batch window
+	batchWindowMutex.Lock()
+	batchWindow = append(batchWindow, batch)
+
+	// Maintain window size
+	if len(batchWindow) > cfg.Analysis.WindowBatchesPersistence {
+		batchWindow = batchWindow[1:]
+	}
+	batchWindowMutex.Unlock()
+}
+
+// getContinuationInfo returns continuation information for a cluster
+func getContinuationInfo(currentCluster pipeline.TweetCluster, batchWindow []*Batch, currentBatchID int, cfg *Config) string {
+	var continuationBatches []int
+
+	// Check each previous batch in the window
+	for _, pastBatch := range batchWindow {
+		if pastBatch.BatchID >= currentBatchID {
+			continue // Skip current and future batches
+		}
+
+		// Check if any cluster in the past batch is similar to the current cluster
+		for _, pastCluster := range pastBatch.Clusters {
+			if clustersAreRelated(currentCluster, pastCluster, cfg) {
+				continuationBatches = append(continuationBatches, pastBatch.BatchID)
+				break // Found a continuation, no need to check other clusters in this batch
+			}
+		}
+	}
+
+	// Sort and deduplicate continuation batches
+	if len(continuationBatches) > 0 {
+		continuationBatches = deduplicateAndSort(continuationBatches)
+		return fmt.Sprintf(" (continues from batches %v)", continuationBatches)
+	}
+
+	return " (new cluster)"
+}
+
+// clustersAreRelated checks if two clusters are related (similar busy words and tweets)
+func clustersAreRelated(cluster1, cluster2 pipeline.TweetCluster, cfg *Config) bool {
+	// Check if they share busy words
+	sharedWords := 0
+	for _, word1 := range cluster1.BusyWords {
+		for _, word2 := range cluster2.BusyWords {
+			if word1 == word2 {
+				sharedWords++
+				break
+			}
+		}
+	}
+
+	// Use configurable threshold for relationship strength
+	minSharedWords := cfg.Analysis.MinSharedBusyWordsForPersistence
+	if len(cluster1.BusyWords) < 3 || len(cluster2.BusyWords) < 3 {
+		// Lower threshold for small clusters (use 1 if config value is higher)
+		if minSharedWords > 1 {
+			minSharedWords = 1
+		}
+	}
+
+	return sharedWords >= minSharedWords
+}
+
+// deduplicateAndSort removes duplicates and sorts a slice of integers
+func deduplicateAndSort(slice []int) []int {
+	seen := make(map[int]bool)
+	var result []int
+
+	for _, item := range slice {
+		if !seen[item] {
+			seen[item] = true
+			result = append(result, item)
+		}
+	}
+
+	sort.Ints(result)
+	return result
+}
+
+// processBatchPersistence analyzes the batch window for persistent clusters
+func processBatchPersistence(batchWindow []*Batch, cfg *Config) {
+	// Get the current busy words from the analysis thread
+	globalBusyWordsMutex.RLock()
+	allBusyWords := make(map[string]bool)
+	for word := range globalBusyWords {
+		allBusyWords[word] = true
+	}
+	globalBusyWordsMutex.RUnlock()
+
+	// If no busy words available yet, skip persistence analysis
+	if len(allBusyWords) == 0 {
+		return
+	}
+
+	// Collect all tweets from the window for clustering
+	var windowTweets []*tweets.Tweet
+	for _, batch := range batchWindow {
+		windowTweets = append(windowTweets, batch.Tweets...)
+	}
+
+	// Perform clustering on the window
+	clusterer := pipeline.NewOptimizedTweetClusterer(
+		cfg.Analysis.MinJaccardSimilarity,
+		cfg.Analysis.MaxTweetsToCluster,
+	)
+	windowResult := clusterer.ClusterTweets(windowTweets, allBusyWords, cfg.Analysis.MinClusterSize)
+
+	// Analyze persistence for each cluster
+	for i, cluster := range windowResult.Clusters {
+		batchIDSet := make(map[int]struct{})
+		for _, tweet := range cluster.Tweets {
+			batchIDSet[tweet.BatchID] = struct{}{}
+		}
+
+		// Convert to sorted slice
+		var batchIDs []int
+		for id := range batchIDSet {
+			batchIDs = append(batchIDs, id)
+		}
+		sort.Ints(batchIDs)
+
+		// Print persistence info if cluster spans multiple batches
+		if len(batchIDs) > 1 {
+			fmt.Printf("Cluster %d: Persistent across batches %v (%d tweets)\n",
+				i+1, batchIDs, len(cluster.Tweets))
+		}
 	}
 }
 
@@ -1686,11 +1877,11 @@ func loadPersistedState(stateDir string, freqClasses int, cfg *Config) {
 }
 
 // Simple k-means implementation for busy word vectors
-func runKMeansClusteringGo(tweets []*tweets.Tweet, busyWords map[string]bool, cfg *Config, writeOutput func(string, ...interface{})) {
+func runKMeansClusteringGo(tweetList []*tweets.Tweet, busyWords map[string]bool, cfg *Config, writeOutput func(string, ...interface{}), batchNumber int) []pipeline.TweetCluster {
 	writeOutput("*** K-MEANS CLUSTERING (Go implementation) ***")
-	if len(tweets) == 0 || len(busyWords) == 0 {
+	if len(tweetList) == 0 || len(busyWords) == 0 {
 		writeOutput("No tweets or busy words to cluster.")
-		return
+		return nil
 	}
 
 	useAllWords := false
@@ -1709,7 +1900,7 @@ func runKMeansClusteringGo(tweets []*tweets.Tweet, busyWords map[string]bool, cf
 	if useAllWords {
 		// Collect all unique tokens from all tweets
 		uniqueWords := make(map[string]bool)
-		for _, tweet := range tweets {
+		for _, tweet := range tweetList {
 			for _, token := range tweet.Tokens {
 				uniqueWords[token] = true
 			}
@@ -1726,8 +1917,8 @@ func runKMeansClusteringGo(tweets []*tweets.Tweet, busyWords map[string]bool, cf
 	}
 
 	// Build vectors for each tweet (binary vector)
-	vectors := make([][]int, len(tweets))
-	for i, tweet := range tweets {
+	vectors := make([][]int, len(tweetList))
+	for i, tweet := range tweetList {
 		vec := make([]int, len(wordToIndex))
 		for _, token := range tweet.Tokens {
 			if j, ok := wordToIndex[token]; ok {
@@ -1741,62 +1932,93 @@ func runKMeansClusteringGo(tweets []*tweets.Tweet, busyWords map[string]bool, cf
 	if k <= 0 {
 		k = 10 // fallback default
 	}
-	if k > len(tweets) {
-		k = len(tweets)
+	if k > len(tweetList) {
+		k = len(tweetList)
 	}
 
-	clusters := kMeansClusteringGo(vectors, k)
+	clusterAssignments := kMeansClusteringGo(vectors, k)
 
 	// Map cluster index to tweet indices
 	clusterToTweets := make(map[int][]int)
-	for i, c := range clusters {
+	for i, c := range clusterAssignments {
 		clusterToTweets[c] = append(clusterToTweets[c], i)
 	}
 
-	writeOutput("Clusters found: %d", len(clusterToTweets))
-	writeOutput("")
-	// For each cluster, print header, top busy words, and tweets
-	clusterNum := 1
+	// Convert k-means results to TweetCluster format first
+	var clusters []pipeline.TweetCluster
 	for _, tweetIndices := range clusterToTweets {
 		if len(tweetIndices) < cfg.Analysis.MinClusterSize {
 			continue
 		}
-		// Compute centroid for this cluster
-		centroid := make([]float64, len(wordToIndex))
-		for _, idx := range tweetIndices {
-			for j, v := range vectors[idx] {
-				centroid[j] += float64(v)
+
+		// Create cluster tweets slice
+		clusterTweets := make([]*tweets.Tweet, len(tweetIndices))
+		for i, idx := range tweetIndices {
+			clusterTweets[i] = tweetList[idx]
+		}
+
+		// Find shared busy words for this cluster
+		sharedWords := make([]string, 0)
+		for word := range busyWords {
+			// Check if this word appears in at least half the tweets in the cluster
+			count := 0
+			for _, idx := range tweetIndices {
+				for _, token := range tweetList[idx].Tokens {
+					if token == word {
+						count++
+						break
+					}
+				}
+			}
+			if count >= len(tweetIndices)/2 {
+				sharedWords = append(sharedWords, word)
 			}
 		}
-		for j := 0; j < len(centroid); j++ {
-			centroid[j] /= float64(len(tweetIndices))
+
+		cluster := pipeline.TweetCluster{
+			Tweets:    clusterTweets,
+			BusyWords: sharedWords,
+			Size:      len(clusterTweets),
 		}
-		// Find top busy words for this cluster (centroid features)
-		topWords := topBusyWordsFromCentroidGo(centroid, wordToIndex, 10)
+		clusters = append(clusters, cluster)
+	}
+
+	writeOutput("Clusters found: %d", len(clusters))
+	writeOutput("")
+	// For each cluster, print header, top busy words, and tweets
+	for i, cluster := range clusters {
 		busyWordsStr := ""
-		if len(topWords) > 0 {
-			busyWordsStr = fmt.Sprintf(" [%s]", strings.Join(topWords, ", "))
+		if len(cluster.BusyWords) > 0 {
+			busyWordsStr = fmt.Sprintf(" [%s]", strings.Join(cluster.BusyWords, ", "))
 		}
 		// Get the date/time of the first tweet in the cluster
-		firstTweet := tweets[tweetIndices[0]]
+		firstTweet := cluster.Tweets[0]
 		timeStr := time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
-		writeOutput("┌─ Cluster %d (%d tweets, first tweet: %s)%s", clusterNum, len(tweetIndices), timeStr, busyWordsStr)
+
+		// Get continuation information for this cluster
+		batchWindowMutex.RLock()
+		continuationInfo := getContinuationInfo(cluster, batchWindow, batchNumber, cfg)
+		batchWindowMutex.RUnlock()
+
+		writeOutput("┌─ Cluster %d (%d tweets, first tweet: %s)%s%s", i+1, cluster.Size, timeStr, busyWordsStr, continuationInfo)
+
 		maxTweetsToShow := 20
-		for j, idx := range tweetIndices {
+		for j, tweet := range cluster.Tweets {
 			if j >= maxTweetsToShow {
-				writeOutput("│  └─ ... and %d more tweets", len(tweetIndices)-maxTweetsToShow)
+				writeOutput("│  └─ ... and %d more tweets", len(cluster.Tweets)-maxTweetsToShow)
 				break
 			}
 			prefix := "│  ├─"
-			if j == maxTweetsToShow-1 || j == len(tweetIndices)-1 {
+			if j == maxTweetsToShow-1 || j == len(cluster.Tweets)-1 {
 				prefix = "│  └─"
 			}
-			writeOutput("%s \"%s\"", prefix, tweets[idx].Text)
+			writeOutput("%s \"%s\"", prefix, tweet.Text)
 		}
 		writeOutput("│")
-		clusterNum++
 	}
 	writeOutput("└─ End of clusters")
+
+	return clusters
 }
 
 // kMeansClusteringGo clusters binary vectors using a simple k-means algorithm (Hamming distance)
@@ -1951,4 +2173,19 @@ func findMostTypicalTweets(tweets []*tweets.Tweet, threshold float64) (mostConne
 		}
 	}
 	return
+}
+
+// Helper function
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// Batch represents a collection of tweets processed together
+type Batch struct {
+	BatchID  int
+	Tweets   []*tweets.Tweet
+	Clusters []pipeline.TweetCluster
 }
