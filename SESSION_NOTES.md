@@ -1,11 +1,11 @@
 # Session Notes
 
-# Verification
+# Verification  Issues
 - The Whitney Stuff Seems to Start Around Here.
 gnip.csv_1329008058666_1329008358666.csv:168498929640550400,Sun Feb 12 00:57:30 
 # TTD
 
-- Make sure that the test_filters.txt file is used for dropping tokens from the counting and busy word processing pipeling. They should not be stripped out of the output.
+- Make sure that the test_filters.txt file is used for dropping tokens from the counting and busy word processing pipeline. They should not be stripped out of the output.
 
 - Verify how tokens are checked against the test_filters.txt file. These words should go into a set against which inbound tokens can be checked.
 
@@ -17,7 +17,22 @@ You get a lot of Tweets like this. Allmost all o, f, and d.   Is there a super-c
 
 "FOOD FOOD FOOR FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOF FOOD"
 
-- Still getting lots of ??????????????????????. I thought we were dropping those Tweets?
+- Still getting lots of ??????????????????????. I thought we were dropping those Tweets? This is not done in the main pipeline. It could be implemented there--if a Tweet text has more than N question markes, ignore it.
+
+## Enhancements
+
+### Clustering Across Batches
+Right now, the set of Tweets we find clusters in is defined in terms of the number of batches. It's like two or three.  What would be interesting would be to find clusters that persist from batch to batch. Not sure how to do this, exactly.
+
+Perhaps something like
+- Keep the last few clusterings
+- Attach the batch number to each Tweet in the union of all Tweets in the clusters
+- Cluster again
+- Identify the current clusters that link to earlier clusters.
+- Print the longevity value with each cluster.
+
+### A Graphical Front End
+
 
 ## Tuning
 

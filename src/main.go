@@ -423,6 +423,13 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 				timeStr := time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
 				writeOutput("┌─ Cluster %d (%d tweets, first tweet: %s)%s", i+1, cluster.Size, timeStr, busyWordsStr)
 
+				// Find and print most typical tweets
+				if len(cluster.Tweets) > 1 {
+					mostConnIdx, medoidIdx, maxConn, maxSimSum := findMostTypicalTweets(cluster.Tweets, cfg.Analysis.MinJaccardSimilarity)
+					writeOutput("│  Most connected tweet (connections: %d): \"%s\"", maxConn, cluster.Tweets[mostConnIdx].Text)
+					writeOutput("│  Medoid tweet (sum Jaccard: %.2f): \"%s\"", maxSimSum, cluster.Tweets[medoidIdx].Text)
+				}
+
 				// Show first few tweets in each cluster
 				maxTweetsToShow := 20
 				if len(cluster.Tweets) < maxTweetsToShow {
@@ -1889,4 +1896,59 @@ func topBusyWordsFromCentroidGo(centroid []float64, wordToIndex map[string]int, 
 		result = append(result, scores[i].word)
 	}
 	return result
+}
+
+// Helper: Compute Jaccard similarity between two string slices (tokens)
+func jaccard(tokensA, tokensB []string) float64 {
+	setA := make(map[string]struct{}, len(tokensA))
+	setB := make(map[string]struct{}, len(tokensB))
+	for _, t := range tokensA {
+		setA[t] = struct{}{}
+	}
+	for _, t := range tokensB {
+		setB[t] = struct{}{}
+	}
+	intersection := 0
+	for t := range setA {
+		if _, ok := setB[t]; ok {
+			intersection++
+		}
+	}
+	union := len(setA) + len(setB) - intersection
+	if union == 0 {
+		return 0.0
+	}
+	return float64(intersection) / float64(union)
+}
+
+// Helper: Find most connected and medoid tweet indices in a cluster
+func findMostTypicalTweets(tweets []*tweets.Tweet, threshold float64) (mostConnectedIdx, medoidIdx int, maxConnections int, maxSimSum float64) {
+	n := len(tweets)
+	connections := make([]int, n)
+	simSums := make([]float64, n)
+	for i := 0; i < n; i++ {
+		for j := 0; j < n; j++ {
+			if i == j {
+				continue
+			}
+			sim := jaccard(tweets[i].Tokens, tweets[j].Tokens)
+			simSums[i] += sim
+			if sim >= threshold {
+				connections[i]++
+			}
+		}
+	}
+	mostConnectedIdx, medoidIdx = 0, 0
+	maxConnections, maxSimSum = connections[0], simSums[0]
+	for i := 1; i < n; i++ {
+		if connections[i] > maxConnections {
+			mostConnectedIdx = i
+			maxConnections = connections[i]
+		}
+		if simSums[i] > maxSimSum {
+			medoidIdx = i
+			maxSimSum = simSums[i]
+		}
+	}
+	return
 }
