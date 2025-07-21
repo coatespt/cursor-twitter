@@ -96,6 +96,8 @@ type Config struct {
 		WindowBatchesPersistenceCheck int `yaml:"window_batches_persistence_check"` // K
 		// Minimum number of shared busy words required for clusters to be considered related (for persistence tracking)
 		MinSharedBusyWordsForPersistence int `yaml:"min_shared_busywords_for_persistence"` // Relationship strength threshold
+		// Method for determining cluster relationships across batches: "busy_words" or "full_text"
+		PersistenceClusteringMethod string `yaml:"persistence_clustering_method"` // Cross-batch relationship detection method
 	} `yaml:"analysis"`
 }
 
@@ -1107,7 +1109,7 @@ func getContinuationInfo(currentCluster pipeline.TweetCluster, batchWindow []*Ba
 	// Sort and deduplicate continuation batches
 	if len(continuationBatches) > 0 {
 		continuationBatches = deduplicateAndSort(continuationBatches)
-		return fmt.Sprintf(" (continues from batches %v)", continuationBatches)
+		return fmt.Sprintf(" (continues from batches %v, current: %d)", continuationBatches, currentBatchID)
 	}
 
 	return " (new cluster)"
@@ -1115,6 +1117,23 @@ func getContinuationInfo(currentCluster pipeline.TweetCluster, batchWindow []*Ba
 
 // clustersAreRelated checks if two clusters are related (similar busy words and tweets)
 func clustersAreRelated(cluster1, cluster2 pipeline.TweetCluster, cfg *Config) bool {
+	// Default to busy_words method if not specified
+	method := cfg.Analysis.PersistenceClusteringMethod
+	if method == "" {
+		method = "busy_words"
+	}
+
+	switch method {
+	case "full_text":
+		return clustersAreRelatedByFullText(cluster1, cluster2, cfg)
+	case "busy_words":
+		fallthrough
+	default:
+		return clustersAreRelatedByBusyWords(cluster1, cluster2, cfg)
+	}
+}
+
+func clustersAreRelatedByBusyWords(cluster1, cluster2 pipeline.TweetCluster, cfg *Config) bool {
 	// Check if they share busy words
 	sharedWords := 0
 	for _, word1 := range cluster1.BusyWords {
@@ -1136,6 +1155,34 @@ func clustersAreRelated(cluster1, cluster2 pipeline.TweetCluster, cfg *Config) b
 	}
 
 	return sharedWords >= minSharedWords
+}
+
+func clustersAreRelatedByFullText(cluster1, cluster2 pipeline.TweetCluster, cfg *Config) bool {
+	// Get all unique tweet texts from both clusters
+	texts1 := make(map[string]bool)
+	texts2 := make(map[string]bool)
+
+	for _, tweet := range cluster1.Tweets {
+		normalizedText := normalizeTweetForComparison(tweet.Text)
+		texts1[normalizedText] = true
+	}
+
+	for _, tweet := range cluster2.Tweets {
+		normalizedText := normalizeTweetForComparison(tweet.Text)
+		texts2[normalizedText] = true
+	}
+
+	// Count shared tweet texts
+	sharedTexts := 0
+	for text := range texts1 {
+		if texts2[text] {
+			sharedTexts++
+		}
+	}
+
+	// Consider clusters related if they share at least one tweet text
+	// This is much more restrictive than busy word matching
+	return sharedTexts >= 1
 }
 
 // deduplicateAndSort removes duplicates and sorts a slice of integers

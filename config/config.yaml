@@ -119,14 +119,18 @@ analysis:
   min_cluster_size: 5
   # Persistence window configuration for tracking clusters across multiple batches
   # Number of batches to keep in the persistence window (M)
-  window_batches_persistence: 5
+  window_batches_persistence: 7
   # Number of batches to check for persistence analysis (K, should be <= M)
-  window_batches_persistence_check: 3
+  window_batches_persistence_check: 6
   # Minimum number of shared busy words required for clusters to be considered related (for persistence tracking)
   # Higher values = more restrictive (fewer continuations detected)
   # Lower values = less restrictive (more continuations detected)
   # Default: 2 (previous hardcoded value)
   min_shared_busywords_for_persistence: 3
+  # Method for determining cluster relationships across batches
+  # Options: "busy_words" (compare shared busy words) or "full_text" (compare actual tweet texts)
+  # "full_text" is much more restrictive and precise for detecting true continuations
+  persistence_clustering_method: full_text
 
 # Set to true to enable language detection in the Python parser 
 # WARNING: slows parsing to a crawl!!! like 275/second.   

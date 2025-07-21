@@ -47,7 +47,7 @@ func TestOptimizedTweetClusterer(t *testing.T) {
 	clusterer := NewOptimizedTweetClusterer(0.1, 1000)
 
 	// Perform clustering
-	result := clusterer.ClusterTweets(testTweets, busyWords)
+	result := clusterer.ClusterTweets(testTweets, busyWords, 1)
 
 	// Verify results
 	if result.Stats.TotalTweets != 5 {
