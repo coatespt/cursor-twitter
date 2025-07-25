@@ -112,8 +112,8 @@ def process_json_file(input_path, output_path, global_tweet_count):
                                     word.lower() for word in text.split()
                                     if word.isalpha() and len(word) > 1
                                 ])
-                                # Detect language of tweet text if enabled in config
-                                if detect_language:
+                                # Detect language of tweet text if enabled in config and not disabled by command line
+                                if detect_language and not args.no_language_detect:
                                     tweet_text = tweet.get('text', '')
                                     if tweet_text.strip():
                                         detected_lang, _ = langid.classify(tweet_text)
@@ -180,6 +180,8 @@ def main():
     parser.add_argument("output_dir", help="Output directory for .csv files")
     parser.add_argument("--num-workers", type=int, default=multiprocessing.cpu_count(),
                         help="Number of worker processes (default: number of CPU cores)")
+    parser.add_argument("--no-language-detect", action="store_true",
+                        help="Disable language detection (use original lang field from JSON)")
     args = parser.parse_args()
 
     input_dir = args.input_dir

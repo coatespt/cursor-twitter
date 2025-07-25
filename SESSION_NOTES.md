@@ -1,8 +1,11 @@
 # Session Notes
 
 # Verification  Issues
-- The Whitney Stuff Seems to Start Around Here.
+The Whitney Stuff Seems to Start Around Here.
 gnip.csv_1329008058666_1329008358666.csv:168498929640550400,Sun Feb 12 00:57:30 
+
+This would be in the last days of the Twitter feed.
+
 # TTD
 
 - Make sure that the test_filters.txt file is used for dropping tokens from the counting and busy word processing pipeline. They should not be stripped out of the output.
@@ -350,7 +353,34 @@ python3 parser/parser.py ../twits/msg_input_3 ../twits/msg_output_3
 
 The parser can be run with an optional --num-workers flag the gives the number of processing threads to be applied to the parsing. The speedup is roughly proportional to this value up to the number of hardware cores on your machine.
 
-python parser.py input_dir output_dir --num-workers 8
+python parser.py input_dir output_dir  
+
+## Go Utility to do Language Identification on CSV files
+
+This post-processes the CSV files do language detection. The language
+field in the original Tweets is crap.  
+
+Go is at least is at least 200 time faster than doing it in Python. Like 120/second for python v 2500/second in Go. 
+
+It also seems to do a noticeably better job classifying than the Python library.
+
+### Build it
+make build-language-detector
+
+or
+
+go build -o language_detector language_detector.go
+
+### Run It
+Use -help for details. There are flags to turn progress off and to set the number of threads working. The default of 8 threads is fine on a four core machine (like mine.)
+
+With -progress,  the time to run the test set was 2m 40s,  and it reports 16,156 lines/second.
+
+Without -progress the time to run the test was x and it reports 17,538 lines/second.
+
+Note, you can stop it and restart it and it will ignore the input for which there are already files in the output. You may want to remove the newest 8 files in the taget directory because they may be incomplete.
+
+./language_detector -input ../twits/test_language_detect -output ../twits/test_language_detect_out 
 
 ## Test program for parsed data
 This program reads CSV files to ensure that we can create Tweets from them.

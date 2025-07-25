@@ -9,6 +9,7 @@ coverage.out
 coverage.html
 sender_status.txt
 main
+language_detector
 
 # Python bytecode and cache files
 *.pyc

@@ -9,10 +9,16 @@ build:
 	go build -o process src/process.go
 	@echo "Build complete!"
 
+# Build language detector
+build-language-detector:
+	@echo "Building language detector..."
+	go build -o language_detector language_detector.go
+	@echo "Language detector build complete!"
+
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f process
+	rm -f process language_detector
 	@echo "Clean complete!"
 
 # Run tests (if any)
@@ -30,6 +36,7 @@ run:
 help:
 	@echo "Available targets:"
 	@echo "  build        - Build the process executable"
+	@echo "  build-language-detector - Build the language detector"
 	@echo "  clean        - Remove build artifacts"
 	@echo "  test         - Run tests"
 	@echo "  test-all     - Run all tests (same as test)"
