@@ -5,13 +5,12 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 )
 
 // WordFilter holds a set of words to filter out
+// Note: This is read-only after initialization, so no locking is needed
 type WordFilter struct {
 	filteredWords map[string]bool
-	mu            sync.RWMutex
 }
 
 // NewWordFilter creates a new empty WordFilter
@@ -29,9 +28,6 @@ func (wf *WordFilter) LoadFromFile(filename string) error {
 		return fmt.Errorf("failed to open filter file %s: %v", filename, err)
 	}
 	defer file.Close()
-
-	wf.mu.Lock()
-	defer wf.mu.Unlock()
 
 	scanner := bufio.NewScanner(file)
 	lineNum := 0
@@ -61,9 +57,6 @@ func (wf *WordFilter) LoadFromFile(filename string) error {
 
 // IsFiltered checks if a token should be filtered out
 func (wf *WordFilter) IsFiltered(token string) bool {
-	wf.mu.RLock()
-	defer wf.mu.RUnlock()
-
 	// Convert token to lowercase for case-insensitive matching
 	token = strings.ToLower(token)
 	return wf.filteredWords[token]
@@ -71,21 +64,15 @@ func (wf *WordFilter) IsFiltered(token string) bool {
 
 // GetFilteredCount returns the number of words in the filter
 func (wf *WordFilter) GetFilteredCount() int {
-	wf.mu.RLock()
-	defer wf.mu.RUnlock()
 	return len(wf.filteredWords)
 }
 
 // AddWord adds a single word to the filter
 func (wf *WordFilter) AddWord(word string) {
-	wf.mu.Lock()
-	defer wf.mu.Unlock()
 	wf.filteredWords[strings.ToLower(word)] = true
 }
 
 // RemoveWord removes a word from the filter
 func (wf *WordFilter) RemoveWord(word string) {
-	wf.mu.Lock()
-	defer wf.mu.Unlock()
 	delete(wf.filteredWords, strings.ToLower(word))
 }

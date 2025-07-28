@@ -1577,23 +1577,20 @@ func simpleTokenize(text string, cfg *Config) []string {
 			continue
 		}
 
-		// Filter out offensive words if word filtering is enabled
-		if globalWordFilter != nil && globalWordFilter.IsFiltered(cleanToken) {
-			continue
-		}
-
-		// Apply token filters if enabled and track rejections
+		// Apply token filters if enabled - ordered by cost (cheapest first) with early exit
 		if cfg.TokenFilters.Enabled {
-			rejected := false
-
-			// Max length filter
+			// 1. CHEAPEST: Word filter (map lookup)
+			if globalWordFilter != nil && globalWordFilter.IsFiltered(cleanToken) {
+				continue
+			}
+			// 2. CHEAP: Max length filter (simple integer comparison)
 			if cfg.TokenFilters.MaxLength > 0 && len(cleanToken) > cfg.TokenFilters.MaxLength {
 				rejectedByMaxLength++
-				rejected = true
+				continue
 			}
 
-			// Character diversity filter (only for long tokens)
-			if !rejected && len(cleanToken) >= cfg.TokenFilters.MinCharacterDiversityLowerLimit && cfg.TokenFilters.MinCharacterDiversity > 0 {
+			// 9. MOST EXPENSIVE: Character diversity filter (requires map creation)
+			if len(cleanToken) >= cfg.TokenFilters.MinCharacterDiversityLowerLimit && cfg.TokenFilters.MinCharacterDiversity > 0 {
 				uniqueChars := make(map[rune]bool)
 				for _, char := range cleanToken {
 					uniqueChars[char] = true
@@ -1601,12 +1598,12 @@ func simpleTokenize(text string, cfg *Config) []string {
 				diversity := float64(len(uniqueChars)) / float64(len(cleanToken))
 				if diversity < cfg.TokenFilters.MinCharacterDiversity {
 					rejectedByDiversity++
-					rejected = true
+					continue
 				}
 			}
 
-			// Character repetition filter
-			if !rejected && cfg.TokenFilters.MaxCharacterRepetition > 0 {
+			// 7. EXPENSIVE: Character repetition filter (character scan)
+			if cfg.TokenFilters.MaxCharacterRepetition > 0 {
 				repetitionCount := 0
 				for i := 1; i < len(cleanToken); i++ {
 					if cleanToken[i] == cleanToken[i-1] {
@@ -1616,12 +1613,54 @@ func simpleTokenize(text string, cfg *Config) []string {
 				repetitionRatio := float64(repetitionCount) / float64(len(cleanToken))
 				if repetitionRatio > cfg.TokenFilters.MaxCharacterRepetition {
 					rejectedByRepetition++
-					rejected = true
+					continue
 				}
 			}
 
-			// Case alternation filter
-			if !rejected && cfg.TokenFilters.MaxCaseAlternations > 0 {
+			// 3. CHEAP: Hashtag filter (string prefix check)
+			if cfg.TokenFilters.RejectHashtags && strings.HasPrefix(cleanToken, "#") {
+				rejectedByHashtag++
+				continue
+			}
+
+			// 4. CHEAP: URL filter (string prefix check)
+			if cfg.TokenFilters.RejectUrls && (strings.HasPrefix(cleanToken, "http") || strings.HasPrefix(cleanToken, "www")) {
+				rejectedByUrl++
+				continue
+			}
+
+			// 5. MEDIUM: All caps filter (character scan)
+			if cfg.TokenFilters.RejectAllCapsLong && len(cleanToken) >= cfg.TokenFilters.AllCapsLowerLimit {
+				allCaps := true
+				for _, char := range cleanToken {
+					if char < 'A' || char > 'Z' {
+						allCaps = false
+						break
+					}
+				}
+				if allCaps {
+					rejectedByAllCaps++
+					continue
+				}
+			}
+
+			// 6. EXPENSIVE: Number-letter mixing filter (character scan)
+			if cfg.TokenFilters.MaxNumberLetterMix > 0 {
+				digitCount := 0
+				for _, char := range cleanToken {
+					if char >= '0' && char <= '9' {
+						digitCount++
+					}
+				}
+				digitRatio := float64(digitCount) / float64(len(cleanToken))
+				if digitRatio > cfg.TokenFilters.MaxNumberLetterMix {
+					rejectedByNumberMix++
+					continue
+				}
+			}
+
+			// 8. EXPENSIVE: Case alternation filter (character scan)
+			if cfg.TokenFilters.MaxCaseAlternations > 0 {
 				caseChanges := 0
 				for i := 1; i < len(cleanToken); i++ {
 					if (cleanToken[i] >= 'A' && cleanToken[i] <= 'Z' && cleanToken[i-1] >= 'a' && cleanToken[i-1] <= 'z') ||
@@ -1632,55 +1671,8 @@ func simpleTokenize(text string, cfg *Config) []string {
 				caseChangeRatio := float64(caseChanges) / float64(len(cleanToken))
 				if caseChangeRatio > cfg.TokenFilters.MaxCaseAlternations {
 					rejectedByCaseAlt++
-					rejected = true
+					continue
 				}
-			}
-
-			// Number-letter mixing filter
-			if !rejected && cfg.TokenFilters.MaxNumberLetterMix > 0 {
-				digitCount := 0
-				for _, char := range cleanToken {
-					if char >= '0' && char <= '9' {
-						digitCount++
-					}
-				}
-				digitRatio := float64(digitCount) / float64(len(cleanToken))
-				if digitRatio > cfg.TokenFilters.MaxNumberLetterMix {
-					rejectedByNumberMix++
-					rejected = true
-				}
-			}
-
-			// Hashtag filter
-			if !rejected && cfg.TokenFilters.RejectHashtags && strings.HasPrefix(cleanToken, "#") {
-				rejectedByHashtag++
-				rejected = true
-			}
-
-			// URL filter
-			if !rejected && cfg.TokenFilters.RejectUrls && (strings.HasPrefix(cleanToken, "http") || strings.HasPrefix(cleanToken, "www")) {
-				rejectedByUrl++
-				rejected = true
-			}
-
-			// All caps long filter
-			if !rejected && cfg.TokenFilters.RejectAllCapsLong && len(cleanToken) >= cfg.TokenFilters.AllCapsLowerLimit {
-				allCaps := true
-				for _, char := range cleanToken {
-					if char < 'A' || char > 'Z' {
-						allCaps = false
-						break
-					}
-				}
-				if allCaps {
-					rejectedByAllCaps++
-					rejected = true
-				}
-			}
-
-			if rejected {
-				totalRejected++
-				continue
 			}
 		}
 
