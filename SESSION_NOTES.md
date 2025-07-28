@@ -1,21 +1,50 @@
 # Session Notes
 
-# Verification  Issues
+# Starting and Verification Issues
 
-## Speed of computation.
+## Speed of Computation and Significant Events
 
+### Absolute Speed
 The program sustains a thoughput of about 1100 Tweets/second with filtering for English. It is probably faster without filtering because all of the Tweets need to be read in even if the non-english get dropped. That's 2.2 decahoses.
 
 You are getting clustering every second or two. Try a larger number of Tweets in a batch.
+Note that each CSV file is about five minutes of Tweets at 5000/second equals approximately 150,000 Tweets, or 6.6 files per million Tweets.
 
-## The Whitney Stuff Seems to Start Around Here.
+### Slowdown 
+- Persistence of subjects is a major consumer of CPU. App. 30% of the cycles go into this! This is probably proportional to the depth in time of the check.
+	- This is an important feature
+	- We can optimize it or we can make it optional
+- We spend a lot of time doing regex.
+	- Pre-compile the regex expression.
+	- Cache compiled regex objects
+	- Investigate simpler string operation
+- GC is not trivial. App. 10% of CPU is memory management
+	- Reuse objects?
+	- Reduce string allocation in hot paths
+
+This is useful to know if you want to start processing at a given date/time.  You need to start with sufficient files earlier than your start date in order to have the system primed, and the frequency data will be all out of whack if you just start it up any old place.
+
+You can use the utilities mentioned below to find the date/time you want to start at in the two-week interval.
+
+### Data Set Start and End Time
+
+It's a little more than two weeks of almost unbroken data. It might have been restarted briefly once or twice--probably not enough to matter.
+
+### The data set:
+- Starts around 2012-01-28 16:16:46, i.e. quarter after five on New Years Day
+- Ends at 2012-02-15 03:22:36, which is 3:22 AM the day after Valentine's day.
+
+The very first hours may or may not be fully trustworthy as there may have been some start and stop. Check using the file/time utility.
+
+### The Whitney Stuff Seems to Start Around Here.
 gnip.csv_1329008058666_1329008358666.csv:168498929640550400, Feb 12 00:57:30 
 
 This is toward the end of the 2-week+ period covered by the feed.
 
-Note the superbowl is also a great place to see real conversations starting up. Feb 5 2012. That's about where I am now after a day of running.
-
-The data ends sometime after Valentines day, which is also presumably Twitter-significant.
+### Super Bowl
+Note the superbowl is also a great place to see real conversations starting up. Feb 5 2012.  
+ 
+# TTD and Direction
 
 ## Better Busy Word Detection
 
@@ -32,40 +61,54 @@ Possible benefits:
 
 - You can tolerate a lower Z score because you have a way to remove the ones that result from a non-busy token just happening to have landed on othewise slightly outlying counts.
 
+It is not clear how big an impact this would have on performance. Possibly not that much. Run performance monitoring to see how much processing power goes into the busy word filters. It might be that the real processing is in the message reading and parsing.
 
-# TTD
+## Minor TTD Issues
 
-- Create a program to map the file names onto human-readable dates. the dates must be in a lexicographically sortable format, year, month, day, time so that they will be read in order.  Consider simply renaming them in this format.  Pair this with a way to start wherever you want.  An alternative to this:
-	- We have the dates of the Tweets printed out in the cluster data
-	- Write a small utility to find the name of the file that brackets any given Tweet date/time
-	- You can just put that file, or the one previous, in the notation of the last file processed.
-	- The utility could print out the name of the Nth file previous to that date. This would be useful because you might need to bring the program up from scratch.
+### Performance
+We got a significant slow-down at some point. It's about 1100/second now, and it used to be in the mid-2000's. This could be real, or it could be something stupid.
 
+Contention on some protected data structure is a strong possibility. Look at
+- Message reading
+- Writing to the token queue
+- Writing to the busy-word processing queues
+- Consolidating busy-words the "barrier"
 
-- Create an actual frequency chart for all the words in the set (English only).  Words starting with n will surely be just behind "the" and "an" in frequency!
+### Word Frequency Chart
 
-- Make sure that the test_filters.txt file is used for dropping tokens from the counting and busy word processing pipeline. They should not be stripped out of the output.
+ Create an actual frequency chart for all the words in the set (English only is an option.)  Words starting with n will surely be just behind "the" and "an" in frequency! Twitter is a sewer!
 
-- Verify how tokens are checked against the test_filters.txt file. These words should go into a set against which inbound tokens can be checked.
+ Note, this is a five-minute utility, as the parsed tokens are a field in the CSV.
 
-- RT's and @this_n_that
+### Verify Dropping Tokens Is Correct and In Use
+Make sure that the test_filters.txt file is used for dropping tokens from the counting and busy word processing pipeline. They should not be stripped out of the output.
+
+Verify how tokens are checked against the test_filters.txt file. These words should go into a set against which inbound tokens can be checked.
+
+### RT's and @this_n_that
 Many Tweets are identical except for RT's, @this_and_that, #this_and_that. What would be the effect of removing these in the either the clustering or the display?
 
-- Filter Out Based on Character Diversity
-You get a lot of Tweets like this. Allmost all o, f, and d.   Is there a super-coarse filter for tossing a lot of these?
+One suspects that the majority of clusters would disappear. Not clear what the meaning and/or desirability of this would be.
+
+### Filter Out Based on Character Diversity
+You get a lot of Tweets like the FOOD Tweet below. It is allmost all o, f, and d. Is there a super-coarse filter for tossing a lot of these?  A character diversity metric shouldn't be too hard to compute.  
 
 "FOOD FOOD FOOR FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOF FOOD"
 
-- Still getting lots of ??????????????????????. I thought we were dropping those Tweets? This is not done in the main pipeline. It could be implemented there--if a Tweet text has more than N question markes, ignore it.   Make sure the ????'s are actual ASCII question marks and not just an artifact of displaying un-printable Unicode values.   Note that the output does show up a lot of non-ASCII stuff like smiley faces and hearts.
 
-## Enhancements
+### ?????????
+Still getting lots of ??????????????????????. I thought we were dropping those Tweets? This is not done in the main pipeline. It could be implemented there--if a Tweet text has more than N question markes, ignore it.   
 
-### Clustering Across Batches
+Make sure the ????'s are actual ASCII question marks and not just an artifact of displaying un-printable Unicode values. I think they are in fact ASCII '?' characters because the output does show up a lot of non-ASCII stuff like smiley faces and hearts.
+
+# Enhancements
+
+## Clustering Across Batches
 
 Note, this has now been implemented but may not be adequately tuned up yet. The note below is left in as a reminder pending such tune-up. What happens is, the clustering procedure looks back through the previous K batches of tweets for earlier batches and notes the batches that also had those clusters.
   
 
-### A Graphical Front End
+## A Graphical Front End
 This is a big one!  Not sure how to go about it with Cursor. I wrote the graphics by hand in Java last time!
 
 A busy-word fade-out like the bubbles would be great.
@@ -73,18 +116,17 @@ A busy-word fade-out like the bubbles would be great.
 - When the BW was last seen, fading off the left
 - Vertical axis is the frequency class
 
-## Tuning
-
-- Apostrophes
+# Tuning
+## Apostrophes
 Consider whether it makes sense to simply drop the apostrophe and the s that follows, of whether it makes more sense to replace the apostrophe with nothing, so Bob's becomes bobs and don't becomes dont.
 
-- Poor busy word detection.
-	- Increasing the number of frequency classes. Say to 20 or 25.
+## Poor busy word detection
+### Increasing the number of frequency classes. Say to 20 or 25.
 		- I upped it from 10 to 24 and it seems to be better. 
 		- More experimentation is in order
 		- More threads? More threads might allow higher minimum Z scores.
 
-- Current clustering is graph-based Louvain/modularity. 
+### Current clustering is graph-based Louvain/modularity. 
 	- Seems to works OK
 	- Added k-means but it didn't seem to work very well.
 		- Still worth fiddling with to see if it's just a tuning problem.
@@ -94,27 +136,24 @@ Consider whether it makes sense to simply drop the apostrophe and the s that fol
 
   
 ## Other Tuning
-- The window is now 20m tokens, or about 2m Tweets. 
+### Understand the effect of window size and batch size better.
+
+The window is now 20m tokens, or about 2m Tweets. 
 	- That's about 66 minutes of the decahose, or about 28 minutes of actual time at the rate we consume.  
 	- 66 minutes seems like a reasonable turnover. How far out of sync with the day would you get in an hour? But it could be shorter.  Worth trying.
 
-- Batch size is now 10,000. 
-	- Verify in the code that it really is Tweets and not tokens. Yes, it's tweets because the main does it by counting the input Tweets.
+- Batch size is now 10,000
 	- 10k Tweets is 20 seconds of decahose, just 7 or 8 seconds of actual processing time. Try a larger value.
-		- 10k Tweets is approximately 100k tokens
+		- 10k Tweets is approximately 100k tokens--less than one five minute file.
 		- 100k tokens over 24 busywork processors is about 4000 tokens per processor. Over 1200 counters, that's a mean of only 3.3 per counter.
-
-- Examine the de-duplication functionality in the cluster display. Make sure it does what it's supposed to. The purpose is to not show a zillion copies of basically the same Tweet.
-
-- Jacquard similarity for the clustering seems to be applied to all the tokens in the Tweets. 
+ 
+### Jacquard Similarity
+Jacquard similarity for the clustering seems to be applied to all the tokens in the Tweets. 
   - Is that true, and if so, is it correct? 
   - Maybe it should be only on the busywords. 
   - Jacquard similarity might not be important. Maybe just the raw occurrences?
-
-- I could swear that I used k-means clustering before and had good results. Think about swapping in a k-means implementation and being able to swtich among them.
  
- 
-## Cluster Quality
+## Clustering Quality
 - The clusters don't seem nearly as good as they were with the old Java implementation. See tuning steps above. My guess is, the clusterng is probably off.  See above
 
 ## Language
@@ -537,6 +576,22 @@ The time interval covered by a given CSV file varies a little, but except in a f
 
 ./csv_file_mapping -dir /data/csv | grep "2012-02-14"
 
+## Frequency Analyzer
+Give token counts and relative frequency for all the CSV's in the given directory. this utility will differentiate by language. Be sure you ran the language utility, or the results for any given language will be nonsense.
+
+The output is CSV of the form {rank, token, count, frequency}
+
+The output by default goes to global_frequency.csv but you can set it to whatever file name you want.
+
+### Build It
+make build-token-frequency
+
+### Examples
+./token_frequency_analyzer -input /data/csv
+./token_frequency_analyzer -input /data/csv -lang en
+./token_frequency_analyzer -input /data/csv -lang en -output english_frequency.csv
+
+
 ## Tests
 cd /Users/petercoates/python-work/cursor-twitter
 
@@ -557,7 +612,7 @@ make test-race
 cd to cursor-twitter
 ./run_tests
 
-## Run the Profiler
+# Run the Profiler
  
  ./main -config ./config/config.yaml -print-tweets=false -profile
 

@@ -27,10 +27,16 @@ build-csv-mapping:
 	go build -o csv_file_mapping csv_file_mapping.go
 	@echo "CSV file mapping build complete!"
 
+# Build token frequency analyzer
+build-token-frequency:
+	@echo "Building token frequency analyzer..."
+	go build -o token_frequency_analyzer token_frequency_analyzer.go
+	@echo "Token frequency analyzer build complete!"
+
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f process language_detector find_csv_file csv_file_mapping
+	rm -f process language_detector find_csv_file csv_file_mapping token_frequency_analyzer
 	@echo "Clean complete!"
 
 # Run tests (if any)
@@ -51,6 +57,7 @@ help:
 	@echo "  build-language-detector - Build the language detector"
 	@echo "  build-find-csv        - Build the CSV file finder"
 	@echo "  build-csv-mapping     - Build the CSV file mapping"
+	@echo "  build-token-frequency - Build the token frequency analyzer"
 	@echo "  clean        - Remove build artifacts"
 	@echo "  test         - Run tests"
 	@echo "  test-all     - Run all tests (same as test)"
