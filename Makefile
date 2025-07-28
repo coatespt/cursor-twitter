@@ -15,10 +15,22 @@ build-language-detector:
 	go build -o language_detector language_detector.go
 	@echo "Language detector build complete!"
 
+# Build CSV file finder
+build-find-csv:
+	@echo "Building CSV file finder..."
+	go build -o find_csv_file find_csv_file.go
+	@echo "CSV file finder build complete!"
+
+# Build CSV file mapping
+build-csv-mapping:
+	@echo "Building CSV file mapping..."
+	go build -o csv_file_mapping csv_file_mapping.go
+	@echo "CSV file mapping build complete!"
+
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f process language_detector
+	rm -f process language_detector find_csv_file csv_file_mapping
 	@echo "Clean complete!"
 
 # Run tests (if any)
@@ -37,6 +49,8 @@ help:
 	@echo "Available targets:"
 	@echo "  build        - Build the process executable"
 	@echo "  build-language-detector - Build the language detector"
+	@echo "  build-find-csv        - Build the CSV file finder"
+	@echo "  build-csv-mapping     - Build the CSV file mapping"
 	@echo "  clean        - Remove build artifacts"
 	@echo "  test         - Run tests"
 	@echo "  test-all     - Run all tests (same as test)"

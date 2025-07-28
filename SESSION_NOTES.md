@@ -1,12 +1,48 @@
 # Session Notes
 
 # Verification  Issues
-The Whitney Stuff Seems to Start Around Here.
-gnip.csv_1329008058666_1329008358666.csv:168498929640550400,Sun Feb 12 00:57:30 
 
-This would be in the last days of the Twitter feed.
+## Speed of computation.
+
+The program sustains a thoughput of about 1100 Tweets/second with filtering for English. It is probably faster without filtering because all of the Tweets need to be read in even if the non-english get dropped. That's 2.2 decahoses.
+
+You are getting clustering every second or two. Try a larger number of Tweets in a batch.
+
+## The Whitney Stuff Seems to Start Around Here.
+gnip.csv_1329008058666_1329008358666.csv:168498929640550400, Feb 12 00:57:30 
+
+This is toward the end of the 2-week+ period covered by the feed.
+
+Note the superbowl is also a great place to see real conversations starting up. Feb 5 2012. That's about where I am now after a day of running.
+
+The data ends sometime after Valentines day, which is also presumably Twitter-significant.
+
+## Better Busy Word Detection
+
+Consider that dual sets of pipelines, or even three sets, with different hash functions could do a much better job of filtering of the true busy words. 
+
+If you use two sets, take only tokens that appear in both busy word pipelines.  If you use three sets, take only tokens that appear in 2/3 or 3/3.  
+
+The word space size is on the order of a billion. The actual set of words probably has at most a few tens of millions. Call it 10 million. That's one in a hundred random 3pk's corresponds to a real word. If you had two completely distinct computations of busy words, the chance of a given random 3pk colliding with a real token is one in ten thousand.  
+
+This means that for a given acceptable level of collisions, one can make the filter less discriminatory, i.e., a lower minimum Z value, or you can make the probability of an error much smaller.  My intuition is that the former is probably what you want.
+
+Possible benefits:
+- You could ditch the spurious words more effectively because they won't show up in both or all three sets.
+
+- You can tolerate a lower Z score because you have a way to remove the ones that result from a non-busy token just happening to have landed on othewise slightly outlying counts.
+
 
 # TTD
+
+- Create a program to map the file names onto human-readable dates. the dates must be in a lexicographically sortable format, year, month, day, time so that they will be read in order.  Consider simply renaming them in this format.  Pair this with a way to start wherever you want.  An alternative to this:
+	- We have the dates of the Tweets printed out in the cluster data
+	- Write a small utility to find the name of the file that brackets any given Tweet date/time
+	- You can just put that file, or the one previous, in the notation of the last file processed.
+	- The utility could print out the name of the Nth file previous to that date. This would be useful because you might need to bring the program up from scratch.
+
+
+- Create an actual frequency chart for all the words in the set (English only).  Words starting with n will surely be just behind "the" and "an" in frequency!
 
 - Make sure that the test_filters.txt file is used for dropping tokens from the counting and busy word processing pipeline. They should not be stripped out of the output.
 
@@ -20,22 +56,22 @@ You get a lot of Tweets like this. Allmost all o, f, and d.   Is there a super-c
 
 "FOOD FOOD FOOR FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOD FOOF FOOD"
 
-- Still getting lots of ??????????????????????. I thought we were dropping those Tweets? This is not done in the main pipeline. It could be implemented there--if a Tweet text has more than N question markes, ignore it.
+- Still getting lots of ??????????????????????. I thought we were dropping those Tweets? This is not done in the main pipeline. It could be implemented there--if a Tweet text has more than N question markes, ignore it.   Make sure the ????'s are actual ASCII question marks and not just an artifact of displaying un-printable Unicode values.   Note that the output does show up a lot of non-ASCII stuff like smiley faces and hearts.
 
 ## Enhancements
 
 ### Clustering Across Batches
-Right now, the set of Tweets we find clusters in is defined in terms of the number of batches. It's like two or three.  What would be interesting would be to find clusters that persist from batch to batch. Not sure how to do this, exactly.
 
-Perhaps something like
-- Keep the last few clusterings
-- Attach the batch number to each Tweet in the union of all Tweets in the clusters
-- Cluster again
-- Identify the current clusters that link to earlier clusters.
-- Print the longevity value with each cluster. This would be how long similar tweets have survived as recognizable subjects.
+Note, this has now been implemented but may not be adequately tuned up yet. The note below is left in as a reminder pending such tune-up. What happens is, the clustering procedure looks back through the previous K batches of tweets for earlier batches and notes the batches that also had those clusters.
+  
 
 ### A Graphical Front End
+This is a big one!  Not sure how to go about it with Cursor. I wrote the graphics by hand in Java last time!
 
+A busy-word fade-out like the bubbles would be great.
+- The size proportional to the number of Tweets the busy word is in. Or perhaps logarithmically proportional.
+- When the BW was last seen, fading off the left
+- Vertical axis is the frequency class
 
 ## Tuning
 
@@ -471,6 +507,35 @@ cd to cursor-twitter
 go build -o analyze_tokens analyze_tokens.go 
 ./analyze_tokens -input ../twits/msg_output
 
+## Find the CSV File For a Given Date
+
+There are more than two weeks of decahose in 5000+ files. If you process Tweets starting at some given point in the multi-week interval available starting at January 1, 2012 and running to approximately January 15, 2012, you can find the file to start with using htis utility.
+
+Note that it takes an argument, N, which is the number of CSV files prior to the one you want. This is because in most cases, you will have to fire it up from scratch in order to have it primed when it gets to the date you seek.  
+
+Build it:
+
+make build-find-csv
+
+Run it:
+./find_csv_file -dir /path/to/csv/files -datetime "2012-02-14 19:35:55" -n 3
+
+
+A handy way to check it:
+The following will print the first few lines of the file.
+
+ ./find_csv_file -dir ../twits/msg_output_3  -datetime "2012-02-14 19:35:55" -n 5 | xargs -I {} head ../twits/msg_output_3/{}
+
+
+## Print Out the Time Intervals For the CSV files
+
+The time interval covered by a given CSV file varies a little, but except in a few spots, like the beginning, it's about five minutes.
+
+./csv_file_mapping -dir /data/csv > file_mapping.csv
+
+./csv_file_mapping -dir /data/csv | head -10
+
+./csv_file_mapping -dir /data/csv | grep "2012-02-14"
 
 ## Tests
 cd /Users/petercoates/python-work/cursor-twitter
