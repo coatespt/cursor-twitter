@@ -162,6 +162,13 @@ var (
 	apostropheRegex *regexp.Regexp
 )
 
+// Pre-compiled regexes for tweet normalization (compiled once at startup)
+var (
+	rtRegex             *regexp.Regexp
+	leadingMentionRegex *regexp.Regexp
+	trailingUrlRegex    *regexp.Regexp
+)
+
 // Add at the top-level globals:
 var clusterOutputFilePath string
 var clusterOutputFileOnce sync.Once
@@ -579,16 +586,13 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 // normalizeTweetForComparison removes leading @mentions, RT prefixes, trailing URLs, and normalizes whitespace
 func normalizeTweetForComparison(text string) string {
 	// Remove leading "RT @username: " patterns
-	rtRegex := regexp.MustCompile(`^RT\s+@\w+:\s*`)
 	text = rtRegex.ReplaceAllString(text, "")
 
 	// Remove leading @mentions at the start
-	leadingMentionRegex := regexp.MustCompile(`^@\w+\s*`)
 	text = leadingMentionRegex.ReplaceAllString(text, "")
 
 	// Remove trailing URLs
-	urlRegex := regexp.MustCompile(`\s+https?://\S+$`)
-	text = urlRegex.ReplaceAllString(text, "")
+	text = trailingUrlRegex.ReplaceAllString(text, "")
 
 	// Normalize whitespace (multiple spaces to single space, trim)
 	text = strings.Join(strings.Fields(text), " ")
@@ -889,6 +893,11 @@ func main() {
 	// Initialize pre-compiled regexes for tokenization
 	urlRegex = regexp.MustCompile(`(https?://[^\s]+|www\.[^\s]+)`)
 	apostropheRegex = regexp.MustCompile(`'.*`)
+
+	// Initialize pre-compiled regexes for tweet normalization
+	rtRegex = regexp.MustCompile(`^RT\s+@\w+:\s*`)
+	leadingMentionRegex = regexp.MustCompile(`^@\w+\s*`)
+	trailingUrlRegex = regexp.MustCompile(`\s+https?://\S+$`)
 
 	// Initialize the recent tweet window
 	windowSize := cfg.WindowBatches * cfg.BatchSize

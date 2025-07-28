@@ -133,7 +133,7 @@ analysis:
   persistence_clustering_method: full_text
 
 # Set to true to enable language detection in the Python parser 
-# WARNING: slows parsing to a crawl!!! like 275/second.   
+# WARNING: slows parsing to a crawl!!! like 275/second. 
 # THIS DOES NOTHING IN THE MAIN PIPELINE. SEE language_filter: "en" above.
 detect_language: true
 
@@ -166,7 +166,7 @@ token_filters:
   all_caps_lower_limit: 5
 
   remove_urls: true
- 
+
 
 # If true, drop tweets where the text contains an excessive number of '?' characters 
 # (likely due to decoding errors or non-Latin scripts)

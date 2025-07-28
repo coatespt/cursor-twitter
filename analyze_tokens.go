@@ -14,11 +14,18 @@ import (
 	"time"
 )
 
+// Pre-compiled regex for tokenization
+var tokenizeRegex *regexp.Regexp
+
+// Initialize regex pattern (called once at startup)
+func init() {
+	tokenizeRegex = regexp.MustCompile(`\W+`)
+}
+
 // Simple tokenizer: splits on non-word characters, lowercases, removes empty tokens
 func simpleTokenize(text string) []string {
 	// Remove punctuation, split on whitespace
-	re := regexp.MustCompile(`\W+`)
-	tokens := re.Split(strings.ToLower(text), -1)
+	tokens := tokenizeRegex.Split(strings.ToLower(text), -1)
 	var out []string
 	for _, t := range tokens {
 		t = strings.TrimSpace(t)

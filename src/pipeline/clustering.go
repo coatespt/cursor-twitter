@@ -9,6 +9,20 @@ import (
 	"time"
 )
 
+// Pre-compiled regexes for tweet normalization (compiled once at startup)
+var (
+	rtRegex             *regexp.Regexp
+	leadingMentionRegex *regexp.Regexp
+	trailingUrlRegex    *regexp.Regexp
+)
+
+// Initialize regex patterns (called once at startup)
+func init() {
+	rtRegex = regexp.MustCompile(`^RT\s+@\w+:\s*`)
+	leadingMentionRegex = regexp.MustCompile(`^@\w+\s*`)
+	trailingUrlRegex = regexp.MustCompile(`\s+https?://\S+$`)
+}
+
 // TweetCluster represents a cluster of tweets with shared busy words
 type TweetCluster struct {
 	Tweets     []*tweets.Tweet
@@ -349,16 +363,13 @@ func (c *OptimizedTweetClusterer) findSharedBusyWords(tweets []*tweets.Tweet, bu
 // normalizeTweetForComparison removes leading @mentions, RT prefixes, trailing URLs, and normalizes whitespace
 func normalizeTweetForComparison(text string) string {
 	// Remove leading "RT @username: " patterns
-	rtRegex := regexp.MustCompile(`^RT\s+@\w+:\s*`)
 	text = rtRegex.ReplaceAllString(text, "")
 
 	// Remove leading @mentions at the start
-	leadingMentionRegex := regexp.MustCompile(`^@\w+\s*`)
 	text = leadingMentionRegex.ReplaceAllString(text, "")
 
 	// Remove trailing URLs
-	urlRegex := regexp.MustCompile(`\s+https?://\S+$`)
-	text = urlRegex.ReplaceAllString(text, "")
+	text = trailingUrlRegex.ReplaceAllString(text, "")
 
 	// Normalize whitespace (multiple spaces to single space, trim)
 	text = strings.Join(strings.Fields(text), " ")
