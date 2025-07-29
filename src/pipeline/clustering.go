@@ -3,25 +3,9 @@ package pipeline
 import (
 	"cursor-twitter/src/tweets"
 	"log/slog"
-	"regexp"
 	"sort"
-	"strings"
 	"time"
 )
-
-// Pre-compiled regexes for tweet normalization (compiled once at startup)
-var (
-	rtRegex             *regexp.Regexp
-	leadingMentionRegex *regexp.Regexp
-	trailingUrlRegex    *regexp.Regexp
-)
-
-// Initialize regex patterns (called once at startup)
-func init() {
-	rtRegex = regexp.MustCompile(`^RT\s+@\w+:\s*`)
-	leadingMentionRegex = regexp.MustCompile(`^@\w+\s*`)
-	trailingUrlRegex = regexp.MustCompile(`\s+https?://\S+$`)
-}
 
 // TweetCluster represents a cluster of tweets with shared busy words
 type TweetCluster struct {
@@ -358,23 +342,6 @@ func (c *OptimizedTweetClusterer) findSharedBusyWords(tweets []*tweets.Tweet, bu
 	sort.Strings(allWords)
 
 	return allWords
-}
-
-// normalizeTweetForComparison removes leading @mentions, RT prefixes, trailing URLs, and normalizes whitespace
-func normalizeTweetForComparison(text string) string {
-	// Remove leading "RT @username: " patterns
-	text = rtRegex.ReplaceAllString(text, "")
-
-	// Remove leading @mentions at the start
-	text = leadingMentionRegex.ReplaceAllString(text, "")
-
-	// Remove trailing URLs
-	text = trailingUrlRegex.ReplaceAllString(text, "")
-
-	// Normalize whitespace (multiple spaces to single space, trim)
-	text = strings.Join(strings.Fields(text), " ")
-
-	return strings.TrimSpace(text)
 }
 
 // calculateStats calculates clustering performance statistics

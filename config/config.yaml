@@ -158,6 +158,8 @@ token_filters:
   max_number_letter_mix: 0.3
   # Reject hashtags (tokens starting with #)
   reject_hashtags: true
+  # Reject at-mentions (tokens starting with @)
+  reject_at_mentions: true
   # Reject URLs (tokens starting with http or www)
   reject_urls: true
   # Reject all-caps tokens above a certain length
@@ -166,6 +168,9 @@ token_filters:
   all_caps_lower_limit: 5
 
   remove_urls: true
+
+  # Apostrophe handling: "keep" (leave as-is), "truncate" (remove from apostrophe onwards), "remove" (remove apostrophe)
+  apostrophe_handling: "keep"
 
 
 # If true, drop tweets where the text contains an excessive number of '?' characters 

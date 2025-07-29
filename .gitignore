@@ -2,6 +2,7 @@
 *.log
 *.gz
 *.csv
+*.swp
 process
 testdata
 analyze_tokens
@@ -10,6 +11,7 @@ coverage.html
 sender_status.txt
 main
 language_detector
+token_frequency_analyzer
 
 # Python bytecode and cache files
 *.pyc

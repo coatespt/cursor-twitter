@@ -46,6 +46,8 @@ Note the superbowl is also a great place to see real conversations starting up. 
  
 # TTD and Direction
 
+IMPORTANT. CHECK THE GOLANG PARSER FOR PROPER SPLITTING ON PERIODS AND COMMAS.
+
 ## Better Busy Word Detection
 
 Consider that dual sets of pipelines, or even three sets, with different hash functions could do a much better job of filtering of the true busy words. 
@@ -74,11 +76,28 @@ Contention on some protected data structure is a strong possibility. Look at
 - Writing to the busy-word processing queues
 - Consolidating busy-words the "barrier"
 
-### Word Frequency Chart
+### Pipeline Stats is Broken
 
- Create an actual frequency chart for all the words in the set (English only is an option.)  Words starting with n will surely be just behind "the" and "an" in frequency! Twitter is a sewer!
+Note in the sample below that 58% of the tokens are supposedly rejected. This is not true, and the specifics don't bear it out, as they give similar numbers to before this got broken.  The number of rejected tokens is usually in the low single digits.
 
- Note, this is a five-minute utility, as the parsed tokens are a field in the CSV.
+ --- Pipeline Stats ---
+Total tweets read: 100469
+Distinct tokens: 64847
+Inbound token queue size: 35
+Processing rate: 1158.06 tweets/sec
+--- Token Filter Stats ---
+Tokens processed: 1075939
+Tokens rejected: 629103
+Rejection rate: 58.47%
+  Rejected by max length: 162 (0.0%)
+  Rejected by diversity: 1174 (0.2%)
+  Rejected by repetition: 1664 (0.3%)
+  Rejected by case alternation: 8432 (1.3%)
+  Rejected by number mix: 9171 (1.5%)
+  Rejected by hashtag: 0 (0.0%)
+  Rejected by URL: 82 (0.0%)
+  Rejected by all caps: 0 (0.0%)
+
 
 ### Verify Dropping Tokens Is Correct and In Use
 Make sure that the test_filters.txt file is used for dropping tokens from the counting and busy word processing pipeline. They should not be stripped out of the output.
@@ -577,11 +596,16 @@ The time interval covered by a given CSV file varies a little, but except in a f
 ./csv_file_mapping -dir /data/csv | grep "2012-02-14"
 
 ## Frequency Analyzer
-Give token counts and relative frequency for all the CSV's in the given directory. this utility will differentiate by language. Be sure you ran the language utility, or the results for any given language will be nonsense.
+
+This utility gives rank, token counts, relative frequency, and cumulative frequency for all tokens in the CSV's found in the given directory. This utility will differentiate by language. Be sure you ran the language utility, or the results for any given language will be nonsense.
+
+Note that language analysis is decent, but not flawless, so words from Tweets in any specific language will not be exclusively of that language. In addition, of course, many are nonsense words, names, screen names, etc., which aren't necessarily part of any particular language.
 
 The output is CSV of the form {rank, token, count, frequency}
 
 The output by default goes to global_frequency.csv but you can set it to whatever file name you want.
+
+This program is quite fast--it will do all 5,300 files in just a few minutes.
 
 ### Build It
 make build-token-frequency
@@ -591,6 +615,23 @@ make build-token-frequency
 ./token_frequency_analyzer -input /data/csv -lang en
 ./token_frequency_analyzer -input /data/csv -lang en -output english_frequency.csv
 
+
+### Distinct Tokens for English (en)
+- There are 11,522,129 distinct tokens used in "en" Tweets.
+- Many, particularly among the unusual words, do not appear to be English.
+- The top 220 tokens (which are almost all words) account for half of all usage.
+- The top 3,572 words account for 80% of all usage.
+- The top 13,690 words account for 90% of all usage.
+- The top 615,473 words account for 99% of all usage.
+
+So, the least used 10,906,656 words get only one percent of the total word usage.  
+
+Moreover, relatively few tokens with rank less than 100k are dictionary words. The majority of words of rank between 100k and a million low appear to be ordinary names, screen names, non-English words, misspellings, or nonsense. Beyond a rank of million, almost all are such.
+
+### Distinct Tokens for All Languages (all)
+- There are 16,863,516 distinct tokens for all langauges.
+- The overall properties seem pretty similar.
+- 306 tokens comprise 50% of all usage.
 
 ## Tests
 cd /Users/petercoates/python-work/cursor-twitter

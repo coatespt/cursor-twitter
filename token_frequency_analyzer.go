@@ -9,23 +9,22 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 )
 
 // CSV structure: id_str, created_at, user_id_str, retweet_count, text, retweeted, at, http, hashtag, words, lang
 const (
-	CSV_ID_STR        = 0
-	CSV_CREATED_AT    = 1
-	CSV_USER_ID_STR   = 2
-	CSV_RETWEET_COUNT = 3
-	CSV_TEXT          = 4
-	CSV_RETWEETED     = 5
-	CSV_AT_COUNT      = 6
-	CSV_HTTP_COUNT    = 7
-	CSV_HASHTAG_COUNT = 8
-	CSV_WORDS         = 9 // Pre-parsed tokens field
-	CSV_LANG          = 10
+	TF_CSV_ID_STR        = 0
+	TF_CSV_CREATED_AT    = 1
+	TF_CSV_USER_ID_STR   = 2
+	TF_CSV_RETWEET_COUNT = 3
+	TF_CSV_TEXT          = 4
+	TF_CSV_RETWEETED     = 5
+	TF_CSV_AT_COUNT      = 6
+	TF_CSV_HTTP_COUNT    = 7
+	TF_CSV_HASHTAG_COUNT = 8
+	TF_CSV_WORDS         = 9 // Pre-parsed tokens field
+	TF_CSV_LANG          = 10
 )
 
 // TokenCount represents a token and its count
@@ -140,7 +139,7 @@ func processCSVFile(filePath string, tokenCounts map[string]int, languageFilter 
 
 		// Apply language filter if specified
 		if languageFilter != "" {
-			if strings.ToLower(record[CSV_LANG]) != strings.ToLower(languageFilter) {
+			if strings.ToLower(record[TF_CSV_LANG]) != strings.ToLower(languageFilter) {
 				continue
 			}
 		}
@@ -148,7 +147,7 @@ func processCSVFile(filePath string, tokenCounts map[string]int, languageFilter 
 		tweetCount++
 
 		// Get tokens from the words field (pre-parsed tokens)
-		tokensStr := record[CSV_WORDS]
+		tokensStr := record[TF_CSV_WORDS]
 		if tokensStr == "" {
 			continue
 		}
@@ -175,24 +174,26 @@ func writeFrequencyFile(outputPath string, tokenList []TokenCount, totalTokens i
 	}
 	defer file.Close()
 
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
-
 	// Write header
-	if err := writer.Write([]string{"rank", "token", "count", "frequency"}); err != nil {
+	header := "rank\ttoken\tcount\tfrequency\tcumulative_frequency\n"
+	if _, err := file.WriteString(header); err != nil {
 		return fmt.Errorf("failed to write header: %v", err)
 	}
 
-	// Write data
+	// Write data with cumulative frequency
+	cumulativeFreq := 0.0
 	for i, tc := range tokenList {
 		relativeFreq := float64(tc.Count) / float64(totalTokens)
-		row := []string{
-			strconv.Itoa(i + 1), // Rank (1-based)
+		cumulativeFreq += relativeFreq
+
+		row := fmt.Sprintf("%d\t%s\t%d\t%.8f\t%.8f\n",
+			i+1, // Rank (1-based)
 			tc.Token,
-			strconv.Itoa(tc.Count),
-			fmt.Sprintf("%.8f", relativeFreq),
-		}
-		if err := writer.Write(row); err != nil {
+			tc.Count,
+			relativeFreq,
+			cumulativeFreq,
+		)
+		if _, err := file.WriteString(row); err != nil {
 			return fmt.Errorf("failed to write row: %v", err)
 		}
 	}

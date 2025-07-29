@@ -65,10 +65,12 @@ type Config struct {
 		MaxCaseAlternations             float64 `yaml:"max_case_alternations"`
 		MaxNumberLetterMix              float64 `yaml:"max_number_letter_mix"`
 		RejectHashtags                  bool    `yaml:"reject_hashtags"`
+		RejectAtMentions                bool    `yaml:"reject_at_mentions"`
 		RejectUrls                      bool    `yaml:"reject_urls"`
 		RejectAllCapsLong               bool    `yaml:"reject_all_caps_long"`
 		AllCapsLowerLimit               int     `yaml:"all_caps_lower_limit"`
 		RemoveUrls                      bool    `yaml:"remove_urls"`
+		ApostropheHandling              string  `yaml:"apostrophe_handling"`
 	} `yaml:"token_filters"`
 
 	Persistence struct {
@@ -122,8 +124,11 @@ var (
 		RejectedByCaseAlt    int
 		RejectedByNumberMix  int
 		RejectedByHashtag    int
+		RejectedByAtMention  int
 		RejectedByUrl        int
 		RejectedByAllCaps    int
+		RejectedByMinLength  int
+		RejectedByWordFilter int
 		mu                   sync.RWMutex
 	}
 )
@@ -160,13 +165,6 @@ var recentTweetWindow *RecentTweetWindow
 var (
 	urlRegex        *regexp.Regexp
 	apostropheRegex *regexp.Regexp
-)
-
-// Pre-compiled regexes for tweet normalization (compiled once at startup)
-var (
-	rtRegex             *regexp.Regexp
-	leadingMentionRegex *regexp.Regexp
-	trailingUrlRegex    *regexp.Regexp
 )
 
 // Add at the top-level globals:
@@ -490,8 +488,9 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 					groups := make(map[string][]*tweets.Tweet)
 
 					for _, tweet := range cluster.Tweets {
-						normalized := normalizeTweetForComparison(tweet.Text)
-						groups[normalized] = append(groups[normalized], tweet)
+						// Use the already normalized and filtered tokens instead of text normalization
+						tokenKey := strings.Join(tweet.Tokens, " ")
+						groups[tokenKey] = append(groups[tokenKey], tweet)
 					}
 
 					// Convert to sorted list
@@ -581,23 +580,6 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 			f.Close()
 		}
 	}
-}
-
-// normalizeTweetForComparison removes leading @mentions, RT prefixes, trailing URLs, and normalizes whitespace
-func normalizeTweetForComparison(text string) string {
-	// Remove leading "RT @username: " patterns
-	text = rtRegex.ReplaceAllString(text, "")
-
-	// Remove leading @mentions at the start
-	text = leadingMentionRegex.ReplaceAllString(text, "")
-
-	// Remove trailing URLs
-	text = trailingUrlRegex.ReplaceAllString(text, "")
-
-	// Normalize whitespace (multiple spaces to single space, trim)
-	text = strings.Join(strings.Fields(text), " ")
-
-	return strings.TrimSpace(text)
 }
 
 // RecentTweetWindow is a thread-safe, fixed-size queue for recent tweets
@@ -894,11 +876,6 @@ func main() {
 	urlRegex = regexp.MustCompile(`(https?://[^\s]+|www\.[^\s]+)`)
 	apostropheRegex = regexp.MustCompile(`'.*`)
 
-	// Initialize pre-compiled regexes for tweet normalization
-	rtRegex = regexp.MustCompile(`^RT\s+@\w+:\s*`)
-	leadingMentionRegex = regexp.MustCompile(`^@\w+\s*`)
-	trailingUrlRegex = regexp.MustCompile(`\s+https?://\S+$`)
-
 	// Initialize the recent tweet window
 	windowSize := cfg.WindowBatches * cfg.BatchSize
 	recentTweetWindow = NewRecentTweetWindow(windowSize)
@@ -1167,31 +1144,33 @@ func clustersAreRelatedByBusyWords(cluster1, cluster2 pipeline.TweetCluster, cfg
 }
 
 func clustersAreRelatedByFullText(cluster1, cluster2 pipeline.TweetCluster, cfg *Config) bool {
-	// Get all unique tweet texts from both clusters
-	texts1 := make(map[string]bool)
-	texts2 := make(map[string]bool)
+	// Get all unique token sets from both clusters
+	tokenSets1 := make(map[string]bool)
+	tokenSets2 := make(map[string]bool)
 
 	for _, tweet := range cluster1.Tweets {
-		normalizedText := normalizeTweetForComparison(tweet.Text)
-		texts1[normalizedText] = true
+		// Use the already normalized and filtered tokens
+		tokenKey := strings.Join(tweet.Tokens, " ")
+		tokenSets1[tokenKey] = true
 	}
 
 	for _, tweet := range cluster2.Tweets {
-		normalizedText := normalizeTweetForComparison(tweet.Text)
-		texts2[normalizedText] = true
+		// Use the already normalized and filtered tokens
+		tokenKey := strings.Join(tweet.Tokens, " ")
+		tokenSets2[tokenKey] = true
 	}
 
-	// Count shared tweet texts
-	sharedTexts := 0
-	for text := range texts1 {
-		if texts2[text] {
-			sharedTexts++
+	// Count shared token sets (equivalent to shared normalized texts)
+	sharedTokenSets := 0
+	for tokenSet := range tokenSets1 {
+		if tokenSets2[tokenSet] {
+			sharedTokenSets++
 		}
 	}
 
-	// Consider clusters related if they share at least one tweet text
-	// This is much more restrictive than busy word matching
-	return sharedTexts >= 1
+	// Consider clusters related if they share at least one token set
+	// This is equivalent to the previous text comparison but much faster
+	return sharedTokenSets >= 1
 }
 
 // deduplicateAndSort removes duplicates and sorts a slice of integers
@@ -1365,13 +1344,15 @@ func printStats() {
 	rejectedByCaseAlt := TokenFilterStats.RejectedByCaseAlt
 	rejectedByNumberMix := TokenFilterStats.RejectedByNumberMix
 	rejectedByHashtag := TokenFilterStats.RejectedByHashtag
+	rejectedByAtMention := TokenFilterStats.RejectedByAtMention
 	rejectedByUrl := TokenFilterStats.RejectedByUrl
 	rejectedByAllCaps := TokenFilterStats.RejectedByAllCaps
+	rejectedByMinLength := TokenFilterStats.RejectedByMinLength
+	rejectedByWordFilter := TokenFilterStats.RejectedByWordFilter
 	TokenFilterStats.mu.RUnlock()
 
 	fmt.Printf("\n--- Pipeline Stats ---\n")
 	fmt.Printf("Total tweets read: %d\n", totalTweets)
-	fmt.Printf("Total tokens counted: %d\n", totalTokens)
 	fmt.Printf("Distinct tokens: %d\n", distinctTokens)
 	// fmt.Printf("Tweets in current window: %d\n", windowSize) // Removed tweet-based window size
 	fmt.Printf("Inbound token queue size: %d\n", inboundQueueSize)
@@ -1387,8 +1368,11 @@ func printStats() {
 		fmt.Printf("  Rejected by case alternation: %d (%.1f%%)\n", rejectedByCaseAlt, float64(rejectedByCaseAlt)/float64(totalRejected)*100)
 		fmt.Printf("  Rejected by number mix: %d (%.1f%%)\n", rejectedByNumberMix, float64(rejectedByNumberMix)/float64(totalRejected)*100)
 		fmt.Printf("  Rejected by hashtag: %d (%.1f%%)\n", rejectedByHashtag, float64(rejectedByHashtag)/float64(totalRejected)*100)
+		fmt.Printf("  Rejected by at-mention: %d (%.1f%%)\n", rejectedByAtMention, float64(rejectedByAtMention)/float64(totalRejected)*100)
 		fmt.Printf("  Rejected by URL: %d (%.1f%%)\n", rejectedByUrl, float64(rejectedByUrl)/float64(totalRejected)*100)
 		fmt.Printf("  Rejected by all caps: %d (%.1f%%)\n", rejectedByAllCaps, float64(rejectedByAllCaps)/float64(totalRejected)*100)
+		fmt.Printf("  Rejected by min length: %d (%.1f%%)\n", rejectedByMinLength, float64(rejectedByMinLength)/float64(totalRejected)*100)
+		fmt.Printf("  Rejected by word filter: %d (%.1f%%)\n", rejectedByWordFilter, float64(rejectedByWordFilter)/float64(totalRejected)*100)
 	}
 
 	// Print frequency class stats (ordered from lowest to highest class number)
@@ -1516,10 +1500,6 @@ func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
 	TotalTweetsRead++
 	TotalTokensCounted += len(tokens)
 
-	// Step 5: Manage the sliding window (remove old tweets and decrement their tokens)
-	// Note: We'll call this after parsing, but we need to pass the window size
-	// For now, we'll use a default of 15 minutes if not configured
-
 	return tweet, nil
 }
 
@@ -1537,59 +1517,97 @@ func simpleTokenize(text string, cfg *Config) []string {
 	// Process each token individually
 	var processedTokens []string
 	totalProcessed := 0
-	totalRejected := 0
 	rejectedByMaxLength := 0
 	rejectedByDiversity := 0
 	rejectedByRepetition := 0
 	rejectedByCaseAlt := 0
 	rejectedByNumberMix := 0
 	rejectedByHashtag := 0
+	rejectedByAtMention := 0
 	rejectedByUrl := 0
 	rejectedByAllCaps := 0
+	rejectedByMinLength := 0
+	rejectedByWordFilter := 0
 
+	totalProcessed = len(tokens)
 	for _, token := range tokens {
-		totalProcessed++
 
-		// Remove URLs from this token if enabled
+		// Reject URL tokens if configured to remove URLs
 		if cfg.TokenFilters.RemoveUrls {
-			token = urlRegex.ReplaceAllString(token, "")
-			if token == "" {
+			if strings.HasPrefix(token, "http") || strings.HasPrefix(token, "www") {
+				rejectedByUrl++
 				continue
 			}
 		}
 
-		// Remove apostrophes and what follows (e.g., "don't" -> "don", "Harry's" -> "Harry")
-		token = apostropheRegex.ReplaceAllString(token, "")
-		if token == "" {
-			continue
+		// Handle apostrophes based on configuration
+		// Note that M'kele M'beme is or O'Connor or O'clock are all legit words, not possessive.
+		if strings.Contains(token, "'") {
+			switch cfg.TokenFilters.ApostropheHandling {
+			case "keep":
+				// Leave token as-is
+			case "truncate":
+				// Remove from apostrophe onwards (e.g., "don't" -> "don", "Harry's" -> "Harry")
+				token = apostropheRegex.ReplaceAllString(token, "")
+				if token == "" {
+					rejectedByMinLength++
+					continue
+				}
+			case "remove":
+				// Remove apostrophe only (e.g., "don't" -> "dont", "Harry's" -> "Harrys")
+				token = strings.ReplaceAll(token, "'", "")
+				if token == "" {
+					rejectedByMinLength++
+					continue
+				}
+			default:
+				// Default to "remove" behavior
+				token = strings.ReplaceAll(token, "'", "")
+				if token == "" {
+					rejectedByMinLength++
+					continue
+				}
+			}
 		}
 
-		// Remove punctuation from the token
-		cleanToken := removePunctuation(token)
-
-		// Skip empty tokens after punctuation removal
-		if cleanToken == "" {
-			continue
-		}
+		// Use the token as-is (punctuation removal removed due to conflict with apostrophe handling)
+		cleanToken := token
 
 		// Skip tokens that are too short
 		if cfg.MinTokenLen > 0 && len(cleanToken) < cfg.MinTokenLen {
+			rejectedByMinLength++
 			continue
 		}
 
 		// Apply token filters if enabled - ordered by cost (cheapest first) with early exit
 		if cfg.TokenFilters.Enabled {
-			// 1. CHEAPEST: Word filter (map lookup)
-			if globalWordFilter != nil && globalWordFilter.IsFiltered(cleanToken) {
+			// 1. CHEAPEST: Hashtag filter (string prefix check)
+			if cfg.TokenFilters.RejectHashtags && strings.HasPrefix(cleanToken, "#") {
+				rejectedByHashtag++
 				continue
 			}
-			// 2. CHEAP: Max length filter (simple integer comparison)
+
+			// 2. CHEAPEST: At-mention filter (string prefix check)
+			if cfg.TokenFilters.RejectAtMentions && strings.HasPrefix(cleanToken, "@") {
+				rejectedByAtMention++
+				continue
+			}
+
+			// 3. CHEAP: Word filter (map lookup)
+			// O(1) lookup.
+			if globalWordFilter != nil && globalWordFilter.IsFiltered(cleanToken) {
+				rejectedByWordFilter++
+				continue
+			}
+			// 4. CHEAP: Max length filter (simple integer comparison)
+			//
 			if cfg.TokenFilters.MaxLength > 0 && len(cleanToken) > cfg.TokenFilters.MaxLength {
 				rejectedByMaxLength++
 				continue
 			}
 
 			// 9. MOST EXPENSIVE: Character diversity filter (requires map creation)
+			//
 			if len(cleanToken) >= cfg.TokenFilters.MinCharacterDiversityLowerLimit && cfg.TokenFilters.MinCharacterDiversity > 0 {
 				uniqueChars := make(map[rune]bool)
 				for _, char := range cleanToken {
@@ -1617,18 +1635,6 @@ func simpleTokenize(text string, cfg *Config) []string {
 				}
 			}
 
-			// 3. CHEAP: Hashtag filter (string prefix check)
-			if cfg.TokenFilters.RejectHashtags && strings.HasPrefix(cleanToken, "#") {
-				rejectedByHashtag++
-				continue
-			}
-
-			// 4. CHEAP: URL filter (string prefix check)
-			if cfg.TokenFilters.RejectUrls && (strings.HasPrefix(cleanToken, "http") || strings.HasPrefix(cleanToken, "www")) {
-				rejectedByUrl++
-				continue
-			}
-
 			// 5. MEDIUM: All caps filter (character scan)
 			if cfg.TokenFilters.RejectAllCapsLong && len(cleanToken) >= cfg.TokenFilters.AllCapsLowerLimit {
 				allCaps := true
@@ -1645,6 +1651,8 @@ func simpleTokenize(text string, cfg *Config) []string {
 			}
 
 			// 6. EXPENSIVE: Number-letter mixing filter (character scan)
+			//    TODO: Is this what we want?  See if mixed alpha-numeric tokens are a problem.
+			//    TODO: Do we want pure numbers?  If so, we need to add a test for that.
 			if cfg.TokenFilters.MaxNumberLetterMix > 0 {
 				digitCount := 0
 				for _, char := range cleanToken {
@@ -1660,6 +1668,7 @@ func simpleTokenize(text string, cfg *Config) []string {
 			}
 
 			// 8. EXPENSIVE: Case alternation filter (character scan)
+			//    zTODO: Is this detecting camel-case?
 			if cfg.TokenFilters.MaxCaseAlternations > 0 {
 				caseChanges := 0
 				for i := 1; i < len(cleanToken); i++ {
@@ -1685,6 +1694,10 @@ func simpleTokenize(text string, cfg *Config) []string {
 	if cfg.TokenFilters.Enabled {
 		TokenFilterStats.mu.Lock()
 		TokenFilterStats.TotalTokensProcessed += totalProcessed
+		// Calculate total rejected as sum of specific counters
+		totalRejected := rejectedByMaxLength + rejectedByDiversity + rejectedByRepetition +
+			rejectedByCaseAlt + rejectedByNumberMix + rejectedByHashtag + rejectedByAtMention +
+			rejectedByUrl + rejectedByAllCaps + rejectedByMinLength + rejectedByWordFilter
 		TokenFilterStats.TotalTokensRejected += totalRejected
 		TokenFilterStats.RejectedByMaxLength += rejectedByMaxLength
 		TokenFilterStats.RejectedByDiversity += rejectedByDiversity
@@ -1692,8 +1705,11 @@ func simpleTokenize(text string, cfg *Config) []string {
 		TokenFilterStats.RejectedByCaseAlt += rejectedByCaseAlt
 		TokenFilterStats.RejectedByNumberMix += rejectedByNumberMix
 		TokenFilterStats.RejectedByHashtag += rejectedByHashtag
+		TokenFilterStats.RejectedByAtMention += rejectedByAtMention
 		TokenFilterStats.RejectedByUrl += rejectedByUrl
 		TokenFilterStats.RejectedByAllCaps += rejectedByAllCaps
+		TokenFilterStats.RejectedByMinLength += rejectedByMinLength
+		TokenFilterStats.RejectedByWordFilter += rejectedByWordFilter
 		TokenFilterStats.mu.Unlock()
 	}
 
