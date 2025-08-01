@@ -95,6 +95,8 @@ sender:
 analysis:
   # Clustering method: "graph" (default, Louvain/modularity) or "kmeans" (busy word vector k-means)
   clustering_method: graph  # Options: 'graph' (Louvain/modularity), 'kmeans' (busy word vectors)
+  # Output mode: "verbose" (full tweet metadata) or "human" (cluster metadata + tweet texts only)
+  output_mode: human  # Options: 'verbose' (full metadata), 'human' (texts only)
   # Number of clusters for k-means (only used if clustering_method is "kmeans")
   kmeans_k: 5
   # Number of batches of recent tweets to use for clustering

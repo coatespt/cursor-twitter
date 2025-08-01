@@ -26,7 +26,7 @@ type FrequencyComputationThread struct {
 	inboundTokenQueue *TokenQueue
 
 	// Frequency calculation control
-	shouldRebuild int32 // Atomic boolean (0 = false, 1 = true)
+	shouldRebuild bool // Internal rebuild flag
 
 	// Thread control
 	stopChan chan struct{}
@@ -36,13 +36,8 @@ type FrequencyComputationThread struct {
 	freqClasses int
 	windowSize  int // Number of tokens to process before triggering rebuild
 
-	// Current filters (thread-safe access)
-	currentFilters []FreqClassFilter
-	filtersMutex   sync.RWMutex
-
 	// Debug: Track rebuild count
-	rebuildCount      int
-	rebuildCountMutex sync.Mutex
+	rebuildCount int
 
 	// Token file rotation
 	tokenBatchSize       int      // window / token_persist_files
@@ -151,7 +146,7 @@ func (fct *FrequencyComputationThread) Stop() {
 // TriggerRebuild signals that a frequency class rebuild is needed
 // The FCT will handle the rebuild autonomously when it's ready
 func (fct *FrequencyComputationThread) TriggerRebuild() {
-	atomic.StoreInt32(&fct.shouldRebuild, 1)
+	fct.shouldRebuild = true
 	slog.Info("FCT: Rebuild flag SET - frequency boundary crossed")
 }
 
@@ -185,7 +180,7 @@ func (fct *FrequencyComputationThread) run() {
 			}
 
 			// Check if rebuild is needed first
-			shouldRebuild := atomic.LoadInt32(&fct.shouldRebuild) == 1
+			shouldRebuild := fct.shouldRebuild
 
 			// Debug: Log rebuild flag status more frequently
 			if fct.loopCount%1000 == 0 {
@@ -212,10 +207,8 @@ func (fct *FrequencyComputationThread) run() {
 
 			if shouldRebuild {
 				// Increment rebuild count
-				fct.rebuildCountMutex.Lock()
 				fct.rebuildCount++
 				currentRebuildCount := fct.rebuildCount
-				fct.rebuildCountMutex.Unlock()
 
 				// Consume all accumulated tokens before starting computation
 				slog.Info("FCT: Consuming accumulated tokens before rebuild", "rebuild_count", currentRebuildCount)
@@ -241,7 +234,7 @@ func (fct *FrequencyComputationThread) run() {
 			// Check if we should trigger a rebuild based on token count or file count
 			// This is the FCT's autonomous rebuild triggering logic
 			tokensProcessed := fct.tokenCounter.GetTotalTokens()
-			if tokensProcessed >= fct.windowSize && atomic.LoadInt32(&fct.shouldRebuild) == 0 {
+			if tokensProcessed >= fct.windowSize && !fct.shouldRebuild {
 				slog.Info("FCT: Autonomous rebuild trigger - token count threshold reached",
 					"tokens_processed", tokensProcessed,
 					"window_size", fct.windowSize)
@@ -286,7 +279,9 @@ func (fct *FrequencyComputationThread) processTokens() {
 
 	// Check if we need to write a token file
 	if fct.tokensSinceLastWrite >= fct.tokenBatchSize {
-		fmt.Printf("[DIAG] FCT writing token file: tokensSinceLastWrite=%d >= tokenBatchSize=%d\n", fct.tokensSinceLastWrite, fct.tokenBatchSize)
+		slog.Debug("FCT writing token file",
+			"tokens_since_last_write", fct.tokensSinceLastWrite,
+			"token_batch_size", fct.tokenBatchSize)
 		// Write tokens to file (only the batch size worth)
 		tokensForFile := fct.accumulatedTokens[:fct.tokenBatchSize]
 		if err := fct.writeTokenFile(tokensForFile); err != nil {
@@ -304,7 +299,9 @@ func (fct *FrequencyComputationThread) processTokens() {
 		// If we have remaining tokens, write them too (should be rare)
 		for len(fct.accumulatedTokens) >= fct.tokenBatchSize {
 			tokensForFile = fct.accumulatedTokens[:fct.tokenBatchSize]
-			fmt.Printf("[DIAG] FCT writing additional token file: accumulatedTokens=%d >= tokenBatchSize=%d\n", len(fct.accumulatedTokens), fct.tokenBatchSize)
+			slog.Debug("FCT writing additional token file",
+				"accumulated_tokens", len(fct.accumulatedTokens),
+				"token_batch_size", fct.tokenBatchSize)
 			if err := fct.writeTokenFile(tokensForFile); err != nil {
 				slog.Error("Failed to write additional token file", "error", err)
 			} else {
@@ -344,7 +341,7 @@ func (fct *FrequencyComputationThread) processTokens() {
 // performRebuild performs the actual frequency class calculation and filter building
 func (fct *FrequencyComputationThread) performRebuild() {
 	// Reset the rebuild flag immediately so loop can detect new rebuild requests
-	atomic.StoreInt32(&fct.shouldRebuild, 0)
+	fct.shouldRebuild = false
 	slog.Info("FCT: Rebuild flag RESET at start of performRebuild")
 
 	startTime := time.Now()
@@ -352,8 +349,9 @@ func (fct *FrequencyComputationThread) performRebuild() {
 	// Get current token file count for logging
 	tokenFileCount := fct.tokenFileCounter
 
-	fmt.Printf("*** FCT REBUILD STARTING at %s (token files written: %d) ***\n",
-		startTime.Format("15:04:05"), tokenFileCount)
+	slog.Debug("FCT rebuild starting",
+		"start_time", startTime.Format("15:04:05"),
+		"token_files_written", tokenFileCount)
 
 	slog.Info("Starting frequency class rebuild",
 		"token_files_written", tokenFileCount,
@@ -379,12 +377,7 @@ func (fct *FrequencyComputationThread) performRebuild() {
 	// This ensures each rebuild is based only on the current window's tokens
 	fct.tokenCounter.Clear()
 
-	// Store the filters for the main thread to access
-	fct.filtersMutex.Lock()
-	fct.currentFilters = result.Filters
-	fct.filtersMutex.Unlock()
-
-	// Also install globally for main thread
+	// Install filters globally for main thread
 	slog.Info("Installing filters globally")
 	SetGlobalFilters(result.Filters)
 	slog.Info("Filters installed globally", "num_filters", len(result.Filters))
@@ -428,18 +421,24 @@ func (fct *FrequencyComputationThread) GetQueueStats() map[string]int {
 	}
 }
 
-// GetCurrentFilters returns the current frequency class filters (thread-safe)
-func (fct *FrequencyComputationThread) GetCurrentFilters() []FreqClassFilter {
-	fct.filtersMutex.RLock()
-	defer fct.filtersMutex.RUnlock()
-	return fct.currentFilters
-}
-
 // GetRebuildCount returns the number of rebuilds performed (for debugging)
 func (fct *FrequencyComputationThread) GetRebuildCount() int {
-	fct.rebuildCountMutex.Lock()
-	defer fct.rebuildCountMutex.Unlock()
 	return fct.rebuildCount
+}
+
+// LoadState loads persisted token counts into the FCT's internal state
+func (fct *FrequencyComputationThread) LoadState(counts map[string]int) {
+	fct.tokenCounter.SetCountsDirectly(counts)
+	slog.Info("FCT loaded state", "distinct_tokens", len(counts))
+}
+
+// GetStats returns statistics about the FCT's current state
+func (fct *FrequencyComputationThread) GetStats() map[string]int {
+	return map[string]int{
+		"distinct_tokens": len(fct.tokenCounter.Counts()),
+		"total_tokens":    fct.tokenCounter.GetTotalTokens(),
+		"rebuild_count":   fct.rebuildCount,
+	}
 }
 
 // consumeAllAccumulatedTokens processes tokens from both queues using queue size snapshots

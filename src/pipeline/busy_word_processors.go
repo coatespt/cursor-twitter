@@ -403,10 +403,8 @@ func (fcp *FrequencyClassProcessor) collectBatchResults() {
 func (fcp *FrequencyClassProcessor) printBatchSummary(classResults map[int][]string) {
 	totalBusyWords := 0
 
-	// Print to console
-	fmt.Printf("\n" + strings.Repeat("-", 60) + "\n")
-	fmt.Printf("BATCH %d SUMMARY: %d frequency classes completed\n",
-		fcp.batchNumber, fcp.numClasses)
+	// Log to file instead of console
+	slog.Info("Batch summary start", "batch", fcp.batchNumber, "num_classes", fcp.numClasses)
 
 	// Get sorted class indices to ensure consistent ordering
 	classIndices := make([]int, 0, len(classResults))
@@ -415,24 +413,23 @@ func (fcp *FrequencyClassProcessor) printBatchSummary(classResults map[int][]str
 	}
 	sort.Ints(classIndices)
 
-	// Print classes in sorted order
+	// Log classes in sorted order
 	for _, classIndex := range classIndices {
 		words := classResults[classIndex]
 		totalBusyWords += len(words)
 		if len(words) > 0 {
-			// Print class count and busy words on the same line
-			fmt.Printf("Class %d: %d busy words - %s\n", classIndex, len(words), strings.Join(words, ", "))
+			// Log class count and busy words
+			slog.Info("Batch class results",
+				"batch", fcp.batchNumber,
+				"class", classIndex,
+				"busy_words", len(words),
+				"words", strings.Join(words, ", "))
 		} else {
-			fmt.Printf("Class %d: %d busy words\n", classIndex, len(words))
+			slog.Info("Batch class results",
+				"batch", fcp.batchNumber,
+				"class", classIndex,
+				"busy_words", len(words))
 		}
-	}
-
-	fmt.Printf("TOTAL: %d busy words\n", totalBusyWords)
-	fmt.Printf(strings.Repeat("-", 60) + "\n\n")
-
-	// Also log to file
-	for classIndex, words := range classResults {
-		slog.Info("Batch class results", "batch", fcp.batchNumber, "class", classIndex, "busy_words", len(words))
 	}
 
 	slog.Info("Batch summary completed",

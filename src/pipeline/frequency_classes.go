@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
+	"unsafe"
 
 	"github.com/bits-and-blooms/bloom/v3"
 )
@@ -284,8 +286,7 @@ func BuildFrequencyClassHashSetsAdaptive(tokenCounts map[string]int, F int, minC
 	return result
 }
 
-var globalFiltersMutex sync.RWMutex
-var globalFilters []FreqClassFilter
+var globalFiltersPtr unsafe.Pointer // Atomic pointer to []FreqClassFilter
 var tokenToClassMapping map[string]int
 var tokenToClassMutex sync.RWMutex
 var masterFilter *SetFilter
@@ -293,10 +294,6 @@ var masterFilterMutex sync.RWMutex
 
 // SetGlobalFilters sets the global frequency class filters
 func SetGlobalFilters(filters []FreqClassFilter) {
-	globalFiltersMutex.Lock()
-	defer globalFiltersMutex.Unlock()
-	globalFilters = filters
-
 	// Build the reverse lookup map for O(1) token-to-class lookup
 	tokenToClassMutex.Lock()
 	tokenToClassMapping = make(map[string]int)
@@ -317,31 +314,42 @@ func SetGlobalFilters(filters []FreqClassFilter) {
 	tokenToClassMutex.Unlock()
 	masterFilterMutex.Unlock()
 
+	// Atomically swap the filters pointer
+	atomic.StorePointer(&globalFiltersPtr, unsafe.Pointer(&filters))
+
 	slog.Info("Global filters set", "num_filters", len(filters))
 }
 
 // GetGlobalFilters returns the current global frequency class filters
 func GetGlobalFilters() []FreqClassFilter {
-	globalFiltersMutex.RLock()
-	defer globalFiltersMutex.RUnlock()
-	result := make([]FreqClassFilter, len(globalFilters))
-	copy(result, globalFilters)
-	//fmt.Printf("*** GetGlobalFilters called, returning %d filters ***\n", len(result))
+	ptr := atomic.LoadPointer(&globalFiltersPtr)
+	if ptr == nil {
+		return nil
+	}
+	filters := *(*[]FreqClassFilter)(ptr)
+	result := make([]FreqClassFilter, len(filters))
+	copy(result, filters)
 	return result
 }
 
 // HasGlobalFilters returns true if global filters are available
 func HasGlobalFilters() bool {
-	globalFiltersMutex.RLock()
-	defer globalFiltersMutex.RUnlock()
-	return len(globalFilters) > 0
+	ptr := atomic.LoadPointer(&globalFiltersPtr)
+	if ptr == nil {
+		return false
+	}
+	filters := *(*[]FreqClassFilter)(ptr)
+	return len(filters) > 0
 }
 
 // GetGlobalFiltersCount returns the number of global filters
 func GetGlobalFiltersCount() int {
-	globalFiltersMutex.RLock()
-	defer globalFiltersMutex.RUnlock()
-	return len(globalFilters)
+	ptr := atomic.LoadPointer(&globalFiltersPtr)
+	if ptr == nil {
+		return 0
+	}
+	filters := *(*[]FreqClassFilter)(ptr)
+	return len(filters)
 }
 
 // GetTokenClass returns the frequency class for a token with O(1) lookup
@@ -371,9 +379,12 @@ func GetTokenInfo(token string) (tweets.ThreePartKey, int, bool) {
 
 	if !classExists {
 		// Token exists but no class assigned, use least frequent class
-		globalFiltersMutex.RLock()
-		leastFrequentClass := len(globalFilters) - 1
-		globalFiltersMutex.RUnlock()
+		ptr := atomic.LoadPointer(&globalFiltersPtr)
+		if ptr == nil {
+			return threePK, 0, true
+		}
+		filters := *(*[]FreqClassFilter)(ptr)
+		leastFrequentClass := len(filters) - 1
 		return threePK, leastFrequentClass, true
 	}
 

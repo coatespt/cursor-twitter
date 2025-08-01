@@ -49,7 +49,7 @@ func NewOptimizedTweetClusterer(minJaccardSimilarity float64, maxTweetsToCluster
 func (c *OptimizedTweetClusterer) ClusterTweets(tweets []*tweets.Tweet, busyWords map[string]bool, minClusterSize int) ClusteringResult {
 	startTime := time.Now()
 
-	slog.Info("Starting optimized clustering",
+	slog.Debug("Starting optimized clustering",
 		"total_tweets", len(tweets),
 		"busy_words", len(busyWords),
 		"min_jaccard", c.minJaccardSimilarity,
@@ -90,7 +90,7 @@ func (c *OptimizedTweetClusterer) ClusterTweets(tweets []*tweets.Tweet, busyWord
 	stats := c.calculateStats(len(tweets), len(filteredTweets), len(edges), len(clusters))
 	stats.ProcessingTime = totalDuration.Seconds()
 
-	slog.Info("Clustering completed",
+	slog.Debug("Clustering completed",
 		"original_tweets", len(tweets),
 		"filtered_tweets", len(filteredTweets),
 		"edges_created", len(edges),
@@ -136,7 +136,7 @@ func (c *OptimizedTweetClusterer) filterTweetsForClustering(tweetList []*tweets.
 	}
 
 	// Log distribution
-	slog.Info("Tweet filtering results",
+	slog.Debug("Tweet filtering results",
 		"total_tweets", len(tweetList),
 		"tweets_with_busy_words", len(filtered),
 		"busy_word_distribution", busyWordCounts)
@@ -213,7 +213,7 @@ func (c *OptimizedTweetClusterer) buildSparseGraph(tweetList []*tweets.Tweet, wo
 		}
 	}
 
-	slog.Info("Sparse graph construction completed",
+	slog.Debug("Sparse graph construction completed",
 		"tweets", len(tweetList),
 		"comparisons_made", comparisonCount,
 		"edges_created", edgeCount,
@@ -260,7 +260,7 @@ func (c *OptimizedTweetClusterer) performClustering(tweetList []*tweets.Tweet, e
 	// TODO: Implement Louvain clustering using gonum/graph
 	// For now, return a simple clustering based on connected components
 
-	slog.Info("Performing clustering (placeholder implementation)",
+	slog.Debug("Performing clustering (placeholder implementation)",
 		"tweets", len(tweetList),
 		"edges", len(edges))
 

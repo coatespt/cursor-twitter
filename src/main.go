@@ -2,31 +2,147 @@ package main
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"math"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime/pprof"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
-	amqp "github.com/rabbitmq/amqp091-go"
-	"gopkg.in/yaml.v3"
+	"github.com/streadway/amqp"
+	"gopkg.in/yaml.v2"
 
 	"cursor-twitter/src/filter"
 	"cursor-twitter/src/pipeline"
 	"cursor-twitter/src/tweets"
-	"log/slog"
-
-	"os/signal"
-	"syscall"
-
-	"runtime/pprof"
 )
+
+// LogLevel represents the logging level
+type LogLevel int
+
+const (
+	DEBUG LogLevel = iota
+	INFO
+	WARN
+	ERROR
+)
+
+// Logger provides thread-safe logging with lazy evaluation
+type Logger struct {
+	level   LogLevel
+	verbose bool
+	stderr  *os.File
+	mu      sync.RWMutex
+}
+
+// Global logger instance
+var globalLogger *Logger
+
+// Global batch window for persistence tracking
+var (
+	batchWindow      []*Batch
+	batchWindowMutex sync.RWMutex
+)
+
+// addBatchToWindow adds a new batch to the global batch window and maintains the window size
+func addBatchToWindow(batch *Batch, cfg *Config) {
+	batchWindowMutex.Lock()
+	defer batchWindowMutex.Unlock()
+
+	// Add the new batch
+	batchWindow = append(batchWindow, batch)
+
+	// Maintain window size by removing old batches
+	maxBatches := cfg.Analysis.WindowBatchesPersistence
+	if maxBatches <= 0 {
+		maxBatches = 6 // Default value
+	}
+
+	// Remove oldest batches if we exceed the window size
+	for len(batchWindow) > maxBatches {
+		batchWindow = batchWindow[1:]
+	}
+}
+
+// getBatchWindow returns a copy of the current batch window
+func getBatchWindow() []*Batch {
+	batchWindowMutex.RLock()
+	defer batchWindowMutex.RUnlock()
+
+	// Return a copy to avoid race conditions
+	result := make([]*Batch, len(batchWindow))
+	copy(result, batchWindow)
+	return result
+}
+
+// Log logs a message with lazy evaluation to avoid expensive string formatting when disabled
+func Log(level LogLevel, messageFn func() string) {
+	if globalLogger == nil {
+		return
+	}
+
+	globalLogger.mu.RLock()
+	defer globalLogger.mu.RUnlock()
+
+	// Check level BEFORE calling expensive function
+	if level < globalLogger.level && !globalLogger.verbose {
+		return // Exit early, messageFn never called
+	}
+
+	fmt.Fprintf(globalLogger.stderr, "%s\n", messageFn())
+}
+
+// Convenience functions for different log levels
+func LogDebug(messageFn func() string) { Log(DEBUG, messageFn) }
+func LogInfo(messageFn func() string)  { Log(INFO, messageFn) }
+func LogWarn(messageFn func() string)  { Log(WARN, messageFn) }
+func LogError(messageFn func() string) { Log(ERROR, messageFn) }
+
+// InitializeLogger sets up the global logger
+func InitializeLogger(verbose bool, level LogLevel, logDir string) {
+	// Ensure log directory exists
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		// If we can't create the log directory, fall back to stderr
+		globalLogger = &Logger{
+			level:   level,
+			verbose: verbose,
+			stderr:  os.Stderr,
+		}
+		return
+	}
+
+	// Create log file with timestamp
+	timestamp := time.Now().Format("20060102_150405")
+	logFileName := fmt.Sprintf("pipeline_%s.log", timestamp)
+	logFilePath := filepath.Join(logDir, logFileName)
+
+	logFile, err := os.Create(logFilePath)
+	if err != nil {
+		// If we can't create the log file, fall back to stderr
+		globalLogger = &Logger{
+			level:   level,
+			verbose: verbose,
+			stderr:  os.Stderr,
+		}
+		return
+	}
+
+	globalLogger = &Logger{
+		level:   level,
+		verbose: verbose,
+		stderr:  logFile,
+	}
+}
 
 // Config struct for YAML config file (add log_dir)
 type Config struct {
@@ -90,6 +206,7 @@ type Config struct {
 		DuplicateSimilarityThreshold float64 `yaml:"duplicate_similarity_threshold"` // Similarity threshold for duplicates
 		LanguageFilter               string  `yaml:"language_filter"`                // Language filter: "en", "es", "all", etc.
 		ClusteringMethod             string  `yaml:"clustering_method"`              // Method for clustering: "graph" or "kmeans"
+		OutputMode                   string  `yaml:"output_mode"`                    // Output mode: "verbose" or "human"
 		KmeansK                      int     `yaml:"kmeans_k"`                       // Number of clusters for k-means clustering
 		KmeansUseAllWords            bool    `yaml:"kmeans_use_all_words"`           // Use all words in tweet vectors for k-means clustering
 		MinClusterSize               int     `yaml:"min_cluster_size"`               // Minimum number of tweets in a cluster for it to be included in the output
@@ -103,9 +220,6 @@ type Config struct {
 	} `yaml:"analysis"`
 }
 
-// GlobalTokenCounter keeps track of token counts in the current window.
-var GlobalTokenCounter = pipeline.NewTokenCounter()
-
 // Global stats counters
 var (
 	TotalTweetsRead    int
@@ -114,23 +228,6 @@ var (
 	lastTweetCount     int
 	freqClasses        int // Number of frequency classes from config
 
-	// Token filter rejection statistics
-	TokenFilterStats struct {
-		TotalTokensProcessed int
-		TotalTokensRejected  int
-		RejectedByMaxLength  int
-		RejectedByDiversity  int
-		RejectedByRepetition int
-		RejectedByCaseAlt    int
-		RejectedByNumberMix  int
-		RejectedByHashtag    int
-		RejectedByAtMention  int
-		RejectedByUrl        int
-		RejectedByAllCaps    int
-		RejectedByMinLength  int
-		RejectedByWordFilter int
-		mu                   sync.RWMutex
-	}
 )
 
 // Global mappings for token <-> ThreePartKey relationships - COMMENTED OUT for on-the-fly generation test
@@ -158,9 +255,6 @@ var (
 // Global word filter
 var globalWordFilter *filter.WordFilter
 
-// Global recent tweet window
-var recentTweetWindow *RecentTweetWindow
-
 // Pre-compiled regexes for tokenization (compiled once at startup)
 var (
 	urlRegex        *regexp.Regexp
@@ -171,18 +265,99 @@ var (
 var clusterOutputFilePath string
 var clusterOutputFileOnce sync.Once
 
-// Global variable to store the most recent busy words for persistence tracking
-var globalBusyWords map[string]bool
-var globalBusyWordsMutex sync.RWMutex
+// Global tweet queue for clustering
+type TweetQueue struct {
+	mu      sync.RWMutex
+	tweets  []*tweets.Tweet
+	maxSize int
+}
 
-// Global batch window for persistence tracking (managed by analysis thread)
-var batchWindow []*Batch
-var batchWindowMutex sync.RWMutex
+func NewTweetQueue(maxSize int) *TweetQueue {
+	return &TweetQueue{
+		tweets:  make([]*tweets.Tweet, 0, maxSize),
+		maxSize: maxSize,
+	}
+}
 
-// Analysis thread for processing busy word results
-func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Config) {
+func (q *TweetQueue) Enqueue(tweet *tweets.Tweet) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	q.tweets = append(q.tweets, tweet)
+
+	// Maintain max size
+	if len(q.tweets) > q.maxSize {
+		q.tweets = q.tweets[1:]
+	}
+}
+
+func (q *TweetQueue) GetRecentTweets(count int) []*tweets.Tweet {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
+	if count >= len(q.tweets) {
+		// Return copy of all tweets
+		result := make([]*tweets.Tweet, len(q.tweets))
+		copy(result, q.tweets)
+		return result
+	}
+
+	// Return copy of most recent tweets
+	start := len(q.tweets) - count
+	result := make([]*tweets.Tweet, count)
+	copy(result, q.tweets[start:])
+	return result
+}
+
+func (q *TweetQueue) Len() int {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return len(q.tweets)
+}
+
+var globalTweetQueue *TweetQueue
+
+// Analysis thread for processing busy word results and running clustering
+func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Config, loadedState map[string]int) {
 	go func() {
 		resultCount := 0
+
+		// Handle loaded state if provided
+		if loadedState != nil {
+			LogInfo(func() string {
+				totalTokens := 0
+				for _, count := range loadedState {
+					totalTokens += count
+				}
+				return fmt.Sprintf("Informing FCT to load state with %d total tokens...", totalTokens)
+			})
+
+			// Tell FCT to load its own state
+			fct.LoadState(loadedState)
+
+			// Rebuild frequency class filters from the loaded token counts
+			LogInfo(func() string { return "Rebuilding frequency class filters from loaded token counts..." })
+			rebuildStartTime := time.Now()
+			var result pipeline.FreqClassResult
+			if cfg.MinCountThreshold > 0 {
+				result = pipeline.BuildFrequencyClassHashSetsAdaptive(loadedState, cfg.FreqClasses, cfg.MinCountThreshold)
+			} else {
+				result = pipeline.BuildFrequencyClassHashSets(loadedState, cfg.FreqClasses, nil, nil)
+			}
+			pipeline.SetGlobalFilters(result.Filters)
+			rebuildDuration := time.Since(rebuildStartTime)
+			LogInfo(func() string {
+				return fmt.Sprintf("Frequency class filters rebuilt: %d classes in %v", len(result.Filters), rebuildDuration)
+			})
+		} else {
+			// If no state loaded, we need to wait for the FCT to build initial filters
+			// This is a temporary solution - ideally we'd have a proper synchronization mechanism
+			LogInfo(func() string { return "No state loaded - waiting for FCT to build initial filters..." })
+			for !pipeline.HasGlobalFilters() {
+				time.Sleep(100 * time.Millisecond)
+			}
+			LogInfo(func() string { return "Initial filters are now available" })
+		}
 
 		// Track results by batch
 		currentBatch := make(map[int][]string) // class -> busy words
@@ -193,9 +368,11 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 
 			// Check if this is a new batch
 			if currentBatchNumber != result.BatchNumber {
-				// Print summary of previous batch if it exists
+				// Run clustering for previous batch if it exists
 				if currentBatchNumber >= 0 {
-					printBatchSummary(currentBatch, currentBatchNumber, cfg)
+					// Get recent tweets from global queue for clustering
+					recentTweets := globalTweetQueue.GetRecentTweets(cfg.WindowBatches * cfg.BatchSize)
+					runClusteringForBatch(currentBatch, recentTweets, currentBatchNumber, cfg)
 				}
 
 				// Start new batch
@@ -218,94 +395,53 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 
 			// Debug: Show if any 3PKs weren't found (this indicates a system problem)
 			if notFoundCount > 0 {
-				fmt.Printf("[ANALYSIS] ERROR: %d/%d 3PKs not found in mapping for class %d - this should not happen!\n",
-					notFoundCount, len(result.BusyWord3PKs), result.FrequencyClass)
+				LogError(func() string {
+					return fmt.Sprintf("ERROR: %d/%d 3PKs not found in mapping for class %d - this should not happen!",
+						notFoundCount, len(result.BusyWord3PKs), result.FrequencyClass)
+				})
 			}
 
 			// Store results for this class
 			currentBatch[result.FrequencyClass] = busyWords
 		}
 
-		// Print final batch summary
+		// Run clustering for final batch
 		if currentBatchNumber >= 0 {
-			printBatchSummary(currentBatch, currentBatchNumber, cfg)
+			// Get recent tweets from global queue for clustering
+			recentTweets := globalTweetQueue.GetRecentTweets(cfg.WindowBatches * cfg.BatchSize)
+			runClusteringForBatch(currentBatch, recentTweets, currentBatchNumber, cfg)
 		}
 
-		fmt.Printf("[ANALYSIS] Analysis thread stopped after processing %d results\n", resultCount)
+		LogInfo(func() string {
+			return fmt.Sprintf("Analysis thread stopped after processing %d results", resultCount)
+		})
 	}()
 }
 
-// printBatchSummary prints a summary of all busy words found in a batch
-func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Config) {
-	// Create a buffer to capture all output
-	var output strings.Builder
+// runClusteringForBatch runs clustering analysis for a batch of busy words and tweets
+func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets.Tweet, batchNumber int, cfg *Config) {
+	// Print busy word summary
+	printBatchSummary(classResults, batchNumber, cfg)
 
-	// Helper function to write to both buffer and stdout
-	writeOutput := func(format string, args ...interface{}) {
-		line := fmt.Sprintf(format, args...)
-		output.WriteString(line + "\n")
-		fmt.Print(line + "\n")
-	}
-	totalBusyWords := 0
-	classesWithWords := 0
-
-	writeOutput("\n" + strings.Repeat("=", 80))
-	writeOutput("BATCH %d ANALYSIS SUMMARY", batchNumber)
-	writeOutput(strings.Repeat("=", 80))
-
-	// Get sorted class indices to ensure consistent ordering
-	classIndices := make([]int, 0, len(classResults))
-	for classIndex := range classResults {
-		classIndices = append(classIndices, classIndex)
-	}
-	sort.Ints(classIndices)
-
-	// Print classes in sorted order
-	for _, classIndex := range classIndices {
-		words := classResults[classIndex]
-		totalBusyWords += len(words)
-		if len(words) > 0 {
-			classesWithWords++
-			writeOutput("Class %d: %d busy words - %s", classIndex, len(words), strings.Join(words, ", "))
-		} else {
-			writeOutput("Class %d: %d busy words", classIndex, len(words))
-		}
-	}
-
-	writeOutput("\nTOTAL: %d busy words across %d classes", totalBusyWords, classesWithWords)
-	writeOutput("Would search %d tweets for these busy words", recentTweetWindow.Len())
-
-	// Get the recent tweets for clustering analysis
-	// Use configured number of batches worth of tweets
-	k := cfg.Analysis.ClusteringWindowBatches
-	if k <= 0 {
-		k = 1 // Default to 1 batch if not configured
-	}
-	recentTweets := recentTweetWindow.GetRecentTweets(k * cfg.BatchSize)
-	writeOutput("*** CLUSTERING: Retrieved %d tweets from recent window (k=%d, batch=%d, total=%d) ***", len(recentTweets), k, cfg.BatchSize, k*cfg.BatchSize)
-
-	// Filter tweets to only include those with busy words
-	minBusyWords := cfg.Analysis.MinBusyWordsPerTweet
-	if minBusyWords <= 0 {
-		minBusyWords = 1 // Default to 1 if not configured
-	}
-
-	// Collect busy words only from the specified frequency classes
+	// Collect all busy words from specified classes
 	allBusyWords := make(map[string]bool)
 	allowedClasses := make(map[int]bool)
 
-	// Validate busyword_classes are within valid range (1 to freq_classes)
+	// Validate busyword_classes are within valid range
 	for _, class := range cfg.BusywordClasses {
 		if class < 1 || class > cfg.FreqClasses {
-			writeOutput("*** WARNING: Invalid busyword_class %d (valid range: 1-%d) - skipping ***", class, cfg.FreqClasses)
+			LogWarn(func() string {
+				return fmt.Sprintf("Invalid busyword_class %d (valid range: 1-%d) - skipping", class, cfg.FreqClasses)
+			})
 			continue
 		}
 		allowedClasses[class] = true
 	}
 
 	if len(allowedClasses) == 0 {
-		writeOutput("*** ERROR: No valid busyword_classes found - all classes were out of range (1-%d) ***", cfg.FreqClasses)
-		writeOutput(strings.Repeat("=", 80) + "\n")
+		LogError(func() string {
+			return fmt.Sprintf("No valid busyword_classes found - all classes were out of range (1-%d)", cfg.FreqClasses)
+		})
 		return
 	}
 
@@ -318,17 +454,13 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 		}
 	}
 
-	writeOutput("*** CLUSTERING: Using busy words from classes: %v ***", cfg.BusywordClasses)
-
-	// Update global busy words for persistence tracking
-	globalBusyWordsMutex.Lock()
-	globalBusyWords = allBusyWords
-	globalBusyWordsMutex.Unlock()
-
 	// Filter tweets that contain at least minBusyWords busy words
-	var tweetsWithBusyWords []*tweets.Tweet
-	busyWordDistribution := make(map[int]int) // count -> number of tweets
+	minBusyWords := cfg.Analysis.MinBusyWordsPerTweet
+	if minBusyWords <= 0 {
+		minBusyWords = 1
+	}
 
+	var tweetsWithBusyWords []*tweets.Tweet
 	for _, tweet := range recentTweets {
 		busyWordCount := 0
 		for _, token := range tweet.Tokens {
@@ -336,314 +468,260 @@ func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Conf
 				busyWordCount++
 			}
 		}
-		busyWordDistribution[busyWordCount]++
 		if busyWordCount >= minBusyWords {
 			tweetsWithBusyWords = append(tweetsWithBusyWords, tweet)
 		}
 	}
 
-	// Print breakdown of busy word distribution
-	writeOutput("*** CLUSTERING: Busy word distribution:")
-	for i := 0; i <= 10; i++ { // Show up to 10+ busy words
-		if count, exists := busyWordDistribution[i]; exists && count > 0 {
-			if i == 10 {
-				writeOutput("  %d+ busy words: %d tweets", i, count)
-			} else {
-				writeOutput("  %d busy words: %d tweets", i, count)
-			}
-		}
-	}
-
-	writeOutput("*** CLUSTERING: Filtered to %d tweets with busy words (min=%d) ***", len(tweetsWithBusyWords), minBusyWords)
-
 	// Sanity checks before proceeding with clustering
 	if len(tweetsWithBusyWords) == 0 {
-		writeOutput("*** CLUSTERING: No tweets with busy words found - skipping clustering ***")
-		writeOutput(strings.Repeat("=", 80) + "\n")
 		return
 	}
 
 	if len(tweetsWithBusyWords) < 2 {
-		writeOutput("*** CLUSTERING: Only %d tweet with busy words - need at least 2 for clustering ***", len(tweetsWithBusyWords))
-		writeOutput(strings.Repeat("=", 80) + "\n")
 		return
 	}
 
 	if len(allBusyWords) == 0 {
-		writeOutput("*** CLUSTERING: No busy words found - skipping clustering ***")
-		writeOutput(strings.Repeat("=", 80) + "\n")
 		return
 	}
 
-	writeOutput("*** CLUSTERING: Ready for clustering with %d tweets and %d busy words ***", len(tweetsWithBusyWords), len(allBusyWords))
-
-	// Debug: Show some of the busy words being used
-	writeOutput("*** CLUSTERING: Sample busy words: ")
-	wordCount := 0
-	for word := range allBusyWords {
-		if wordCount < 10 { // Show first 10 busy words
-			writeOutput("%s, ", word)
-			wordCount++
-		} else {
-			writeOutput("... (and %d more)", len(allBusyWords)-10)
-			break
-		}
-	}
-	if wordCount <= 10 {
-		writeOutput("")
-	}
-
-	// In printBatchSummary, after filtering and before clustering:
+	// Run clustering based on configured method
 	clusteringMethod := "graph"
 	if cfg.Analysis.ClusteringMethod != "" {
 		clusteringMethod = cfg.Analysis.ClusteringMethod
 	}
 
-	writeOutput("*** CLUSTERING METHOD: %s ***", strings.ToUpper(clusteringMethod))
-
 	switch clusteringMethod {
 	case "kmeans":
-		// Debug: Print min_cluster_size value
-		writeOutput("[DEBUG] min_cluster_size from config: %d", cfg.Analysis.MinClusterSize)
-		// Run k-means clustering and get clusters for batch creation
-		kmeansClusters := runKMeansClusteringGo(tweetsWithBusyWords, allBusyWords, cfg, writeOutput, batchNumber)
-		writeOutput(strings.Repeat("=", 80) + "\n")
-
-		// Create batch from k-means clustering results for persistence tracking
-		if len(kmeansClusters) > 0 {
-			createBatchFromClusters(kmeansClusters, batchNumber, cfg)
-		}
-		break
+		runKMeansClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber)
 	case "graph":
 		fallthrough
 	default:
-		// Debug: Print min_cluster_size value
-		writeOutput("[DEBUG] min_cluster_size from config: %d", cfg.Analysis.MinClusterSize)
-		// Perform optimized graph clustering (existing code)
-		clusterer := pipeline.NewOptimizedTweetClusterer(
-			cfg.Analysis.MinJaccardSimilarity,
-			cfg.Analysis.MaxTweetsToCluster,
-		)
-		result := clusterer.ClusterTweets(tweetsWithBusyWords, allBusyWords, cfg.Analysis.MinClusterSize)
+		runGraphClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber)
+	}
+}
 
-		// Print clustering results with ASCII visualization (existing code)
-		writeOutput("*** CLUSTERING RESULTS ***")
-		writeOutput("Clusters found: %d", len(result.Clusters))
-		writeOutput("Graph density: %.4f", result.Stats.GraphDensity)
-		writeOutput("Total edges: %d", result.Stats.TotalEdges)
-		writeOutput("Processing time: %.3f seconds", result.Stats.ProcessingTime)
+// runKMeansClustering runs k-means clustering on tweets
+func runKMeansClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[string]bool, cfg *Config, batchNumber int) {
+	// Use existing k-means clustering function with silent output
+	writeOutput := func(format string, args ...interface{}) {
+		// Silent - no output needed
+	}
 
-		// Create batch from clustering results for persistence tracking
-		if len(result.Clusters) > 0 {
-			createBatchFromClusters(result.Clusters, batchNumber, cfg)
-		}
+	clusters := runKMeansClusteringGo(tweetsWithBusyWords, allBusyWords, cfg, writeOutput, batchNumber)
 
-		if len(result.Clusters) > 0 {
-			// Sort clusters by size (number of tweets), largest first
-			sort.Slice(result.Clusters, func(i, j int) bool {
-				return result.Clusters[i].Size > result.Clusters[j].Size
-			})
-			writeOutput("\n📊 CLUSTER VISUALIZATION:")
-			for i, cluster := range result.Clusters {
-				if cluster.Size < cfg.Analysis.MinClusterSize {
-					continue
+	// Create a batch from the clusters and add it to the window
+	batch := &Batch{
+		BatchID:  batchNumber,
+		Tweets:   tweetsWithBusyWords,
+		Clusters: clusters,
+	}
+	addBatchToWindow(batch, cfg)
+
+	// Get the current batch window for persistence tracking
+	currentBatchWindow := getBatchWindow()
+
+	// Get timestamp for the batch
+	var batchTimeStr string
+	if len(tweetsWithBusyWords) > 0 {
+		firstTweet := tweetsWithBusyWords[0]
+		batchTimeStr = time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
+	} else {
+		batchTimeStr = time.Now().Format("2006-01-02 15:04:05")
+	}
+
+	// Collect all clusters for this batch
+	var batchClusters []map[string]interface{}
+
+	for i, cluster := range clusters {
+		// Get busy words for this cluster
+		clusterBusyWords := make(map[string]bool)
+		for _, tweet := range cluster.Tweets {
+			for _, token := range tweet.Tokens {
+				if allBusyWords[token] {
+					clusterBusyWords[token] = true
 				}
-				busyWordsWithClass := make([]string, 0, len(cluster.BusyWords))
-				for _, word := range cluster.BusyWords {
-					_, class, ok := pipeline.GetTokenInfo(word)
-					if ok && class > 0 {
-						busyWordsWithClass = append(busyWordsWithClass, fmt.Sprintf("%s %d", word, class))
-					} else {
-						busyWordsWithClass = append(busyWordsWithClass, word)
-					}
-				}
-				busyWordsStr := fmt.Sprintf(" [%s]", strings.Join(busyWordsWithClass, ", "))
-				// Get the date/time of the first tweet in the cluster
-				firstTweet := cluster.Tweets[0]
-				timeStr := time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
-
-				// Get continuation information for this cluster
-				batchWindowMutex.RLock()
-				continuationInfo := getContinuationInfo(cluster, batchWindow, batchNumber, cfg)
-				batchWindowMutex.RUnlock()
-
-				writeOutput("┌─ Cluster %d (%d tweets, first tweet: %s)%s%s", i+1, cluster.Size, timeStr, busyWordsStr, continuationInfo)
-
-				// Find and print most typical tweets
-				if len(cluster.Tweets) > 1 {
-					mostConnIdx, medoidIdx, maxConn, maxSimSum := findMostTypicalTweets(cluster.Tweets, cfg.Analysis.MinJaccardSimilarity)
-					writeOutput("│  Most connected tweet (connections: %d): \"%s\"", maxConn, cluster.Tweets[mostConnIdx].Text)
-					writeOutput("│  Medoid tweet (sum Jaccard: %.2f): \"%s\"", maxSimSum, cluster.Tweets[medoidIdx].Text)
-				}
-
-				// Show first few tweets in each cluster
-				maxTweetsToShow := 20
-				if len(cluster.Tweets) < maxTweetsToShow {
-					maxTweetsToShow = len(cluster.Tweets)
-				}
-
-				// Apply deduplication if enabled
-				if cfg.Analysis.SuppressDuplicates {
-					// Group tweets by normalized text
-					groups := make(map[string][]*tweets.Tweet)
-
-					for _, tweet := range cluster.Tweets {
-						// Use the already normalized and filtered tokens instead of text normalization
-						tokenKey := strings.Join(tweet.Tokens, " ")
-						groups[tokenKey] = append(groups[tokenKey], tweet)
-					}
-
-					// Convert to sorted list
-					type tweetGroup struct {
-						Tweet *tweets.Tweet
-						Count int
-					}
-					var deduplicated []tweetGroup
-
-					for _, group := range groups {
-						deduplicated = append(deduplicated, tweetGroup{
-							Tweet: group[0], // Use first tweet as representative
-							Count: len(group),
-						})
-					}
-
-					// Sort by count (descending) then by text
-					sort.Slice(deduplicated, func(i, j int) bool {
-						if deduplicated[i].Count != deduplicated[j].Count {
-							return deduplicated[i].Count > deduplicated[j].Count
-						}
-						return deduplicated[i].Tweet.Text < deduplicated[j].Tweet.Text
-					})
-
-					for j, item := range deduplicated {
-						if j >= maxTweetsToShow {
-							break
-						}
-
-						prefix := "│  ├─"
-						if j == len(deduplicated)-1 || j == maxTweetsToShow-1 {
-							prefix = "│  └─"
-						}
-
-						// Show full tweet text without truncation
-						text := item.Tweet.Text
-
-						if item.Count > 1 {
-							writeOutput("%s \"%s\" (%d instances)", prefix, text, item.Count)
-						} else {
-							writeOutput("%s \"%s\"", prefix, text)
-						}
-					}
-
-					// Show if we have more deduplicated tweets than shown
-					if len(deduplicated) > maxTweetsToShow {
-						writeOutput("│  └─ ... and %d more unique tweets", len(deduplicated)-maxTweetsToShow)
-					}
-				} else {
-					// Original behavior - show all tweets
-					for j := 0; j < maxTweetsToShow; j++ {
-						tweet := cluster.Tweets[j]
-						prefix := "│  ├─"
-						if j == maxTweetsToShow-1 {
-							prefix = "│  └─"
-						}
-
-						// Show full tweet text without truncation
-						text := tweet.Text
-
-						writeOutput("%s \"%s\"", prefix, text)
-					}
-
-					// Show shared busy words if we have more tweets than shown
-					if len(cluster.Tweets) > maxTweetsToShow {
-						writeOutput("│  └─ ... and %d more tweets", len(cluster.Tweets)-maxTweetsToShow)
-					}
-				}
-
-				writeOutput("│")
 			}
-			writeOutput("└─ End of clusters")
 		}
 
-		writeOutput(strings.Repeat("=", 80) + "\n")
+		// Convert to sorted slice for display
+		var busyWordsList []string
+		for word := range clusterBusyWords {
+			busyWordsList = append(busyWordsList, word)
+		}
+		sort.Strings(busyWordsList)
 
-		// Append the captured output to the global cluster output file
-		clusterOutputFileOnce.Do(func() {
-			// Ensure the file is created (truncated if exists)
-			_ = os.WriteFile(clusterOutputFilePath, []byte{}, 0644)
-		})
-		f, err := os.OpenFile(clusterOutputFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			fmt.Printf("*** ERROR: Failed to write cluster output to %s: %v ***\n", clusterOutputFilePath, err)
+		// Get timestamp of first tweet for display
+		firstTweet := cluster.Tweets[0]
+		timeStr := time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
+
+		// Find the most typical tweet in this cluster
+		var mostTypicalTweet *tweets.Tweet
+		if len(cluster.Tweets) > 1 {
+			_, medoidIdx, _, _ := findMostTypicalTweets(cluster.Tweets, cfg.Analysis.MinJaccardSimilarity)
+			mostTypicalTweet = cluster.Tweets[medoidIdx]
 		} else {
-			_, _ = f.WriteString(output.String())
-			f.Close()
+			mostTypicalTweet = cluster.Tweets[0]
+		}
+
+		// Get persistence information
+		persistenceInfo := getContinuationInfo(cluster, currentBatchWindow, batchNumber, cfg)
+
+		// Create cluster data
+		clusterData := map[string]interface{}{
+			"cluster_id":         i + 1,
+			"size":               cluster.Size,
+			"first_tweet_time":   timeStr,
+			"busy_words":         busyWordsList,
+			"tweets":             cluster.Tweets,
+			"most_typical_tweet": mostTypicalTweet,
+			"persistence_info":   persistenceInfo,
+		}
+
+		batchClusters = append(batchClusters, clusterData)
+	}
+
+	// Create batch-level data structure
+	batchData := map[string]interface{}{
+		"batch_number":   batchNumber,
+		"batch_time":     batchTimeStr,
+		"method":         "kmeans",
+		"total_clusters": len(batchClusters),
+		"total_tweets":   len(tweetsWithBusyWords),
+		"clusters":       batchClusters,
+	}
+
+	OutputClusterWithConfig(batchData, cfg)
+}
+
+// runGraphClustering runs graph-based clustering on tweets
+func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[string]bool, cfg *Config, batchNumber int) {
+	// Perform optimized graph clustering
+	clusterer := pipeline.NewOptimizedTweetClusterer(
+		cfg.Analysis.MinJaccardSimilarity,
+		cfg.Analysis.MaxTweetsToCluster,
+	)
+
+	result := clusterer.ClusterTweets(tweetsWithBusyWords, allBusyWords, batchNumber)
+
+	// Create a batch from the clusters and add it to the window
+	batch := &Batch{
+		BatchID:  batchNumber,
+		Tweets:   tweetsWithBusyWords,
+		Clusters: result.Clusters,
+	}
+	addBatchToWindow(batch, cfg)
+
+	// Get the current batch window for persistence tracking
+	currentBatchWindow := getBatchWindow()
+
+	// Get timestamp for the batch
+	var batchTimeStr string
+	if len(tweetsWithBusyWords) > 0 {
+		firstTweet := tweetsWithBusyWords[0]
+		batchTimeStr = time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
+	} else {
+		batchTimeStr = time.Now().Format("2006-01-02 15:04:05")
+	}
+
+	// Collect all clusters for this batch
+	var batchClusters []map[string]interface{}
+
+	for i, cluster := range result.Clusters {
+		// Get busy words for this cluster
+		clusterBusyWords := make(map[string]bool)
+		for _, tweet := range cluster.Tweets {
+			for _, token := range tweet.Tokens {
+				if allBusyWords[token] {
+					clusterBusyWords[token] = true
+				}
+			}
+		}
+
+		// Convert to sorted slice for display
+		var busyWordsList []string
+		for word := range clusterBusyWords {
+			busyWordsList = append(busyWordsList, word)
+		}
+		sort.Strings(busyWordsList)
+
+		// Get timestamp of first tweet for display
+		firstTweet := cluster.Tweets[0]
+		timeStr := time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
+
+		// Find the most typical tweet in this cluster
+		var mostTypicalTweet *tweets.Tweet
+		if len(cluster.Tweets) > 1 {
+			_, medoidIdx, _, _ := findMostTypicalTweets(cluster.Tweets, cfg.Analysis.MinJaccardSimilarity)
+			mostTypicalTweet = cluster.Tweets[medoidIdx]
+		} else {
+			mostTypicalTweet = cluster.Tweets[0]
+		}
+
+		// Get persistence information
+		persistenceInfo := getContinuationInfo(cluster, currentBatchWindow, batchNumber, cfg)
+
+		// Create cluster data
+		clusterData := map[string]interface{}{
+			"cluster_id":         i + 1,
+			"size":               cluster.Size,
+			"first_tweet_time":   timeStr,
+			"busy_words":         busyWordsList,
+			"tweets":             cluster.Tweets,
+			"most_typical_tweet": mostTypicalTweet,
+			"persistence_info":   persistenceInfo,
+		}
+
+		batchClusters = append(batchClusters, clusterData)
+	}
+
+	// Create batch-level data structure
+	batchData := map[string]interface{}{
+		"batch_number":   batchNumber,
+		"batch_time":     batchTimeStr,
+		"method":         "graph",
+		"total_clusters": len(batchClusters),
+		"total_tweets":   len(tweetsWithBusyWords),
+		"clusters":       batchClusters,
+	}
+
+	OutputClusterWithConfig(batchData, cfg)
+}
+
+// printBatchSummary prints a summary of all busy words found in a batch
+func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Config) {
+	totalBusyWords := 0
+	classesWithWords := 0
+
+	LogInfo(func() string { return fmt.Sprintf("BATCH %d ANALYSIS SUMMARY", batchNumber) })
+
+	// Get sorted class indices to ensure consistent ordering
+	classIndices := make([]int, 0, len(classResults))
+	for classIndex := range classResults {
+		classIndices = append(classIndices, classIndex)
+	}
+	sort.Ints(classIndices)
+
+	// Log classes in sorted order
+	for _, classIndex := range classIndices {
+		words := classResults[classIndex]
+		totalBusyWords += len(words)
+		if len(words) > 0 {
+			classesWithWords++
+			LogInfo(func() string {
+				return fmt.Sprintf("Class %d: %d busy words - %s", classIndex, len(words), strings.Join(words, ", "))
+			})
+		} else {
+			LogInfo(func() string {
+				return fmt.Sprintf("Class %d: %d busy words", classIndex, len(words))
+			})
 		}
 	}
-}
 
-// RecentTweetWindow is a thread-safe, fixed-size queue for recent tweets
-// Holds up to maxSize tweets; oldest are removed as new ones arrive
-// Provides thread-safe Add, GetAll, and Len methods
-
-type RecentTweetWindow struct {
-	mu      sync.RWMutex
-	tweets  []*tweets.Tweet
-	maxSize int
-}
-
-func NewRecentTweetWindow(maxSize int) *RecentTweetWindow {
-	return &RecentTweetWindow{
-		tweets:  make([]*tweets.Tweet, 0, maxSize),
-		maxSize: maxSize,
-	}
-}
-
-// Add adds a tweet to the window, removing the oldest if over capacity
-func (w *RecentTweetWindow) Add(tweet *tweets.Tweet) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if len(w.tweets) >= w.maxSize {
-		// Remove oldest (front)
-		w.tweets = w.tweets[1:]
-	}
-	w.tweets = append(w.tweets, tweet)
-}
-
-// GetAll returns a copy of all tweets in the window
-func (w *RecentTweetWindow) GetAll() []*tweets.Tweet {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	copyTweets := make([]*tweets.Tweet, len(w.tweets))
-	copy(copyTweets, w.tweets)
-	return copyTweets
-}
-
-// Len returns the number of tweets in the window
-func (w *RecentTweetWindow) Len() int {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return len(w.tweets)
-}
-
-// GetRecentTweets returns the k most recent tweets in the window
-// Returns all tweets if k is greater than the window size
-func (w *RecentTweetWindow) GetRecentTweets(k int) []*tweets.Tweet {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-
-	if k >= len(w.tweets) {
-		// Return all tweets if k is greater than or equal to window size
-		copyTweets := make([]*tweets.Tweet, len(w.tweets))
-		copy(copyTweets, w.tweets)
-		return copyTweets
-	}
-
-	// Return the k most recent tweets (from the end of the slice)
-	startIndex := len(w.tweets) - k
-	copyTweets := make([]*tweets.Tweet, k)
-	copy(copyTweets, w.tweets[startIndex:])
-	return copyTweets
+	LogInfo(func() string {
+		return fmt.Sprintf("TOTAL: %d busy words across %d classes", totalBusyWords, classesWithWords)
+	})
 }
 
 // getCurrentWorkingDir returns the current working directory for debugging
@@ -748,7 +826,7 @@ func initializePipeline(cfg *Config) error {
 
 	// Initialize the FrequencyComputationThread
 	fct = pipeline.NewFrequencyComputationThread(
-		GlobalTokenCounter,
+		pipeline.NewTokenCounter(),
 		inboundTokenQueue,
 		cfg.FreqClasses,
 		cfg.WindowSize,
@@ -831,7 +909,7 @@ func main() {
 			log.Fatalf("Failed to start CPU profile: %v", err)
 		}
 		defer pprof.StopCPUProfile()
-		fmt.Println("CPU profiling enabled - will create cpu.prof file")
+		LogInfo(func() string { return "CPU profiling enabled - will create cpu.prof file" })
 	}
 
 	// Load config from YAML file.
@@ -840,16 +918,15 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Debug: Print config file path and loaded Analysis struct
-	fmt.Printf("[DEBUG] Loaded config file: %s\n", *configPath)
-	fmt.Printf("[DEBUG] cfg.Analysis: %+v\n", cfg.Analysis)
+	// Initialize our custom logging framework
+	InitializeLogger(cfg.Verbose, INFO, cfg.LogDir) // Default to INFO level, can be made configurable later
 
-	fmt.Printf("*** CONFIG LOADED SUCCESSFULLY ***\n")
+	LogInfo(func() string { return "*** CONFIG LOADED SUCCESSFULLY ***" })
 
 	// Verbose mode test message and z-score array print
 	if cfg.Verbose {
-		fmt.Printf("*** VERBOSE MODE ENABLED (config.yaml) ***\n")
-		fmt.Printf("Z-scores per frequency class: %v\n", cfg.ZScores)
+		LogInfo(func() string { return "*** VERBOSE MODE ENABLED (config.yaml) ***" })
+		LogInfo(func() string { return fmt.Sprintf("Z-scores per frequency class: %v", cfg.ZScores) })
 	}
 
 	logger, logFile, err := initializeLogger(cfg)
@@ -876,36 +953,45 @@ func main() {
 	urlRegex = regexp.MustCompile(`(https?://[^\s]+|www\.[^\s]+)`)
 	apostropheRegex = regexp.MustCompile(`'.*`)
 
-	// Initialize the recent tweet window
-	windowSize := cfg.WindowBatches * cfg.BatchSize
-	recentTweetWindow = NewRecentTweetWindow(windowSize)
-
-	// Load persisted state if requested
-	if *loadState {
-		loadPersistedState(cfg.Persistence.StateDir, cfg.FreqClasses, cfg)
-	}
+	// TODO: Analysis thread will handle tweet window management
 
 	initializeGlobalState()
 
 	startStatsPrinter()
 
-	// Initialize global busy words for persistence tracking
-	globalBusyWords = make(map[string]bool)
-
 	err = initializePipeline(cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize pipeline: %v", err)
 	}
+
+	// Load persisted state if requested (after pipeline initialization)
+	var loadedState map[string]int
+	if *loadState {
+		loadedState = loadPersistedState(cfg.Persistence.StateDir, cfg.FreqClasses, cfg)
+	}
+
 	defer fct.Stop()
 	defer freqClassProcessor.Stop()
 
-	// Start the analysis thread
-	startAnalysisThread(freqClassProcessor.GetResultChannel(), cfg)
+	// Initialize global tweet queue for clustering
+	globalTweetQueue = NewTweetQueue(cfg.WindowBatches * cfg.BatchSize)
+
+	// Start the analysis thread to process busy word results and run clustering
+	startAnalysisThread(freqClassProcessor.GetResultChannel(), cfg, loadedState)
+
+	// Wait for frequency class filters to become available before starting tweet processing
+	LogInfo(func() string { return "Waiting for frequency class filters to become available..." })
+	for !pipeline.HasGlobalFilters() {
+		time.Sleep(100 * time.Millisecond)
+	}
+	LogInfo(func() string {
+		return fmt.Sprintf("Frequency class filters are now available (%d classes)", pipeline.GetGlobalFiltersCount())
+	})
 
 	timestamp := time.Now().Format("20060102_150405")
 	clusterFileName := fmt.Sprintf("clusters_%s.txt", timestamp)
 	clusterOutputFilePath = filepath.Join(cfg.LogDir, clusterFileName)
-	fmt.Printf("*** CLUSTER OUTPUT WILL BE SAVED TO: %s ***\n", clusterOutputFilePath)
+	LogInfo(func() string { return fmt.Sprintf("Cluster output will be saved to: %s", clusterOutputFilePath) })
 
 	setupSignalHandling()
 
@@ -944,13 +1030,13 @@ func main() {
 			msg.Ack(false)
 			continue
 		}
-		// Only print the tweet if the flag is set
 		if *printTweets {
-			fmt.Printf("Parsed Tweet: %+v\n", tweet)
+			// Log to file instead of stdout
+			LogDebug(func() string { return fmt.Sprintf("Parsed Tweet: %+v", tweet) })
 		}
 
-		// Add tweet to recent tweet window
-		recentTweetWindow.Add(tweet)
+		// Add tweet to global queue for clustering
+		globalTweetQueue.Enqueue(tweet)
 
 		// Always add new tweet tokens to the inbound queue for FCT to build frequency filters
 		if len(tweet.Tokens) > 0 {
@@ -1055,22 +1141,9 @@ func createBatchFromClusters(clusters []pipeline.TweetCluster, batchNumber int, 
 		clusteredTweets = append(clusteredTweets, cluster.Tweets...)
 	}
 
-	// Create batch with only the tweets that were clustered
-	batch := &Batch{
-		BatchID:  batchNumber,
-		Tweets:   clusteredTweets,
-		Clusters: clusters,
-	}
+	// TODO: Batch creation will be handled by analysis thread
 
-	// Add batch to the global batch window
-	batchWindowMutex.Lock()
-	batchWindow = append(batchWindow, batch)
-
-	// Maintain window size
-	if len(batchWindow) > cfg.Analysis.WindowBatchesPersistence {
-		batchWindow = batchWindow[1:]
-	}
-	batchWindowMutex.Unlock()
+	// TODO: Batch window management will be handled by analysis thread
 }
 
 // getContinuationInfo returns continuation information for a cluster
@@ -1191,52 +1264,10 @@ func deduplicateAndSort(slice []int) []int {
 
 // processBatchPersistence analyzes the batch window for persistent clusters
 func processBatchPersistence(batchWindow []*Batch, cfg *Config) {
-	// Get the current busy words from the analysis thread
-	globalBusyWordsMutex.RLock()
-	allBusyWords := make(map[string]bool)
-	for word := range globalBusyWords {
-		allBusyWords[word] = true
-	}
-	globalBusyWordsMutex.RUnlock()
+	// TODO: This function should be moved to the analysis thread
+	// The analysis thread should handle persistence tracking
+	return
 
-	// If no busy words available yet, skip persistence analysis
-	if len(allBusyWords) == 0 {
-		return
-	}
-
-	// Collect all tweets from the window for clustering
-	var windowTweets []*tweets.Tweet
-	for _, batch := range batchWindow {
-		windowTweets = append(windowTweets, batch.Tweets...)
-	}
-
-	// Perform clustering on the window
-	clusterer := pipeline.NewOptimizedTweetClusterer(
-		cfg.Analysis.MinJaccardSimilarity,
-		cfg.Analysis.MaxTweetsToCluster,
-	)
-	windowResult := clusterer.ClusterTweets(windowTweets, allBusyWords, cfg.Analysis.MinClusterSize)
-
-	// Analyze persistence for each cluster
-	for i, cluster := range windowResult.Clusters {
-		batchIDSet := make(map[int]struct{})
-		for _, tweet := range cluster.Tweets {
-			batchIDSet[tweet.BatchID] = struct{}{}
-		}
-
-		// Convert to sorted slice
-		var batchIDs []int
-		for id := range batchIDSet {
-			batchIDs = append(batchIDs, id)
-		}
-		sort.Ints(batchIDs)
-
-		// Print persistence info if cluster spans multiple batches
-		if len(batchIDs) > 1 {
-			fmt.Printf("Cluster %d: Persistent across batches %v (%d tweets)\n",
-				i+1, batchIDs, len(cluster.Tweets))
-		}
-	}
 }
 
 // loadConfig loads the YAML config file into a Config struct.
@@ -1309,7 +1340,9 @@ func printStats() {
 	timestamp := now.Format(time.RFC3339)
 	totalTweets := TotalTweetsRead
 	totalTokens := TotalTokensCounted
-	distinctTokens := len(GlobalTokenCounter.Counts())
+	// Get stats from FCT instead of accessing its internal TokenCounter
+	stats := fct.GetStats()
+	distinctTokens := stats["distinct_tokens"]
 
 	// Calculate processing rate
 	timeDiff := now.Sub(lastStatsTime).Seconds()
@@ -1328,55 +1361,17 @@ func printStats() {
 	freqClassQueueStats := freqClassProcessor.GetQueueStats()
 	freqClassProcessorStats := freqClassProcessor.GetProcessorStats()
 
-	// Get token filter statistics
-	TokenFilterStats.mu.RLock()
-	totalProcessed := TokenFilterStats.TotalTokensProcessed
-	totalRejected := TokenFilterStats.TotalTokensRejected
-	rejectionRate := 0.0
-	if totalProcessed > 0 {
-		rejectionRate = float64(totalRejected) / float64(totalProcessed) * 100.0
-	}
+	// TODO: Token filter statistics will be handled by analysis thread
 
-	// Get breakdown by filter type
-	rejectedByMaxLength := TokenFilterStats.RejectedByMaxLength
-	rejectedByDiversity := TokenFilterStats.RejectedByDiversity
-	rejectedByRepetition := TokenFilterStats.RejectedByRepetition
-	rejectedByCaseAlt := TokenFilterStats.RejectedByCaseAlt
-	rejectedByNumberMix := TokenFilterStats.RejectedByNumberMix
-	rejectedByHashtag := TokenFilterStats.RejectedByHashtag
-	rejectedByAtMention := TokenFilterStats.RejectedByAtMention
-	rejectedByUrl := TokenFilterStats.RejectedByUrl
-	rejectedByAllCaps := TokenFilterStats.RejectedByAllCaps
-	rejectedByMinLength := TokenFilterStats.RejectedByMinLength
-	rejectedByWordFilter := TokenFilterStats.RejectedByWordFilter
-	TokenFilterStats.mu.RUnlock()
-
-	fmt.Printf("\n--- Pipeline Stats ---\n")
-	fmt.Printf("Total tweets read: %d\n", totalTweets)
-	fmt.Printf("Distinct tokens: %d\n", distinctTokens)
-	// fmt.Printf("Tweets in current window: %d\n", windowSize) // Removed tweet-based window size
-	fmt.Printf("Inbound token queue size: %d\n", inboundQueueSize)
-	fmt.Printf("Processing rate: %.2f tweets/sec\n", processingRate)
-	fmt.Printf("--- Token Filter Stats ---\n")
-	fmt.Printf("Tokens processed: %d\n", totalProcessed)
-	fmt.Printf("Tokens rejected: %d\n", totalRejected)
-	fmt.Printf("Rejection rate: %.2f%%\n", rejectionRate)
-	if totalRejected > 0 {
-		fmt.Printf("  Rejected by max length: %d (%.1f%%)\n", rejectedByMaxLength, float64(rejectedByMaxLength)/float64(totalRejected)*100)
-		fmt.Printf("  Rejected by diversity: %d (%.1f%%)\n", rejectedByDiversity, float64(rejectedByDiversity)/float64(totalRejected)*100)
-		fmt.Printf("  Rejected by repetition: %d (%.1f%%)\n", rejectedByRepetition, float64(rejectedByRepetition)/float64(totalRejected)*100)
-		fmt.Printf("  Rejected by case alternation: %d (%.1f%%)\n", rejectedByCaseAlt, float64(rejectedByCaseAlt)/float64(totalRejected)*100)
-		fmt.Printf("  Rejected by number mix: %d (%.1f%%)\n", rejectedByNumberMix, float64(rejectedByNumberMix)/float64(totalRejected)*100)
-		fmt.Printf("  Rejected by hashtag: %d (%.1f%%)\n", rejectedByHashtag, float64(rejectedByHashtag)/float64(totalRejected)*100)
-		fmt.Printf("  Rejected by at-mention: %d (%.1f%%)\n", rejectedByAtMention, float64(rejectedByAtMention)/float64(totalRejected)*100)
-		fmt.Printf("  Rejected by URL: %d (%.1f%%)\n", rejectedByUrl, float64(rejectedByUrl)/float64(totalRejected)*100)
-		fmt.Printf("  Rejected by all caps: %d (%.1f%%)\n", rejectedByAllCaps, float64(rejectedByAllCaps)/float64(totalRejected)*100)
-		fmt.Printf("  Rejected by min length: %d (%.1f%%)\n", rejectedByMinLength, float64(rejectedByMinLength)/float64(totalRejected)*100)
-		fmt.Printf("  Rejected by word filter: %d (%.1f%%)\n", rejectedByWordFilter, float64(rejectedByWordFilter)/float64(totalRejected)*100)
-	}
+	// fmt.Printf("\n--- Pipeline Stats ---\n")
+	// fmt.Printf("Total tweets read: %d\n", totalTweets)
+	// fmt.Printf("Distinct tokens: %d\n", distinctTokens)
+	// fmt.Printf("Inbound token queue size: %d\n", inboundQueueSize)
+	// fmt.Printf("Processing rate: %.2f tweets/sec\n", processingRate)
+	// fmt.Printf("--- Token Filter Stats ---\n")
+	// fmt.Printf("Token filter statistics will be handled by analysis thread\n")
 
 	// Print frequency class stats (ordered from lowest to highest class number)
-	// fmt.Printf("--- Frequency Class Stats ---\n")
 	slog.Info("--- Frequency Class Stats ---")
 	for i := 0; i < freqClasses; i++ {
 		queueKey := fmt.Sprintf("freq_class_%d_queue_size", i)
@@ -1395,10 +1390,8 @@ func printStats() {
 			}
 		}
 
-		// fmt.Printf("Class %2d: Queue=%6d, Processed=%8d, Distinct=%6d\n", i, queueSize, tokensProcessed, distinctTokens)
 		slog.Info("Frequency Class Stats", "class", i, "queue", queueSize, "processed", tokensProcessed, "distinct", distinctTokens)
 	}
-	// fmt.Printf("----------------------\n")
 	slog.Info("----------------------")
 
 	// Also log to slog
@@ -1408,10 +1401,7 @@ func printStats() {
 		"distinct", distinctTokens,
 		// "window_size", windowSize, // Removed tweet-based window size
 		"inbound_queue_size", inboundQueueSize,
-		"processing_rate_tweets_per_sec", processingRate,
-		"tokens_processed", totalProcessed,
-		"tokens_rejected", totalRejected,
-		"rejection_rate_pct", fmt.Sprintf("%.2f", rejectionRate))
+		"processing_rate_tweets_per_sec", processingRate)
 
 	// Update for next calculation
 	lastStatsTime = now
@@ -1516,26 +1506,13 @@ func simpleTokenize(text string, cfg *Config) []string {
 
 	// Process each token individually
 	var processedTokens []string
-	totalProcessed := 0
-	rejectedByMaxLength := 0
-	rejectedByDiversity := 0
-	rejectedByRepetition := 0
-	rejectedByCaseAlt := 0
-	rejectedByNumberMix := 0
-	rejectedByHashtag := 0
-	rejectedByAtMention := 0
-	rejectedByUrl := 0
-	rejectedByAllCaps := 0
-	rejectedByMinLength := 0
-	rejectedByWordFilter := 0
 
-	totalProcessed = len(tokens)
+	// totalProcessed = len(tokens) // TODO: Statistics tracking moved to analysis thread
 	for _, token := range tokens {
-
 		// Reject URL tokens if configured to remove URLs
 		if cfg.TokenFilters.RemoveUrls {
 			if strings.HasPrefix(token, "http") || strings.HasPrefix(token, "www") {
-				rejectedByUrl++
+				// rejectedByUrl++ // TODO: Statistics tracking moved to analysis thread
 				continue
 			}
 		}
@@ -1550,21 +1527,21 @@ func simpleTokenize(text string, cfg *Config) []string {
 				// Remove from apostrophe onwards (e.g., "don't" -> "don", "Harry's" -> "Harry")
 				token = apostropheRegex.ReplaceAllString(token, "")
 				if token == "" {
-					rejectedByMinLength++
+					// rejectedByMinLength++ // TODO: Statistics tracking moved to analysis thread
 					continue
 				}
 			case "remove":
 				// Remove apostrophe only (e.g., "don't" -> "dont", "Harry's" -> "Harrys")
 				token = strings.ReplaceAll(token, "'", "")
 				if token == "" {
-					rejectedByMinLength++
+					// rejectedByMinLength++ // TODO: Statistics tracking moved to analysis thread
 					continue
 				}
 			default:
 				// Default to "remove" behavior
 				token = strings.ReplaceAll(token, "'", "")
 				if token == "" {
-					rejectedByMinLength++
+					// rejectedByMinLength++ // TODO: Statistics tracking moved to analysis thread
 					continue
 				}
 			}
@@ -1575,7 +1552,7 @@ func simpleTokenize(text string, cfg *Config) []string {
 
 		// Skip tokens that are too short
 		if cfg.MinTokenLen > 0 && len(cleanToken) < cfg.MinTokenLen {
-			rejectedByMinLength++
+			// rejectedByMinLength++ // TODO: Statistics tracking moved to analysis thread
 			continue
 		}
 
@@ -1583,26 +1560,26 @@ func simpleTokenize(text string, cfg *Config) []string {
 		if cfg.TokenFilters.Enabled {
 			// 1. CHEAPEST: Hashtag filter (string prefix check)
 			if cfg.TokenFilters.RejectHashtags && strings.HasPrefix(cleanToken, "#") {
-				rejectedByHashtag++
+				// rejectedByHashtag++ // TODO: Statistics tracking moved to analysis thread
 				continue
 			}
 
 			// 2. CHEAPEST: At-mention filter (string prefix check)
 			if cfg.TokenFilters.RejectAtMentions && strings.HasPrefix(cleanToken, "@") {
-				rejectedByAtMention++
+				// rejectedByAtMention++ // TODO: Statistics tracking moved to analysis thread
 				continue
 			}
 
 			// 3. CHEAP: Word filter (map lookup)
 			// O(1) lookup.
 			if globalWordFilter != nil && globalWordFilter.IsFiltered(cleanToken) {
-				rejectedByWordFilter++
+				// rejectedByWordFilter++ // TODO: Statistics tracking moved to analysis thread
 				continue
 			}
 			// 4. CHEAP: Max length filter (simple integer comparison)
 			//
 			if cfg.TokenFilters.MaxLength > 0 && len(cleanToken) > cfg.TokenFilters.MaxLength {
-				rejectedByMaxLength++
+				// rejectedByMaxLength++ // TODO: Statistics tracking moved to analysis thread
 				continue
 			}
 
@@ -1615,7 +1592,7 @@ func simpleTokenize(text string, cfg *Config) []string {
 				}
 				diversity := float64(len(uniqueChars)) / float64(len(cleanToken))
 				if diversity < cfg.TokenFilters.MinCharacterDiversity {
-					rejectedByDiversity++
+					// rejectedByDiversity++ // TODO: Statistics tracking moved to analysis thread
 					continue
 				}
 			}
@@ -1630,45 +1607,12 @@ func simpleTokenize(text string, cfg *Config) []string {
 				}
 				repetitionRatio := float64(repetitionCount) / float64(len(cleanToken))
 				if repetitionRatio > cfg.TokenFilters.MaxCharacterRepetition {
-					rejectedByRepetition++
-					continue
-				}
-			}
-
-			// 5. MEDIUM: All caps filter (character scan)
-			if cfg.TokenFilters.RejectAllCapsLong && len(cleanToken) >= cfg.TokenFilters.AllCapsLowerLimit {
-				allCaps := true
-				for _, char := range cleanToken {
-					if char < 'A' || char > 'Z' {
-						allCaps = false
-						break
-					}
-				}
-				if allCaps {
-					rejectedByAllCaps++
-					continue
-				}
-			}
-
-			// 6. EXPENSIVE: Number-letter mixing filter (character scan)
-			//    TODO: Is this what we want?  See if mixed alpha-numeric tokens are a problem.
-			//    TODO: Do we want pure numbers?  If so, we need to add a test for that.
-			if cfg.TokenFilters.MaxNumberLetterMix > 0 {
-				digitCount := 0
-				for _, char := range cleanToken {
-					if char >= '0' && char <= '9' {
-						digitCount++
-					}
-				}
-				digitRatio := float64(digitCount) / float64(len(cleanToken))
-				if digitRatio > cfg.TokenFilters.MaxNumberLetterMix {
-					rejectedByNumberMix++
+					// rejectedByRepetition++ // TODO: Statistics tracking moved to analysis thread
 					continue
 				}
 			}
 
 			// 8. EXPENSIVE: Case alternation filter (character scan)
-			//    zTODO: Is this detecting camel-case?
 			if cfg.TokenFilters.MaxCaseAlternations > 0 {
 				caseChanges := 0
 				for i := 1; i < len(cleanToken); i++ {
@@ -1679,39 +1623,59 @@ func simpleTokenize(text string, cfg *Config) []string {
 				}
 				caseChangeRatio := float64(caseChanges) / float64(len(cleanToken))
 				if caseChangeRatio > cfg.TokenFilters.MaxCaseAlternations {
-					rejectedByCaseAlt++
+					// rejectedByCaseAlt++ // TODO: Statistics tracking moved to analysis thread
+					continue
+				}
+			}
+
+			// 6. EXPENSIVE: Number-letter mixing filter (character scan)
+			if cfg.TokenFilters.MaxNumberLetterMix > 0 {
+				numberLetterTransitions := 0
+				for i := 1; i < len(cleanToken); i++ {
+					prevIsLetter := (cleanToken[i-1] >= 'a' && cleanToken[i-1] <= 'z') || (cleanToken[i-1] >= 'A' && cleanToken[i-1] <= 'Z')
+					currIsLetter := (cleanToken[i] >= 'a' && cleanToken[i] <= 'z') || (cleanToken[i] >= 'A' && cleanToken[i] <= 'Z')
+					prevIsDigit := cleanToken[i-1] >= '0' && cleanToken[i-1] <= '9'
+					currIsDigit := cleanToken[i] >= '0' && cleanToken[i] <= '9'
+
+					if (prevIsLetter && currIsDigit) || (prevIsDigit && currIsLetter) {
+						numberLetterTransitions++
+					}
+				}
+				transitionRatio := float64(numberLetterTransitions) / float64(len(cleanToken))
+				if transitionRatio > cfg.TokenFilters.MaxNumberLetterMix {
+					// rejectedByNumberMix++ // TODO: Statistics tracking moved to analysis thread
+					continue
+				}
+			}
+
+			// 5. CHEAP: URL filter (string contains check)
+			if cfg.TokenFilters.RejectUrls && (strings.Contains(cleanToken, "http") || strings.Contains(cleanToken, "www")) {
+				// rejectedByUrl++ // TODO: Statistics tracking moved to analysis thread
+				continue
+			}
+
+			// 10. MOST EXPENSIVE: All caps filter (character scan + length check)
+			if cfg.TokenFilters.RejectAllCapsLong && len(cleanToken) >= cfg.TokenFilters.AllCapsLowerLimit {
+				allCaps := true
+				for _, char := range cleanToken {
+					if char < 'A' || char > 'Z' {
+						allCaps = false
+						break
+					}
+				}
+				if allCaps {
+					// rejectedByAllCaps++ // TODO: Statistics tracking moved to analysis thread
 					continue
 				}
 			}
 		}
 
-		// Convert to lowercase for final output
+		// Convert to lowercase for consistency
 		cleanToken = strings.ToLower(cleanToken)
 		processedTokens = append(processedTokens, cleanToken)
 	}
 
-	// Update statistics in a single batch operation
-	if cfg.TokenFilters.Enabled {
-		TokenFilterStats.mu.Lock()
-		TokenFilterStats.TotalTokensProcessed += totalProcessed
-		// Calculate total rejected as sum of specific counters
-		totalRejected := rejectedByMaxLength + rejectedByDiversity + rejectedByRepetition +
-			rejectedByCaseAlt + rejectedByNumberMix + rejectedByHashtag + rejectedByAtMention +
-			rejectedByUrl + rejectedByAllCaps + rejectedByMinLength + rejectedByWordFilter
-		TokenFilterStats.TotalTokensRejected += totalRejected
-		TokenFilterStats.RejectedByMaxLength += rejectedByMaxLength
-		TokenFilterStats.RejectedByDiversity += rejectedByDiversity
-		TokenFilterStats.RejectedByRepetition += rejectedByRepetition
-		TokenFilterStats.RejectedByCaseAlt += rejectedByCaseAlt
-		TokenFilterStats.RejectedByNumberMix += rejectedByNumberMix
-		TokenFilterStats.RejectedByHashtag += rejectedByHashtag
-		TokenFilterStats.RejectedByAtMention += rejectedByAtMention
-		TokenFilterStats.RejectedByUrl += rejectedByUrl
-		TokenFilterStats.RejectedByAllCaps += rejectedByAllCaps
-		TokenFilterStats.RejectedByMinLength += rejectedByMinLength
-		TokenFilterStats.RejectedByWordFilter += rejectedByWordFilter
-		TokenFilterStats.mu.Unlock()
-	}
+	// TODO: Token filter statistics will be handled by analysis thread
 
 	return processedTokens
 }
@@ -1866,8 +1830,8 @@ func setupBloomFilterParams(numClasses int) ([]int, []uint) {
 }
 
 // loadPersistedState loads the persisted data structures from files and logs statistics
-func loadPersistedState(stateDir string, freqClasses int, cfg *Config) {
-	fmt.Println("=== LOADING PERSISTED STATE ===")
+func loadPersistedState(stateDir string, freqClasses int, cfg *Config) map[string]int {
+	LogInfo(func() string { return "=== LOADING PERSISTED STATE ===" })
 
 	// Check if any of the files exist
 	tokenCounterPath := filepath.Join(stateDir, "token_counter.json")
@@ -1877,67 +1841,48 @@ func loadPersistedState(stateDir string, freqClasses int, cfg *Config) {
 	_, err1 := os.Stat(tokenCounterPath)
 	_, err2 := os.Stat(freqClassPath)
 	if os.IsNotExist(err1) && os.IsNotExist(err2) {
-		fmt.Println("No persisted state files found. Starting fresh.")
-		fmt.Println("=== PERSISTED STATE LOADING COMPLETE ===")
-		return
+		LogInfo(func() string { return "No persisted state files found. Starting fresh." })
+		LogInfo(func() string { return "=== PERSISTED STATE LOADING COMPLETE ===" })
+		return nil
 	}
 
-	// Load TokenCounter if it exists and rebuild frequency class filters
+	// Load TokenCounter if it exists
 	tempTokenCounter := pipeline.NewTokenCounter()
 	if err := tempTokenCounter.LoadFromFile(tokenCounterPath); err != nil {
 		if strings.Contains(err.Error(), "no such file or directory") {
-			fmt.Printf("TokenCounter file not found: %s\n", tokenCounterPath)
+			LogInfo(func() string { return fmt.Sprintf("TokenCounter file not found: %s", tokenCounterPath) })
 		} else {
-			fmt.Printf("Failed to load TokenCounter: %v\n", err)
+			LogInfo(func() string { return fmt.Sprintf("Failed to load TokenCounter: %v", err) })
 		}
-	} else {
-		loadStartTime := time.Now()
-		counts := tempTokenCounter.Counts()
-		totalTokens := 0
-		for _, count := range counts {
-			totalTokens += count
-		}
-		loadDuration := time.Since(loadStartTime)
-		fmt.Printf("TokenCounter loaded: %d total tokens (%d distinct tokens) in %v\n", totalTokens, len(counts), loadDuration)
-
-		// Load the token counts into the global token counter for the FCT to use
-		populateStartTime := time.Now()
-		fmt.Printf("Starting to populate global token counter with %d total tokens...\n", totalTokens)
-
-		// Use the fast direct set method instead of incrementing millions of times
-		GlobalTokenCounter.SetCountsDirectly(counts)
-
-		populateDuration := time.Since(populateStartTime)
-		fmt.Printf("Global token counter populated with %d total tokens in %v\n", totalTokens, populateDuration)
-
-		// Rebuild frequency class filters from the loaded token counts
-		rebuildStartTime := time.Now()
-		fmt.Printf("Rebuilding frequency class filters from loaded token counts...\n")
-		var result pipeline.FreqClassResult
-		if cfg.MinCountThreshold > 0 {
-			result = pipeline.BuildFrequencyClassHashSetsAdaptive(counts, freqClasses, cfg.MinCountThreshold)
-		} else {
-			result = pipeline.BuildFrequencyClassHashSets(counts, freqClasses, nil, nil)
-		}
-		pipeline.SetGlobalFilters(result.Filters)
-		rebuildDuration := time.Since(rebuildStartTime)
-		fmt.Printf("Frequency class filters rebuilt: %d classes in %v\n", len(result.Filters), rebuildDuration)
+		return nil
 	}
+
+	loadStartTime := time.Now()
+	counts := tempTokenCounter.Counts()
+	totalTokens := 0
+	for _, count := range counts {
+		totalTokens += count
+	}
+	loadDuration := time.Since(loadStartTime)
+	LogInfo(func() string {
+		return fmt.Sprintf("TokenCounter loaded: %d total tokens (%d distinct tokens) in %v", totalTokens, len(counts), loadDuration)
+	})
 
 	// Load FrequencyClassResult if it exists
 	var tempFreqClassResult pipeline.FreqClassResult
 	if err := tempFreqClassResult.LoadFromFile(freqClassPath); err != nil {
 		if strings.Contains(err.Error(), "no such file or directory") {
-			fmt.Printf("FrequencyClassResult file not found: %s\n", freqClassPath)
+			LogInfo(func() string { return fmt.Sprintf("FrequencyClassResult file not found: %s", freqClassPath) })
 		} else {
-			fmt.Printf("Failed to load FrequencyClassResult: %v\n", err)
+			LogInfo(func() string { return fmt.Sprintf("Failed to load FrequencyClassResult: %v", err) })
 		}
 	} else {
 		classes := len(tempFreqClassResult.Filters)
-		fmt.Printf("FrequencyClassResult loaded: %d classes\n", classes)
+		LogInfo(func() string { return fmt.Sprintf("FrequencyClassResult loaded: %d classes", classes) })
 	}
 
-	fmt.Println("=== PERSISTED STATE LOADING COMPLETE ===")
+	LogInfo(func() string { return "=== PERSISTED STATE LOADING COMPLETE ===" })
+	return counts
 }
 
 // Simple k-means implementation for busy word vectors
@@ -2059,10 +2004,8 @@ func runKMeansClusteringGo(tweetList []*tweets.Tweet, busyWords map[string]bool,
 		firstTweet := cluster.Tweets[0]
 		timeStr := time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
 
-		// Get continuation information for this cluster
-		batchWindowMutex.RLock()
-		continuationInfo := getContinuationInfo(cluster, batchWindow, batchNumber, cfg)
-		batchWindowMutex.RUnlock()
+		// TODO: Continuation info will be handled by analysis thread
+		continuationInfo := ""
 
 		writeOutput("┌─ Cluster %d (%d tweets, first tweet: %s)%s%s", i+1, cluster.Size, timeStr, busyWordsStr, continuationInfo)
 
@@ -2252,4 +2195,163 @@ type Batch struct {
 	BatchID  int
 	Tweets   []*tweets.Tweet
 	Clusters []pipeline.TweetCluster
+}
+
+// OutputType represents the type of structured output
+type OutputType string
+
+const (
+	OUTPUT_CLUSTER OutputType = "cluster"
+	OUTPUT_STATS   OutputType = "stats"
+	OUTPUT_ERROR   OutputType = "error"
+	OUTPUT_INFO    OutputType = "info"
+)
+
+// OutputData represents structured output data
+type OutputData struct {
+	Type OutputType  `json:"type"`
+	Data interface{} `json:"data"`
+}
+
+// Output functions for structured data (goes to stdout)
+func OutputCluster(cluster interface{}) {
+	// Get the global config to check output mode
+	// Since we don't have direct access to config here, we'll use a global variable
+	// or modify the function signature. For now, let's create a new function that takes config.
+	OutputClusterWithConfig(cluster, nil) // Will be called with proper config from clustering functions
+}
+
+// OutputClusterWithConfig outputs cluster data based on the configured output mode
+func OutputClusterWithConfig(cluster interface{}, cfg *Config) {
+	// Default to verbose mode if no config provided
+	outputMode := "verbose"
+	if cfg != nil {
+		outputMode = cfg.Analysis.OutputMode
+	}
+
+	// Process cluster data based on output mode
+	var processedData interface{}
+
+	if outputMode == "human" {
+		// Convert to human-readable format
+		processedData = convertToHumanReadable(cluster)
+	} else {
+		// Use original data for verbose mode
+		processedData = cluster
+	}
+
+	data := OutputData{
+		Type: OUTPUT_CLUSTER,
+		Data: processedData,
+	}
+	jsonData, _ := json.MarshalIndent(data, "", "  ")
+	fmt.Println(string(jsonData))
+}
+
+// convertToHumanReadable converts cluster data to human-readable format
+func convertToHumanReadable(cluster interface{}) interface{} {
+	// Type assert to get the cluster data
+	clusterMap, ok := cluster.(map[string]interface{})
+	if !ok {
+		return cluster // Return original if not the expected format
+	}
+
+	// Check if this is a batch-level structure
+	if _, hasBatchNumber := clusterMap["batch_number"]; hasBatchNumber {
+		// This is a batch-level structure
+		return convertBatchToHumanReadable(clusterMap)
+	}
+
+	// This is an individual cluster (legacy format)
+	return convertIndividualClusterToHumanReadable(clusterMap)
+}
+
+// convertBatchToHumanReadable converts batch-level data to human-readable format
+func convertBatchToHumanReadable(batchMap map[string]interface{}) interface{} {
+	// Create a new map for human-readable output
+	humanReadable := make(map[string]interface{})
+
+	// Copy batch-level metadata
+	for key, value := range batchMap {
+		if key != "clusters" {
+			humanReadable[key] = value
+		}
+	}
+
+	// Convert clusters to human-readable format
+	if clusters, ok := batchMap["clusters"].([]map[string]interface{}); ok {
+		var humanReadableClusters []interface{}
+		for _, cluster := range clusters {
+			humanReadableClusters = append(humanReadableClusters, convertIndividualClusterToHumanReadable(cluster))
+		}
+		humanReadable["clusters"] = humanReadableClusters
+	}
+
+	return humanReadable
+}
+
+// convertIndividualClusterToHumanReadable converts individual cluster data to human-readable format
+func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}) interface{} {
+	// Create a new map for human-readable output
+	humanReadable := make(map[string]interface{})
+
+	// Copy all the metadata fields
+	for key, value := range clusterMap {
+		if key != "tweets" && key != "most_typical_tweet" {
+			humanReadable[key] = value
+		}
+	}
+
+	// Convert tweets to just their texts
+	if tweets, ok := clusterMap["tweets"].([]*tweets.Tweet); ok {
+		var tweetTexts []string
+		for _, tweet := range tweets {
+			tweetTexts = append(tweetTexts, tweet.Text)
+		}
+		humanReadable["tweet_texts"] = tweetTexts
+	}
+
+	// Add the most typical tweet text
+	if mostTypicalTweet, ok := clusterMap["most_typical_tweet"].(*tweets.Tweet); ok && mostTypicalTweet != nil {
+		humanReadable["medoid_tweet_text"] = mostTypicalTweet.Text
+	}
+
+	// Add persistence information if available
+	if persistenceInfo, ok := clusterMap["persistence_info"].(string); ok {
+		humanReadable["persistence_info"] = persistenceInfo
+	}
+
+	return humanReadable
+}
+
+func OutputStats(stats interface{}) {
+	data := OutputData{
+		Type: OUTPUT_STATS,
+		Data: stats,
+	}
+	jsonData, _ := json.MarshalIndent(data, "", "  ")
+	fmt.Println(string(jsonData))
+}
+
+func OutputError(err interface{}) {
+	data := OutputData{
+		Type: OUTPUT_ERROR,
+		Data: err,
+	}
+	jsonData, _ := json.MarshalIndent(data, "", "  ")
+	fmt.Println(string(jsonData))
+}
+
+func OutputInfo(info interface{}) {
+	data := OutputData{
+		Type: OUTPUT_INFO,
+		Data: info,
+	}
+	jsonData, _ := json.MarshalIndent(data, "", "  ")
+	fmt.Println(string(jsonData))
+}
+
+// Raw output function for backward compatibility (can be changed later)
+func OutputRaw(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stdout, format+"\n", args...)
 }
