@@ -592,7 +592,6 @@ func runKMeansClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[s
 			"most_typical_tweet": mostTypicalTweet,
 			"persistence_info":   persistenceInfo,
 		}
-		fmt.Fprintf(os.Stderr, "DEBUG: Created cluster with %d tweets\n", len(cluster.Tweets))
 		batchClusters = append(batchClusters, clusterData)
 	}
 
@@ -696,7 +695,6 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 			"most_typical_tweet": mostTypicalTweet,
 			"persistence_info":   persistenceInfo,
 		}
-		fmt.Fprintf(os.Stderr, "DEBUG: Created cluster with %d tweets\n", len(cluster.Tweets))
 		batchClusters = append(batchClusters, clusterData)
 	}
 
@@ -2374,10 +2372,13 @@ func convertBatchToHumanReadable(batchMap map[string]interface{}, cfg *Config) i
 	if clusters, ok := batchMap["clusters"].([]map[string]interface{}); ok {
 		totalClusters = len(clusters)
 		var filteredClusters []map[string]interface{}
+		// First, apply user deduplication to all clusters if enabled
+		// Deduplication is now handled in convertIndividualClusterToHumanReadable
+
+		// Now filter by size and repetitive patterns
 		for _, cluster := range clusters {
 			if size, ok := cluster["size"].(int); ok {
 				if size >= cfg.Analysis.MinClusterSize {
-
 					// Apply repetitive pattern filtering
 					if !shouldFilterRepetitiveCluster(cluster, cfg) {
 						filteredClusters = append(filteredClusters, cluster)
@@ -2385,15 +2386,21 @@ func convertBatchToHumanReadable(batchMap map[string]interface{}, cfg *Config) i
 				}
 			}
 		}
-		clustersAboveMinSize = len(filteredClusters)
-		sort.Slice(filteredClusters, func(i, j int) bool {
-			sizeI, _ := filteredClusters[i]["size"].(int)
-			sizeJ, _ := filteredClusters[j]["size"].(int)
+		for _, cluster := range filteredClusters {
+			humanReadableCluster := convertIndividualClusterToHumanReadable(cluster, cfg)
+			if humanReadableCluster != nil {
+				humanReadableClusters = append(humanReadableClusters, humanReadableCluster)
+			}
+		}
+
+		// Sort by the new calculated size (after deduplication)
+		sort.Slice(humanReadableClusters, func(i, j int) bool {
+			sizeI, _ := humanReadableClusters[i].(map[string]interface{})["size"].(int)
+			sizeJ, _ := humanReadableClusters[j].(map[string]interface{})["size"].(int)
 			return sizeI > sizeJ // Descending order
 		})
-		for _, cluster := range filteredClusters {
-			humanReadableClusters = append(humanReadableClusters, convertIndividualClusterToHumanReadable(cluster, cfg))
-		}
+
+		clustersAboveMinSize = len(humanReadableClusters)
 	}
 
 	// Create batch output with guaranteed field ordering
@@ -2429,30 +2436,126 @@ func convertBatchToHumanReadable(batchMap map[string]interface{}, cfg *Config) i
 }
 
 // convertIndividualClusterToHumanReadable converts individual cluster data to human-readable format
+// Returns nil if the cluster should be suppressed (not enough unique tweets after deduplication)
 func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, cfg *Config) interface{} {
 	// Create a new map for human-readable output
 	humanReadable := make(map[string]interface{})
 
-	// Copy all the metadata fields
+	// Copy all the metadata fields (except size, which we'll calculate)
 	for key, value := range clusterMap {
-		if key != "tweets" && key != "most_typical_tweet" {
+		if key != "tweets" && key != "most_typical_tweet" && key != "size" {
 			humanReadable[key] = value
 		}
 	}
 
 	// Convert tweets to just their texts
-	if tweets, ok := clusterMap["tweets"].([]*tweets.Tweet); ok {
-		var tweetTexts []string
-		maxToShow := cfg.Analysis.MaxHumanTweetsDisplayed
-		if maxToShow <= 0 {
-			maxToShow = 10 // Default value
+	var tweetTexts []string
+	maxToShow := cfg.Analysis.MaxHumanTweetsDisplayed
+	if maxToShow <= 0 {
+		maxToShow = 10 // Default value
+	}
+
+	// Track the total number of unique tweets after deduplication
+	var uniqueTweetCount int
+	var originalTweetCount int
+
+	// Check if tweet_texts is already stored in the cluster (after deduplication)
+	if storedTexts, ok := clusterMap["tweet_texts"].([]string); ok {
+		uniqueTweetCount = len(storedTexts)
+		originalTweetCount = uniqueTweetCount // For pre-deduplicated data, they're the same
+		for i, text := range storedTexts {
+			if i >= maxToShow {
+				break
+			}
+			tweetTexts = append(tweetTexts, text)
 		}
-		for i, tweet := range tweets {
+	} else if tweetsInterface, ok := clusterMap["tweets"].([]interface{}); ok {
+		// Handle tweets stored as []interface{} (before deduplication)
+		originalTweetCount = len(tweetsInterface)
+
+		// Apply user deduplication if enabled
+		var deduplicatedTweets []interface{}
+		if cfg.Analysis.DeduplicateByUser {
+			// Map to track seen tweets by content (not by user)
+			seenTweetTexts := make(map[string]bool)
+
+			for _, tweetInterface := range tweetsInterface {
+				// Type assert to get tweet fields
+				if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
+					tweetText, _ := tweetMap["text"].(string)
+
+					// Check if we've already seen this exact tweet text
+					if !seenTweetTexts[tweetText] {
+						seenTweetTexts[tweetText] = true
+						deduplicatedTweets = append(deduplicatedTweets, tweetInterface)
+					}
+				}
+			}
+		} else {
+			// No deduplication, use all tweets
+			deduplicatedTweets = tweetsInterface
+		}
+
+		// Count unique tweets after deduplication
+		uniqueTweetCount = len(deduplicatedTweets)
+
+		// Convert deduplicated tweets to texts
+		for i, tweetInterface := range deduplicatedTweets {
+			if i >= maxToShow {
+				break
+			}
+			if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
+				if text, ok := tweetMap["text"].(string); ok {
+					tweetTexts = append(tweetTexts, text)
+				}
+			}
+		}
+	} else if tweetsStruct, ok := clusterMap["tweets"].([]*tweets.Tweet); ok {
+		// Handle tweets stored as []*tweets.Tweet (before deduplication)
+		originalTweetCount = len(tweetsStruct)
+
+		// Apply user deduplication if enabled
+		var deduplicatedTweets []*tweets.Tweet
+		if cfg.Analysis.DeduplicateByUser {
+			// Map to track seen tweets by content (not by user)
+			seenTweetTexts := make(map[string]bool)
+
+			for _, tweet := range tweetsStruct {
+				tweetText := tweet.Text
+
+				// Check if we've already seen this exact tweet text
+				if !seenTweetTexts[tweetText] {
+					seenTweetTexts[tweetText] = true
+					deduplicatedTweets = append(deduplicatedTweets, tweet)
+				}
+			}
+		} else {
+			// No deduplication, use all tweets
+			deduplicatedTweets = tweetsStruct
+		}
+
+		// Count unique tweets after deduplication
+		uniqueTweetCount = len(deduplicatedTweets)
+
+		// Convert deduplicated tweets to texts
+		for i, tweet := range deduplicatedTweets {
 			if i >= maxToShow {
 				break
 			}
 			tweetTexts = append(tweetTexts, tweet.Text)
 		}
+	}
+
+	// Check if we have enough unique tweets after deduplication
+	if uniqueTweetCount < cfg.Analysis.MinClusterSize {
+		return nil // Suppress this cluster
+	}
+
+	// Add size information to show both original and deduplicated counts
+	humanReadable["size"] = uniqueTweetCount
+	humanReadable["original_size"] = originalTweetCount
+
+	if len(tweetTexts) > 0 {
 		humanReadable["tweet_texts"] = tweetTexts
 	}
 

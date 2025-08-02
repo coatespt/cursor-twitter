@@ -192,9 +192,9 @@ analysis:
   persistence_clustering_method: busy_words
   # Maximum number of tweet texts to display in human-readable output per cluster
   max_human_tweets_displayed: 10
-  # TODO: This was for display only to reduce visual clutter, but I don't think 
-  #    it's even used now. Investigate.
-  min_cluster_size: 6
+  # Minimum number of unique tweets required after deduplication
+  # Lowered from 6 to 3 since we now deduplicate by user, so this counts real unique content
+  min_cluster_size: 5
   # Filter out clusters with repetitive meme-like patterns
   filter_repetitive_patterns: true
   # Path to file containing banned phrases (one per line, can be regex)
