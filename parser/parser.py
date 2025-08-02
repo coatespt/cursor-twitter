@@ -6,6 +6,7 @@ import csv
 import sys
 import os
 import glob
+import re
 from pathlib import Path
 import time
 import tempfile
@@ -22,6 +23,9 @@ with open(os.path.join(os.path.dirname(__file__), '../config/config.yaml')) as f
 detect_language = config.get('detect_language', False)
 drop_excessive_questions = config.get('drop_excessive_questions', False)
 
+# Pre-compiled regex for tokenization (splits on non-word characters, but preserves apostrophes)
+tokenize_regex = re.compile(r'[^\w\']+')
+
 def is_too_many_questions(text, threshold=0.2, min_count=10):
     if not text:
         return False
@@ -29,6 +33,13 @@ def is_too_many_questions(text, threshold=0.2, min_count=10):
     if q_count >= min_count and (q_count / len(text)) > threshold:
         return True
     return False
+
+def tokenize_text(text):
+    """Tokenize text by splitting on non-word characters (including periods, commas, etc.) but preserving apostrophes"""
+    # Split on non-word characters and filter out empty tokens
+    tokens = [token.lower().strip() for token in tokenize_regex.split(text) if token.strip()]
+    # Filter for words with at least one letter and minimum length (allow apostrophes)
+    return [token for token in tokens if any(c.isalpha() for c in token) and len(token) > 1]
 
 def process_json_file(input_path, output_path, global_tweet_count):
     """Process a single gzipped JSON file and convert to CSV."""
@@ -108,10 +119,9 @@ def process_json_file(input_path, output_path, global_tweet_count):
                                 at_count = text.count('@')
                                 http_count = text.count('http')
                                 hashtag_count = text.count('#')
-                                words = ' '.join([
-                                    word.lower() for word in text.split()
-                                    if word.isalpha() and len(word) > 1
-                                ])
+                                # Use the new tokenization function that splits on punctuation
+                                tokens = tokenize_text(text)
+                                words = ' '.join(tokens)
                                 # Detect language of tweet text if enabled in config and not disabled by command line
                                 if detect_language and not args.no_language_detect:
                                     tweet_text = tweet.get('text', '')

@@ -216,7 +216,14 @@ type Config struct {
 		// Minimum number of shared busy words required for clusters to be considered related (for persistence tracking)
 		MinSharedBusyWordsForPersistence int `yaml:"min_shared_busywords_for_persistence"` // Relationship strength threshold
 		// Method for determining cluster relationships across batches: "busy_words" or "full_text"
-		PersistenceClusteringMethod string `yaml:"persistence_clustering_method"` // Cross-batch relationship detection method
+		PersistenceClusteringMethod string           `yaml:"persistence_clustering_method"` // Cross-batch relationship detection method
+		DropExcessiveQuestions      bool             `yaml:"drop_excessive_questions"`      // Drop tweets with excessive question marks
+		MaxHumanTweetsDisplayed     int              `yaml:"max_human_tweets_displayed"`    // Maximum number of tweets to display in human-readable format
+		FilterRepetitivePatterns    bool             `yaml:"filter_repetitive_patterns"`    // Filter out clusters with repetitive meme-like patterns
+		BannedPhrasesFile           string           `yaml:"banned_phrases_file"`           // Path to file containing banned phrases
+		RepetitivePatternThreshold  float64          `yaml:"repetitive_pattern_threshold"`  // Threshold for filtering repetitive clusters
+		CompiledBannedPatterns      []*regexp.Regexp // Compiled regex patterns (not in yaml)
+		DeduplicateByUser           bool             `yaml:"deduplicate_by_user"` // Deduplicate tweets by user within clusters
 	} `yaml:"analysis"`
 }
 
@@ -259,7 +266,15 @@ var globalWordFilter *filter.WordFilter
 var (
 	urlRegex        *regexp.Regexp
 	apostropheRegex *regexp.Regexp
+	tokenizeRegex   *regexp.Regexp
 )
+
+// init function to initialize regex variables for tests
+func init() {
+	urlRegex = regexp.MustCompile(`https?://[^\s]+|www\.[^\s]+`)
+	apostropheRegex = regexp.MustCompile(`'.*$`)
+	tokenizeRegex = regexp.MustCompile(`[^\w']+`)
+}
 
 // Add at the top-level globals:
 var clusterOutputFilePath string
@@ -552,14 +567,10 @@ func runKMeansClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[s
 		}
 		sort.Strings(busyWordsList)
 
-		// Get timestamp of first tweet for display
-		firstTweet := cluster.Tweets[0]
-		timeStr := time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
-
-		// Find the most typical tweet in this cluster
+		// Find most typical tweet (medoid)
+		_, medoidIdx, _, _ := findMostTypicalTweets(cluster.Tweets, cfg.Analysis.MinJaccardSimilarity)
 		var mostTypicalTweet *tweets.Tweet
 		if len(cluster.Tweets) > 1 {
-			_, medoidIdx, _, _ := findMostTypicalTweets(cluster.Tweets, cfg.Analysis.MinJaccardSimilarity)
 			mostTypicalTweet = cluster.Tweets[medoidIdx]
 		} else {
 			mostTypicalTweet = cluster.Tweets[0]
@@ -568,28 +579,42 @@ func runKMeansClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[s
 		// Get persistence information
 		persistenceInfo := getContinuationInfo(cluster, currentBatchWindow, batchNumber, cfg)
 
-		// Create cluster data
+		// Create cluster data for output
+		firstTweet := cluster.Tweets[0]
+		timeStr := time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
+
 		clusterData := map[string]interface{}{
 			"cluster_id":         i + 1,
-			"size":               cluster.Size,
-			"first_tweet_time":   timeStr,
-			"busy_words":         busyWordsList,
+			"size":               len(cluster.Tweets),
 			"tweets":             cluster.Tweets,
+			"busy_words":         busyWordsList,
+			"first_tweet_time":   timeStr,
 			"most_typical_tweet": mostTypicalTweet,
 			"persistence_info":   persistenceInfo,
 		}
-
+		fmt.Fprintf(os.Stderr, "DEBUG: Created cluster with %d tweets\n", len(cluster.Tweets))
 		batchClusters = append(batchClusters, clusterData)
 	}
 
 	// Create batch-level data structure
+	totalClusters := len(batchClusters)
+	clustersAboveMinSize := 0
+	for _, cluster := range batchClusters {
+		if size, ok := cluster["size"].(int); ok {
+			if size >= cfg.Analysis.MinClusterSize {
+				clustersAboveMinSize++
+			}
+		}
+	}
+
 	batchData := map[string]interface{}{
-		"batch_number":   batchNumber,
-		"batch_time":     batchTimeStr,
-		"method":         "kmeans",
-		"total_clusters": len(batchClusters),
-		"total_tweets":   len(tweetsWithBusyWords),
-		"clusters":       batchClusters,
+		"batch_number":            batchNumber,
+		"batch_time":              batchTimeStr,
+		"method":                  "kmeans",
+		"total_clusters":          totalClusters,
+		"clusters_above_min_size": clustersAboveMinSize,
+		"total_tweets":            len(tweetsWithBusyWords),
+		"clusters":                batchClusters,
 	}
 
 	OutputClusterWithConfig(batchData, cfg)
@@ -646,14 +671,10 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 		}
 		sort.Strings(busyWordsList)
 
-		// Get timestamp of first tweet for display
-		firstTweet := cluster.Tweets[0]
-		timeStr := time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
-
-		// Find the most typical tweet in this cluster
+		// Find most typical tweet (medoid)
+		_, medoidIdx, _, _ := findMostTypicalTweets(cluster.Tweets, cfg.Analysis.MinJaccardSimilarity)
 		var mostTypicalTweet *tweets.Tweet
 		if len(cluster.Tweets) > 1 {
-			_, medoidIdx, _, _ := findMostTypicalTweets(cluster.Tweets, cfg.Analysis.MinJaccardSimilarity)
 			mostTypicalTweet = cluster.Tweets[medoidIdx]
 		} else {
 			mostTypicalTweet = cluster.Tweets[0]
@@ -662,28 +683,42 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 		// Get persistence information
 		persistenceInfo := getContinuationInfo(cluster, currentBatchWindow, batchNumber, cfg)
 
-		// Create cluster data
+		// Create cluster data for output
+		firstTweet := cluster.Tweets[0]
+		timeStr := time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
+
 		clusterData := map[string]interface{}{
 			"cluster_id":         i + 1,
-			"size":               cluster.Size,
-			"first_tweet_time":   timeStr,
-			"busy_words":         busyWordsList,
+			"size":               len(cluster.Tweets),
 			"tweets":             cluster.Tweets,
+			"busy_words":         busyWordsList,
+			"first_tweet_time":   timeStr,
 			"most_typical_tweet": mostTypicalTweet,
 			"persistence_info":   persistenceInfo,
 		}
-
+		fmt.Fprintf(os.Stderr, "DEBUG: Created cluster with %d tweets\n", len(cluster.Tweets))
 		batchClusters = append(batchClusters, clusterData)
 	}
 
 	// Create batch-level data structure
+	totalClusters := len(batchClusters)
+	clustersAboveMinSize := 0
+	for _, cluster := range batchClusters {
+		if size, ok := cluster["size"].(int); ok {
+			if size >= cfg.Analysis.MinClusterSize {
+				clustersAboveMinSize++
+			}
+		}
+	}
+
 	batchData := map[string]interface{}{
-		"batch_number":   batchNumber,
-		"batch_time":     batchTimeStr,
-		"method":         "graph",
-		"total_clusters": len(batchClusters),
-		"total_tweets":   len(tweetsWithBusyWords),
-		"clusters":       batchClusters,
+		"batch_number":            batchNumber,
+		"batch_time":              batchTimeStr,
+		"method":                  "graph",
+		"total_clusters":          totalClusters,
+		"clusters_above_min_size": clustersAboveMinSize,
+		"total_tweets":            len(tweetsWithBusyWords),
+		"clusters":                batchClusters,
 	}
 
 	OutputClusterWithConfig(batchData, cfg)
@@ -742,6 +777,16 @@ func loadAndValidateConfig(path string) (*Config, error) {
 	if cfg.LogDir == "" {
 		return nil, fmt.Errorf("ERROR: 'log_dir' must be defined in the config file and cannot be empty.")
 	}
+
+	// Load and compile banned phrases
+	if cfg.Analysis.FilterRepetitivePatterns {
+		patterns, err := loadBannedPhrases(cfg.Analysis.BannedPhrasesFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load banned phrases: %v", err)
+		}
+		cfg.Analysis.CompiledBannedPatterns = patterns
+	}
+
 	return cfg, nil
 }
 
@@ -923,6 +968,21 @@ func main() {
 
 	LogInfo(func() string { return "*** CONFIG LOADED SUCCESSFULLY ***" })
 
+	// Print key configuration values to stderr for user visibility
+	fmt.Fprintf(os.Stderr, "\n=== TWITTER SUBJECT DETECTION PIPELINE STARTUP ===\n")
+	fmt.Fprintf(os.Stderr, "Config file: %s\n", *configPath)
+	fmt.Fprintf(os.Stderr, "Clustering method: %s\n", cfg.Analysis.ClusteringMethod)
+	fmt.Fprintf(os.Stderr, "Output mode: %s\n", cfg.Analysis.OutputMode)
+	fmt.Fprintf(os.Stderr, "Frequency classes: %d\n", cfg.FreqClasses)
+	fmt.Fprintf(os.Stderr, "Batch size: %d tweets\n", cfg.BatchSize)
+	fmt.Fprintf(os.Stderr, "Window batches: %d\n", cfg.WindowBatches)
+	fmt.Fprintf(os.Stderr, "RabbitMQ: %s:%d/%s\n", cfg.MQHost, cfg.MQPort, cfg.MQQueue)
+	fmt.Fprintf(os.Stderr, "Load state: %v\n", *loadState)
+	fmt.Fprintf(os.Stderr, "Print tweets: %v\n", *printTweets)
+	fmt.Fprintf(os.Stderr, "\n=== STARTUP PROGRESS ===\n")
+	fmt.Fprintf(os.Stderr, "Building frequency class filters... (this may take a few minutes)\n")
+	fmt.Fprintf(os.Stderr, "Progress: ")
+
 	// Verbose mode test message and z-score array print
 	if cfg.Verbose {
 		LogInfo(func() string { return "*** VERBOSE MODE ENABLED (config.yaml) ***" })
@@ -952,6 +1012,7 @@ func main() {
 	// Initialize pre-compiled regexes for tokenization
 	urlRegex = regexp.MustCompile(`(https?://[^\s]+|www\.[^\s]+)`)
 	apostropheRegex = regexp.MustCompile(`'.*`)
+	tokenizeRegex = regexp.MustCompile(`[^\w']+`)
 
 	// TODO: Analysis thread will handle tweet window management
 
@@ -981,9 +1042,24 @@ func main() {
 
 	// Wait for frequency class filters to become available before starting tweet processing
 	LogInfo(func() string { return "Waiting for frequency class filters to become available..." })
+
+	// Progress indicator for filter building
+	progressCount := 0
+	progressChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
 	for !pipeline.HasGlobalFilters() {
+		// Update progress indicator every 2 seconds
+		if progressCount%20 == 0 { // 20 * 100ms = 2 seconds
+			progressChar := progressChars[(progressCount/20)%len(progressChars)]
+			fmt.Fprintf(os.Stderr, "\r%s Building filters... (waiting for sufficient token data)", progressChar)
+		}
 		time.Sleep(100 * time.Millisecond)
+		progressCount++
 	}
+
+	// Clear the progress line and show completion
+	fmt.Fprintf(os.Stderr, "\r✓ Filters ready! Starting tweet processing...\n")
+
 	LogInfo(func() string {
 		return fmt.Sprintf("Frequency class filters are now available (%d classes)", pipeline.GetGlobalFiltersCount())
 	})
@@ -992,6 +1068,11 @@ func main() {
 	clusterFileName := fmt.Sprintf("clusters_%s.txt", timestamp)
 	clusterOutputFilePath = filepath.Join(cfg.LogDir, clusterFileName)
 	LogInfo(func() string { return fmt.Sprintf("Cluster output will be saved to: %s", clusterOutputFilePath) })
+
+	fmt.Fprintf(os.Stderr, "✓ Pipeline ready! Consuming tweets from RabbitMQ...\n")
+	fmt.Fprintf(os.Stderr, "✓ Clustering output will be printed to stdout\n")
+	fmt.Fprintf(os.Stderr, "✓ Logs saved to: %s\n", cfg.LogDir)
+	fmt.Fprintf(os.Stderr, "=== STARTUP COMPLETE ===\n\n")
 
 	setupSignalHandling()
 
@@ -1470,6 +1551,14 @@ func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
 		}
 	}
 
+	// Filter out tweets with excessive question marks (similar to Python parser)
+	if cfg.Analysis.DropExcessiveQuestions {
+		questionCount := strings.Count(tweet.Text, "?")
+		if questionCount >= 10 && float64(questionCount)/float64(len(tweet.Text)) > 0.2 {
+			return nil, nil // Skip this tweet
+		}
+	}
+
 	// Step 1: Tokenize the tweet text.
 	// - Convert to lowercase
 	// - Remove punctuation
@@ -1495,20 +1584,26 @@ func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
 
 // simpleTokenize splits text into tokens for this project.
 // - Converts to lowercase
-// - Removes punctuation
+// - Splits on non-word characters (including periods, commas, etc.)
 // - Removes apostrophes and what follows
-// - Splits on whitespace
 // - Filters out offensive words if word filtering is enabled
 // - Filters out tokens shorter than min_token_len if specified
 func simpleTokenize(text string, cfg *Config) []string {
-	// Use strings.Fields() to get a slice of substrings
-	tokens := strings.Fields(text)
+	// Use regex to split on non-word characters (including periods, commas, etc.)
+	// This matches the approach used in analyze_tokens.go
+	tokens := tokenizeRegex.Split(strings.ToLower(text), -1)
 
 	// Process each token individually
 	var processedTokens []string
 
 	// totalProcessed = len(tokens) // TODO: Statistics tracking moved to analysis thread
 	for _, token := range tokens {
+		// Skip empty tokens
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+
 		// Reject URL tokens if configured to remove URLs
 		if cfg.TokenFilters.RemoveUrls {
 			if strings.HasPrefix(token, "http") || strings.HasPrefix(token, "www") {
@@ -1764,6 +1859,11 @@ func shouldFilterToken(token string, cfg *Config) bool {
 
 	// Hashtag filter
 	if cfg.TokenFilters.RejectHashtags && strings.HasPrefix(token, "#") {
+		return true
+	}
+
+	// At-mention filter
+	if cfg.TokenFilters.RejectAtMentions && strings.HasPrefix(token, "@") {
 		return true
 	}
 
@@ -2234,7 +2334,7 @@ func OutputClusterWithConfig(cluster interface{}, cfg *Config) {
 
 	if outputMode == "human" {
 		// Convert to human-readable format
-		processedData = convertToHumanReadable(cluster)
+		processedData = convertToHumanReadable(cluster, cfg)
 	} else {
 		// Use original data for verbose mode
 		processedData = cluster
@@ -2249,7 +2349,7 @@ func OutputClusterWithConfig(cluster interface{}, cfg *Config) {
 }
 
 // convertToHumanReadable converts cluster data to human-readable format
-func convertToHumanReadable(cluster interface{}) interface{} {
+func convertToHumanReadable(cluster interface{}, cfg *Config) interface{} {
 	// Type assert to get the cluster data
 	clusterMap, ok := cluster.(map[string]interface{})
 	if !ok {
@@ -2259,39 +2359,77 @@ func convertToHumanReadable(cluster interface{}) interface{} {
 	// Check if this is a batch-level structure
 	if _, hasBatchNumber := clusterMap["batch_number"]; hasBatchNumber {
 		// This is a batch-level structure
-		return convertBatchToHumanReadable(clusterMap)
+		return convertBatchToHumanReadable(clusterMap, cfg)
 	}
 
 	// This is an individual cluster (legacy format)
-	return convertIndividualClusterToHumanReadable(clusterMap)
+	return convertIndividualClusterToHumanReadable(clusterMap, cfg)
 }
 
 // convertBatchToHumanReadable converts batch-level data to human-readable format
-func convertBatchToHumanReadable(batchMap map[string]interface{}) interface{} {
-	// Create a new map for human-readable output
-	humanReadable := make(map[string]interface{})
-
-	// Copy batch-level metadata
-	for key, value := range batchMap {
-		if key != "clusters" {
-			humanReadable[key] = value
-		}
-	}
-
+func convertBatchToHumanReadable(batchMap map[string]interface{}, cfg *Config) interface{} {
 	// Convert clusters to human-readable format
+	var totalClusters, clustersAboveMinSize int
+	var humanReadableClusters []interface{}
 	if clusters, ok := batchMap["clusters"].([]map[string]interface{}); ok {
-		var humanReadableClusters []interface{}
+		totalClusters = len(clusters)
+		var filteredClusters []map[string]interface{}
 		for _, cluster := range clusters {
-			humanReadableClusters = append(humanReadableClusters, convertIndividualClusterToHumanReadable(cluster))
+			if size, ok := cluster["size"].(int); ok {
+				if size >= cfg.Analysis.MinClusterSize {
+
+					// Apply repetitive pattern filtering
+					if !shouldFilterRepetitiveCluster(cluster, cfg) {
+						filteredClusters = append(filteredClusters, cluster)
+					}
+				}
+			}
 		}
-		humanReadable["clusters"] = humanReadableClusters
+		clustersAboveMinSize = len(filteredClusters)
+		sort.Slice(filteredClusters, func(i, j int) bool {
+			sizeI, _ := filteredClusters[i]["size"].(int)
+			sizeJ, _ := filteredClusters[j]["size"].(int)
+			return sizeI > sizeJ // Descending order
+		})
+		for _, cluster := range filteredClusters {
+			humanReadableClusters = append(humanReadableClusters, convertIndividualClusterToHumanReadable(cluster, cfg))
+		}
 	}
 
-	return humanReadable
+	// Create batch output with guaranteed field ordering
+	batchOutput := &BatchOutput{
+		TotalClusters:        totalClusters,
+		ClustersAboveMinSize: clustersAboveMinSize,
+		Clusters:             humanReadableClusters,
+	}
+
+	// Set optional fields if they exist
+	if v, ok := batchMap["batch_number"]; ok {
+		if batchNum, ok := v.(int); ok {
+			batchOutput.BatchNumber = batchNum
+		}
+	}
+	if v, ok := batchMap["batch_time"]; ok {
+		if batchTime, ok := v.(string); ok {
+			batchOutput.BatchTime = batchTime
+		}
+	}
+	if v, ok := batchMap["method"]; ok {
+		if method, ok := v.(string); ok {
+			batchOutput.Method = method
+		}
+	}
+	if v, ok := batchMap["total_tweets"]; ok {
+		if totalTweets, ok := v.(int); ok {
+			batchOutput.TotalTweets = totalTweets
+		}
+	}
+
+	return batchOutput
 }
 
 // convertIndividualClusterToHumanReadable converts individual cluster data to human-readable format
-func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}) interface{} {
+func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, cfg *Config) interface{} {
 	// Create a new map for human-readable output
 	humanReadable := make(map[string]interface{})
 
@@ -2305,7 +2443,14 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}) 
 	// Convert tweets to just their texts
 	if tweets, ok := clusterMap["tweets"].([]*tweets.Tweet); ok {
 		var tweetTexts []string
-		for _, tweet := range tweets {
+		maxToShow := cfg.Analysis.MaxHumanTweetsDisplayed
+		if maxToShow <= 0 {
+			maxToShow = 10 // Default value
+		}
+		for i, tweet := range tweets {
+			if i >= maxToShow {
+				break
+			}
 			tweetTexts = append(tweetTexts, tweet.Text)
 		}
 		humanReadable["tweet_texts"] = tweetTexts
@@ -2354,4 +2499,78 @@ func OutputInfo(info interface{}) {
 // Raw output function for backward compatibility (can be changed later)
 func OutputRaw(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stdout, format+"\n", args...)
+}
+
+// shouldFilterRepetitiveCluster checks if a cluster should be filtered out due to repetitive patterns
+func shouldFilterRepetitiveCluster(cluster map[string]interface{}, cfg *Config) bool {
+	if !cfg.Analysis.FilterRepetitivePatterns || len(cfg.Analysis.CompiledBannedPatterns) == 0 {
+		return false
+	}
+
+	tweets, ok := cluster["tweets"].([]*tweets.Tweet)
+	if !ok {
+		return false
+	}
+
+	if len(tweets) == 0 {
+		return false
+	}
+
+	// Count tweets that match banned patterns
+	matchingTweets := 0
+	for _, tweet := range tweets {
+		tweetTextLower := strings.ToLower(tweet.Text)
+		for _, pattern := range cfg.Analysis.CompiledBannedPatterns {
+			if pattern.MatchString(tweetTextLower) {
+				matchingTweets++
+				break
+			}
+		}
+	}
+
+	// Check if the percentage exceeds the threshold
+	percentage := float64(matchingTweets) / float64(len(tweets))
+	return percentage >= cfg.Analysis.RepetitivePatternThreshold
+}
+
+// loadBannedPhrases loads and compiles banned phrase patterns from a file
+func loadBannedPhrases(filePath string) ([]*regexp.Regexp, error) {
+	if filePath == "" {
+		return nil, nil
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read banned phrases file %s: %v", filePath, err)
+	}
+
+	var patterns []*regexp.Regexp
+	lines := strings.Split(string(content), "\n")
+
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue // Skip empty lines and comments
+		}
+
+		// Compile the pattern (case-insensitive)
+		pattern, err := regexp.Compile("(?i)" + line)
+		if err != nil {
+			return nil, fmt.Errorf("invalid regex pattern on line %d: %s - %v", i+1, line, err)
+		}
+		patterns = append(patterns, pattern)
+	}
+
+	return patterns, nil
+}
+
+// BatchOutput represents the human-readable batch output with guaranteed field ordering
+type BatchOutput struct {
+	BatchNumber          int         `json:"batch_number"`
+	BatchTime            string      `json:"batch_time"`
+	Method               string      `json:"method"`
+	TotalTweets          int         `json:"total_tweets"`
+	TotalClusters        int         `json:"total_clusters"`
+	ClustersAboveMinSize int         `json:"clusters_above_min_size"`
+	Clusters             interface{} `json:"clusters"`
 }

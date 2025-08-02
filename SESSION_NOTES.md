@@ -308,7 +308,8 @@ Persistence of subjects is a major consumer of CPU, bigger than the cost as the 
 
 We have a little more than two weeks of almost unbroken data. The feed was restarted briefly once or twice over that time span--probably not enough to matter.
 
-## The data set:
+
+## The Data Set
 
 - Starts around 2012-01-28 16:16:46, i.e. quarter after five on New Years Day
 - Ends at 2012-02-15 03:22:36, which is 3:22 AM the day after Valentine's day.
@@ -320,8 +321,10 @@ gnip.csv_1329008058666_1329008358666.csv:168498929640550400, Feb 12 00:57:30
 
 This is toward the end of the 2-week+ period covered by the feed.
 
+
 ### Super Bowl
 Note the superbowl is also a great place to see real conversations starting up. It occurs on Feb 5 2012.  
+
 
 # Running the Program and Utilities
 
@@ -565,111 +568,107 @@ Those numbers were not supurious. I turned that functionality off and they were 
 I went from checking over six batches to checking over 1 batch. Not a huge effect. Maybe 100/second.
 
 ### Checking all words v checking busy words
+This aspect has NOT been reviewed
 
 
-# TTD and Direction
+## Running with the subject persistence turned off 
+This is a big user of CPU but turning it off did not cause a huge speed increase.
 
-## Things Discovered In Consequence of TTD's
-- Running with the subject persistence turned off did not cause a huge speed increase.
-- Emptying out the test_filters.txt file did not result in a big speedup but it did reduce the number rejected on that basis to zero. So the 40% rejection rate when that file is active is real.
-- Setting minimum token length to 1 resulted in the rejections for minimum token length to go to zero as it should have. So that parameter is functioning.
+## Running with config/token_filters.txt empty
 
-## Possible Parser Bug
-IMPORTANT. CHECK THE GOLANG PARSER FOR PROPER SPLITTING ON PERIODS AND COMMAS.
+Emptying out the test_filters.txt file did not result in a noticable speedup but it did reduce the number rejected on that basis to zero. So the 40% rejection rate when that file is active is real.
+
+## Setting minimum token length to 1 
+This (as it should) resulted in the rejections for minimum token length to go from 35% to 0%. So that parameter is functioning.
+
+## Is token splitting on periods, commas, and dashes happening
+It was not happening.  The token cleanup in Go now does this. Note that we can optionally split or not split on apostrophes. The default is to not split so that O'Brian and M'kele M'beme can continue to be tokens.
 
 ## Overhaul of ASCII Output and Reduction of Logs
 
-### Clean up logs
-A ton of unnecessary logging is left over from primary development.
-- Eliminate unnecessary logging
-- Find some logging framework that will allow any level to be suppressed, etc.
-- Move all remaining screen logging to standard error.
+Logging has been majorly overhauled with logging almost all going to the designated log file and almost none to the screen except some startup info going to stderr.
 
-### Create usable output
-A more complete text output should print the essential information needed for display to standard out or to a named file.
-This would be include:
-- The clusters, in a computationally friendly format.
-- The busy word information, in a computationally friendly format.
-- Both should include admin information like the run time, the time as given in the Tweets (this will be easy to obtain down to a minute or so,) etc.
-- The lines can be commingled so long as they have an identifying leading field, e.g, CLUSTER, BUSYWORD, ADMIN, ETC.
-- We would need to print all the diagnostics and other screen junk to stderr.
+The program output is now all in JSON format sent to stdout. It can be configured to be more complete, for machines, or more readable, for humans. 
 
+The new policy is to put only critical messages on the screeen and to write them to stderr so we can preserver stdout for proper output.
     
+## Excessive ????????? Strings in Texts
+We have added code to drop the entire Tweet if there are long strings of question marks. This is usually an artifact of Tweets in some language we're not able to handle. Either way, it should be gone now.
+  
+# TTD and Direction
+
+## Annoying Nonsense.
+Consider a file of phrases that would get a cluster or tweet dropped.
+"The awkward moment"
+"That awkward moment"
+"Do you want more Followers"
+"lose some weight" or "lose * weight"  
+"Please retweet this"
+Names from the Zodiac
+"Xstrology"
+"starting your own biz"
+
+Some of these constitute significan portions of the entire Tweet stream, like "The awkward moment".
+
+The question is, dump them at the beginning or just dump them at the end. There are arguments for both.
+
+
+##  Output Cluster/Batch Numbering
+The JSON output seems to number the batches and the clusters, but the cluster don't seem to be per-batch, they just increment forever. 
 
 ## Ongoing  Items
 - Comments Key areas need to be commented to keep out don't touch, etc.
 
-- Make tests around everything.
-
-## Possible Errors
+- Testing has been neglected. Make tests around everything.
  
-
-## Improving Busy Word Detection Quality with Redundancy
+## Major Item: Improving Busy Word Detection Quality with Computing Redundantly
 
 This would be a significant effort.
 
-Consider that dual sets of pipelines, or even three sets, each with different hash functions, could do a much better job of filtering of the true busy words. 
+Consider that dual sets of pipelines, or even three sets, each with different hash functions, could do a much more accurate job of filtering out the true busy words for a given set of parameters. This means that for a given acceptable level of collisions, one can either make the filter less discriminatory, i.e., a lower minimum Z value, or you can make the probability of an error much smaller.  
 
-If you use two sets, take only tokens that appear in both busy word pipelines.  If you use three sets, take only tokens that appear in 2/3 or 3/3. This would eliminate almost all spurious busywords because the same spurious words would almost never show up in multiple computational paths.
+If you use two sets, take only tokens that appear in both busy word pipelines.  If you use three sets, take only tokens that appear in 2/3 or 3/3.  
 
-The word space size is on the order of a billion. The actual set of words probably has at most a few tens of millions. Call it 10 million. That's one in a hundred random 3pk's corresponds to a real word. If you had two completely distinct computations of busy words, the chance of a given random 3pk colliding with a real token is one in ten thousand.  
-
-This means that for a given acceptable level of collisions, one can make the filter less discriminatory, i.e., a lower minimum Z value, or you can make the probability of an error much smaller.  My intuition is that the former is probably what you want.
 
 Possible benefits:
-- You could ditch the spurious words more effectively because they won't show up in both or all three sets.
+- You would ditch spurious words, resulting in more accurate output.
+- You can tolerate a lower Z score because you have a way to remove the spurious words, which should make it more sensitive.
 
-- You can tolerate a lower Z score because you have a way to remove the ones that result from a non-busy token just happening to have landed on othewise slightly outlying counts.
+It is not clear how big an impact this would have on performance. All the BW processors are doing is counting and periodically computing Z on a thousand values. There is a tiny bit more work in the analysis to take only the words that appear in the required number of sets. 
 
-It is not clear how big an impact this would have on performance. Possibly not that much. Run performance monitoring to see how much processing power goes into the busy word filters. It might be that the real processing is in the message reading and parsing.
-
-Risk. If trippling the work in the busyword processors made them in aggregate slower than the combined main pipeline and the clustering, it would cause the queues to grow without bound and crash the program. You'd need to detect the problem and throttle the reads if this is a problem.
+Risk. If multiplying the work in the busyword processors made them in aggregate slower than the combined main pipeline and the clustering, it would cause the queues to grow without bound and crash the program. You'd need to detect the problem and throttle the reads if this is a problem. Actually, this should probably be done anyway! Who knows if some combination of config parameters could cause this to happen.
  
-
 ## 3pk Collisions
-Over two weeks there are about 11 million distinct tokens.  That means there is about a 1/90 chance of a given token colliding with another token's 3pk.
+Over two weeks of data there are about 11 million distinct tokens. (Note, this figure may be significantly higher than the effective number because we filter 2/3 or so of them out as being useless for busywords) Unfiltered would means there is about a 1/90 chance of a given token colliding with another token's 3pk. Given the birthday paradox, you're probably getting fake busy words in most cycles.
 
 This could be greatly mitigated if we only kept 3pk's for the tokens that have non-zero counts, because most of the words will appear once and vanish without a trace. This would keep the actual number of mapped tokens way down.
 
 This could be done in a thread-safe efficient way if:
-- The FCT put any token the count of which hit's zero on a queue that is read by the main thread. The FCT would have to remove the entry from the counts, not just set the count to zero!
-- The main checks this queue on each cycle, or every N cycles, and deletes the 3pk's for those tokens from the global mapping of 3pk<->tokens.
+- The FCT put any token the count of which hits zero on a queue that is read by the main thread. 
+  - Minor point: The FCT would have to remove the entry from the counts, not just set the count to zero!
+
+  - The main checks this queue whenever it is convenient. E.g. every thousand or ten thousand Tweets.
+
 - This means that the probablilty of a given token colliding would be more like one divided by the cardinality of the global counter map, which is typically in the 100's of thousands, i.e. about 1% of the universe of words.
 
-This does not seem like a hugely expensive item. You'd pay a little bit for the extra insertions and deletions from the map. The map is read asynchronously by the busyword processors so thread safety is an issue.
+- This does not seem like a hugely expensive item. 
+  - You'd pay a little bit for the extra insertions and deletions from the map. - The map is read asynchronously by the busyword processors so thread safety is an issue, and thefore contention for the resource. But a few thousand deletions from a map is not a huge item.
+ 
 
-You could to the check every, say, 100 tokens. 
+Note, it would be unusual, but in theory the busyword processors could require a token for a 3pk that has been deleted since the cycle started. This has to be guarded against.
 
-Note, it would be very unusual, but in theory the busyword processors could require a token for a 3pk that has been deleted since the cycle started. This has to be guarded against.
+Be careful about threading issues.
 
-Also, this needs concurrent access protection. RWMutex is probably ideal as we have many more reads than writes, and reads don't block each other. We are probably lready be doing this. At least we should be!
-
-### Performance
+## Performance
 We started to get a significant slow-down at some point. It's about 1100/second now, and it used to be in the mid-2000's. This could be consequence of some real piece of functionality, or it could be something stupid. 
 
 Went over this with the profiler and chased down a lot of stuff, but it's still slower. Cursor's opinion is that it is probably primarily in taking tweets from RabbitMQ. I doubt it, because we've taken them off at up to 3000/second in the past when we weren't doing anything with them.  
 
 The bottleneck seems to be on the main processing line because the FCT is not in the path of the Tweets, and the busyword and analysis portion won't block the main line processing because it is insulated behind queues.
 
-### Pipeline Stats Had Extensive Repairs
-Verify that the very high rates of rejection of tokens are correct. Most of the rejection comes from the list of words to ingore as busy words, and words of one or two characters.
-
-Those are 36.6% and 40.9% of all tokens!
-
-If this is just because we're ignoring a ton of meaningless junk words, great, but it needs to be verified. 
-
-Get Cursor to write a utility to see if those stats are consistent with the proportions of those kinds of words in the raw data.  Or just remove the words from the file, set the minimum length to one, and see if it still rejects a lot of tokens!
- 
-### Speedup From Turning Off Cluster Persistence
-Cluster persistence is a huge consumer of CPU, but it's not clear that turning it off or optimizing it would help because it's not clear where the bottlneck is.
- 
-If the busyword and analysis were not keeping up, why should that slow down the main-line processing? Would it not cause a crash from OOM?  Not necessarily, as we only have four cores--it could be starving the main line of CPU and causing the slowdown. The back end might use less CPU than the main line, but still use so much that the main line slows down.
- 
-If you multi-threaded the main pipeline, it might help, but if it did, you'd need to check the busyword queue lengths to throttle reads if they start to bloat!
-
-Probably part of the bottleneck is taking the Tweets from RabbitMQ, which means any other efficiency cleanups would be moot unless multiple threads can take data from RabbitMQ faster than one can.
+We did an extensive review of concurrency protection in the processing pipeline and found a number of issues, but I'm not sure if we ever got to every item.
   
-### RT's \#hashtags and @this_n_that
+## RT's \#hashtags and @this_n_that
 Many Tweets are identical except for RT's, @this_and_that, #this_and_that. What would be the effect of removing these in the either the clustering or the display?  
 
 We have config parameters to drop \#hashtags, @sign_words,
@@ -677,12 +676,6 @@ We have config parameters to drop \#hashtags, @sign_words,
 One suspects that the majority of clusters would disappear or shink radically if these items were not included. Not clear what the meaning and/or desirability of this would be. They may be a legitimate contributor to identifying the emergence of a subject.
  
 
-### ????????? Strings in Texts
-
-Still getting lots of ??????????????????????. I thought we were dropping those Tweets? This is not done in the main pipeline. It could be implemented there--if a Tweet text has more than N question markes, ignore it.   
-
-Make sure the ????'s are actual ASCII question marks and not just an artifact of displaying un-printable Unicode values. I think they are in fact ASCII '?' characters because the output does show up a lot of non-ASCII stuff like smiley faces and hearts.
-  
 
 ## Ongoing 
 - Comments Key areas need to be commented to keep out don't touch, etc.
@@ -692,13 +685,12 @@ Make sure the ????'s are actual ASCII question marks and not just an artifact of
 - Make tests around everything.
 
  
-### Things That are Stubbed or Partially Built
-- Build out the offensive word detection mechanism. Check. This is in the tokenizer. There is a file of explicit words. There is also some generic activities, like a minimum token length in config.yaml. 
+## Things That are Stubbed or Partially Built
 
-- The busy words contain a lot of dreck. Scan the clustering output for more words that can go in the ignore tokens file
-  
+### More fully populating the token_filters.txt file. Check the busywords in the logs and see what else jumps out.
+ 
 
-## Clustering Across Batches
+## Major: Clustering Across Batches
 
 Note, this has now been implemented but may not be adequately tuned up yet. See above relating to this under speedups. 
 
@@ -711,13 +703,17 @@ A busy-word fade-out like the bubbles would be great.
 - Vertical axis is the frequency class
 
 
-## Clustering Clusters
+## Major: Clustering Clusters
 Could the same graph algorithm be applied to the already clustered clusters?   
 It seems like it would be good to see these things grouped more hierarchically.
 You often see clusters that seem to be almost the same.
 If the clustering allowed clusters that are unrelated to other clusters and clusters that are composed of sub clusters, it would be great.
 
+# Consider Stripping K-Means Out Entirely
+It doesn't do any harm, but we're never going to use it and it could be confusing.
+
 # Tuning 
+The following tuning issues could use attention
 
 ## Improve busy word detection
 This relates to the first item in this list, which is parallel busy word detection to eliminate spurious busy words.
@@ -737,7 +733,7 @@ This relates to the first item in this list, which is parallel busy word detecti
 
    
 ## Understand the effect of window size and batch size better.
-ARE THE NUMBERS HERE RIGHT? 
+Are the numbers below correct.
 
 The window is now 20m tokens, or about 2m Tweets. 
 	- That's about 66 minutes of the decahose, or about 28 minutes of actual time at the rate we consume.  

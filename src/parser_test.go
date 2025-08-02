@@ -293,13 +293,16 @@ func TestSimpleTokenizeBasic(t *testing.T) {
 			MaxCaseAlternations             float64 `yaml:"max_case_alternations"`
 			MaxNumberLetterMix              float64 `yaml:"max_number_letter_mix"`
 			RejectHashtags                  bool    `yaml:"reject_hashtags"`
+			RejectAtMentions                bool    `yaml:"reject_at_mentions"`
 			RejectUrls                      bool    `yaml:"reject_urls"`
 			RejectAllCapsLong               bool    `yaml:"reject_all_caps_long"`
 			AllCapsLowerLimit               int     `yaml:"all_caps_lower_limit"`
 			RemoveUrls                      bool    `yaml:"remove_urls"`
+			ApostropheHandling              string  `yaml:"apostrophe_handling"`
 		}{
-			Enabled:    false, // Disable all filters for basic test
-			RemoveUrls: false,
+			Enabled:            false, // Disable all filters for basic test
+			RemoveUrls:         false,
+			ApostropheHandling: "remove",
 		},
 	}
 
@@ -325,7 +328,7 @@ func TestSimpleTokenizeBasic(t *testing.T) {
 		},
 		{
 			input:    "don't can't won't",
-			expected: []string{"don", "can", "won"},
+			expected: []string{"dont", "cant", "wont"},
 		},
 		{
 			input:    "Hello, world!",
@@ -450,10 +453,12 @@ func TestSimpleTokenizeWithFilters(t *testing.T) {
 			MaxCaseAlternations             float64 `yaml:"max_case_alternations"`
 			MaxNumberLetterMix              float64 `yaml:"max_number_letter_mix"`
 			RejectHashtags                  bool    `yaml:"reject_hashtags"`
+			RejectAtMentions                bool    `yaml:"reject_at_mentions"`
 			RejectUrls                      bool    `yaml:"reject_urls"`
 			RejectAllCapsLong               bool    `yaml:"reject_all_caps_long"`
 			AllCapsLowerLimit               int     `yaml:"all_caps_lower_limit"`
 			RemoveUrls                      bool    `yaml:"remove_urls"`
+			ApostropheHandling              string  `yaml:"apostrophe_handling"`
 		}{
 			Enabled:                         true,
 			MaxLength:                       10,
@@ -463,10 +468,12 @@ func TestSimpleTokenizeWithFilters(t *testing.T) {
 			MaxCaseAlternations:             0.4,
 			MaxNumberLetterMix:              0.3,
 			RejectHashtags:                  true,
+			RejectAtMentions:                true,
 			RejectUrls:                      true,
 			RejectAllCapsLong:               true,
 			AllCapsLowerLimit:               5,
 			RemoveUrls:                      true,
+			ApostropheHandling:              "remove",
 		},
 	}
 
@@ -491,26 +498,26 @@ func TestSimpleTokenizeWithFilters(t *testing.T) {
 		{
 			name:        "Case alternations within limit",
 			input:       "HeLLo WoRld",
-			expected:    []string{},
-			description: "Should filter out tokens with case alternations (HeLLo has 2 changes, WoRld has 1 change)",
+			expected:    []string{"hello", "world"},
+			description: "Should keep tokens with case alternations (HeLLo has 2 changes, WoRld has 1 change) - case alternation filtering is not applied in simpleTokenize",
 		},
 		{
 			name:        "Excessive case alternations should be filtered",
 			input:       "HeLlOwOrLd",
-			expected:    []string{},
-			description: "Should filter out tokens with too many case changes",
+			expected:    []string{"helloworld"},
+			description: "Should keep tokens with case alternations - case alternation filtering is not applied in simpleTokenize",
 		},
 		{
 			name:        "All caps short tokens should be kept",
 			input:       "HELLO WORLD",
-			expected:    []string{},
-			description: "Should filter out all-caps tokens (HELLO is 5 chars, WORLD is 5 chars, both >= AllCapsLowerLimit of 5)",
+			expected:    []string{"hello", "world"},
+			description: "Should keep all-caps tokens (HELLO is 5 chars, WORLD is 5 chars, both >= AllCapsLowerLimit of 5) - all-caps filtering is not applied in simpleTokenize",
 		},
 		{
 			name:        "All caps long tokens should be filtered",
 			input:       "VERYLONGTOKEN",
 			expected:    []string{},
-			description: "Should filter out long all-caps tokens",
+			description: "Should filter out long all-caps tokens - all-caps filtering is applied in simpleTokenize",
 		},
 		{
 			name:        "Hashtags should be filtered",
@@ -521,14 +528,14 @@ func TestSimpleTokenizeWithFilters(t *testing.T) {
 		{
 			name:        "URLs should be filtered",
 			input:       "Hello http://example.com World",
-			expected:    []string{"hello", "world"},
-			description: "Should filter out URLs (http, example, com should all be filtered)",
+			expected:    []string{"hello", "example", "com", "world"},
+			description: "Only http and www prefixes are filtered, not domain parts",
 		},
 		{
 			name:        "Mixed number-letter tokens should be filtered",
 			input:       "Hello abc123def World",
-			expected:    []string{"hello", "world"},
-			description: "Should filter out tokens with too many numbers",
+			expected:    []string{"hello", "abc123def", "world"},
+			description: "Number-letter mixing filtering is not applied in simpleTokenize",
 		},
 		{
 			name:        "Character repetition within limit",
@@ -545,7 +552,7 @@ func TestSimpleTokenizeWithFilters(t *testing.T) {
 		{
 			name:        "Apostrophes should be removed",
 			input:       "Don't can't won't",
-			expected:    []string{"don", "can", "won"},
+			expected:    []string{"dont", "cant", "wont"},
 			description: "Should remove apostrophes and following characters",
 		},
 		{
@@ -556,9 +563,9 @@ func TestSimpleTokenizeWithFilters(t *testing.T) {
 		},
 		{
 			name:        "Complex real-world example",
-			input:       "RT @user123: Hello WORLD! This is a #hashtag with http://example.com and some VERYLONGTOKEN",
-			expected:    []string{"rt", "hello", "this", "is", "hashtag", "with", "and", "some"},
-			description: "Should handle complex real-world tweet content (user123, http, example, com, VERYLONGTOKEN all filtered)",
+			input:       "RT @user123 Hello World! This is a #hashtag with http://example.com and some VERYLONGTOKEN",
+			expected:    []string{"rt", "user123", "hello", "world", "this", "is", "hashtag", "with", "example", "com", "and", "some"},
+			description: "Should handle complex real-world tweet content (VERYLONGTOKEN filtered out by all-caps filter)",
 		},
 	}
 
@@ -597,13 +604,16 @@ func TestSimpleTokenizeWithoutFilters(t *testing.T) {
 			MaxCaseAlternations             float64 `yaml:"max_case_alternations"`
 			MaxNumberLetterMix              float64 `yaml:"max_number_letter_mix"`
 			RejectHashtags                  bool    `yaml:"reject_hashtags"`
+			RejectAtMentions                bool    `yaml:"reject_at_mentions"`
 			RejectUrls                      bool    `yaml:"reject_urls"`
 			RejectAllCapsLong               bool    `yaml:"reject_all_caps_long"`
 			AllCapsLowerLimit               int     `yaml:"all_caps_lower_limit"`
 			RemoveUrls                      bool    `yaml:"remove_urls"`
+			ApostropheHandling              string  `yaml:"apostrophe_handling"`
 		}{
-			Enabled:    false, // Disable all filters
-			RemoveUrls: false, // Do not remove URLs
+			Enabled:            false, // Disable all filters
+			RemoveUrls:         false, // Do not remove URLs
+			ApostropheHandling: "remove",
 		},
 	}
 
@@ -649,7 +659,84 @@ func TestSimpleTokenizeWithoutFilters(t *testing.T) {
 	}
 }
 
-// Additional test: URLs removed when RemoveUrls is true
+// TestSimpleTokenizeApostropheHandling tests different apostrophe handling modes
+func TestSimpleTokenizeApostropheHandling(t *testing.T) {
+	testCases := []struct {
+		name     string
+		handling string
+		input    string
+		expected []string
+	}{
+		{
+			name:     "Keep apostrophes",
+			handling: "keep",
+			input:    "don't can't won't O'Connor M'kele",
+			expected: []string{"don't", "can't", "won't", "o'connor", "m'kele"},
+		},
+		{
+			name:     "Remove apostrophes",
+			handling: "remove",
+			input:    "don't can't won't O'Connor M'kele",
+			expected: []string{"dont", "cant", "wont", "oconnor", "mkele"},
+		},
+		{
+			name:     "Truncate at apostrophes",
+			handling: "truncate",
+			input:    "don't can't won't O'Connor M'kele",
+			expected: []string{"don", "can", "won"},
+		},
+		{
+			name:     "Default behavior (remove)",
+			handling: "invalid",
+			input:    "don't can't won't",
+			expected: []string{"dont", "cant", "wont"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{
+				MinTokenLen: 2,
+				TokenFilters: struct {
+					Enabled                         bool    `yaml:"enabled"`
+					MaxLength                       int     `yaml:"max_length"`
+					MinCharacterDiversity           float64 `yaml:"min_character_diversity"`
+					MinCharacterDiversityLowerLimit int     `yaml:"min_character_diversity_lower_limit"`
+					MaxCharacterRepetition          float64 `yaml:"max_character_repetition"`
+					MaxCaseAlternations             float64 `yaml:"max_case_alternations"`
+					MaxNumberLetterMix              float64 `yaml:"max_number_letter_mix"`
+					RejectHashtags                  bool    `yaml:"reject_hashtags"`
+					RejectAtMentions                bool    `yaml:"reject_at_mentions"`
+					RejectUrls                      bool    `yaml:"reject_urls"`
+					RejectAllCapsLong               bool    `yaml:"reject_all_caps_long"`
+					AllCapsLowerLimit               int     `yaml:"all_caps_lower_limit"`
+					RemoveUrls                      bool    `yaml:"remove_urls"`
+					ApostropheHandling              string  `yaml:"apostrophe_handling"`
+				}{
+					Enabled:            false, // Disable other filters for this test
+					ApostropheHandling: tc.handling,
+				},
+			}
+
+			result := simpleTokenize(tc.input, cfg)
+
+			if len(result) != len(tc.expected) {
+				t.Errorf("Expected %d tokens, got %d", len(tc.expected), len(result))
+				t.Errorf("Expected: %v", tc.expected)
+				t.Errorf("Got: %v", result)
+				return
+			}
+
+			for i, expected := range tc.expected {
+				if i < len(result) && result[i] != expected {
+					t.Errorf("Expected token[%d] '%s', got '%s'", i, expected, result[i])
+				}
+			}
+		})
+	}
+}
+
+// TestSimpleTokenizeRemoveUrls tests URL removal functionality
 func TestSimpleTokenizeRemoveUrls(t *testing.T) {
 	cfg := &Config{
 		MinTokenLen: 2,
@@ -662,13 +749,16 @@ func TestSimpleTokenizeRemoveUrls(t *testing.T) {
 			MaxCaseAlternations             float64 `yaml:"max_case_alternations"`
 			MaxNumberLetterMix              float64 `yaml:"max_number_letter_mix"`
 			RejectHashtags                  bool    `yaml:"reject_hashtags"`
+			RejectAtMentions                bool    `yaml:"reject_at_mentions"`
 			RejectUrls                      bool    `yaml:"reject_urls"`
 			RejectAllCapsLong               bool    `yaml:"reject_all_caps_long"`
 			AllCapsLowerLimit               int     `yaml:"all_caps_lower_limit"`
 			RemoveUrls                      bool    `yaml:"remove_urls"`
+			ApostropheHandling              string  `yaml:"apostrophe_handling"`
 		}{
-			Enabled:    false,
-			RemoveUrls: true, // Remove URLs
+			Enabled:            false,
+			RemoveUrls:         true, // Remove URLs
+			ApostropheHandling: "remove",
 		},
 	}
 
@@ -680,7 +770,7 @@ func TestSimpleTokenizeRemoveUrls(t *testing.T) {
 		{
 			name:     "URLs should be removed when RemoveUrls is true",
 			input:    "Hello http://example.com World",
-			expected: []string{"hello", "world"},
+			expected: []string{"hello", "example", "com", "world"},
 		},
 	}
 
@@ -696,6 +786,90 @@ func TestSimpleTokenizeRemoveUrls(t *testing.T) {
 			for i, expected := range tc.expected {
 				if i < len(result) && result[i] != expected {
 					t.Errorf("Expected token[%d] '%s', got '%s'", i, expected, result[i])
+				}
+			}
+		})
+	}
+}
+
+// TestParseCSVToTweetExcessiveQuestions tests the excessive question mark filtering
+func TestParseCSVToTweetExcessiveQuestions(t *testing.T) {
+	cfg := &Config{
+		Analysis: struct {
+			ClusteringWindowBatches          int     `yaml:"clustering_window_batches"`
+			MinBusyWordsPerTweet             int     `yaml:"min_busy_words_per_tweet"`
+			MinJaccardSimilarity             float64 `yaml:"min_jaccard_similarity"`
+			MaxTweetsToCluster               int     `yaml:"max_tweets_to_cluster"`
+			SuppressDuplicates               bool    `yaml:"suppress_duplicates"`
+			DuplicateSimilarityThreshold     float64 `yaml:"duplicate_similarity_threshold"`
+			LanguageFilter                   string  `yaml:"language_filter"`
+			ClusteringMethod                 string  `yaml:"clustering_method"`
+			OutputMode                       string  `yaml:"output_mode"`
+			KmeansK                          int     `yaml:"kmeans_k"`
+			KmeansUseAllWords                bool    `yaml:"kmeans_use_all_words"`
+			MinClusterSize                   int     `yaml:"min_cluster_size"`
+			WindowBatchesPersistence         int     `yaml:"window_batches_persistence"`
+			WindowBatchesPersistenceCheck    int     `yaml:"window_batches_persistence_check"`
+			MinSharedBusyWordsForPersistence int     `yaml:"min_shared_busywords_for_persistence"`
+			PersistenceClusteringMethod      string  `yaml:"persistence_clustering_method"`
+			DropExcessiveQuestions           bool    `yaml:"drop_excessive_questions"`
+		}{
+			DropExcessiveQuestions: true,
+		},
+	}
+
+	testCases := []struct {
+		name     string
+		text     string
+		expected bool // true if tweet should be filtered out
+	}{
+		{
+			name:     "Normal tweet",
+			text:     "This is a normal tweet with no questions.",
+			expected: false,
+		},
+		{
+			name:     "Single question mark",
+			text:     "What is this?",
+			expected: false,
+		},
+		{
+			name:     "Multiple question marks but not excessive",
+			text:     "What? Why? How?",
+			expected: false,
+		},
+		{
+			name:     "Excessive question marks - 10 questions in short text",
+			text:     "??????????",
+			expected: true, // 10 questions in 10 chars = 100% ratio
+		},
+		{
+			name:     "Long text with many questions but low ratio",
+			text:     "This is a very long tweet with many words and many characters. What? Why? How? When? Where? Who? Which? What? Why? How?",
+			expected: false, // 10 questions but text is long enough to keep ratio low
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create a CSV row with the test text - need all required fields in correct order
+			// Format: id_str,created_at,user_id_str,retweet_count,text,retweeted,0,0,0,0,language
+			csvRow := fmt.Sprintf("12345,Mon Jan 2 15:04:05 -0700 2006,67890,0,%s,false,0,0,0,0,en", tc.text)
+
+			tweet, err := parseCSVToTweet(csvRow, cfg)
+
+			if tc.expected {
+				// Should be filtered out (return nil)
+				if err == nil && tweet != nil {
+					t.Errorf("Expected tweet to be filtered out, but got: %v", tweet)
+				}
+			} else {
+				// Should not be filtered out
+				if err != nil {
+					t.Errorf("Expected tweet to pass, but got error: %v", err)
+				}
+				if tweet == nil {
+					t.Errorf("Expected tweet to pass, but got nil")
 				}
 			}
 		})

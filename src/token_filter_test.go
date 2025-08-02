@@ -17,10 +17,12 @@ func testTokenFilterConfig() *Config {
 			MaxCaseAlternations             float64 `yaml:"max_case_alternations"`
 			MaxNumberLetterMix              float64 `yaml:"max_number_letter_mix"`
 			RejectHashtags                  bool    `yaml:"reject_hashtags"`
+			RejectAtMentions                bool    `yaml:"reject_at_mentions"`
 			RejectUrls                      bool    `yaml:"reject_urls"`
 			RejectAllCapsLong               bool    `yaml:"reject_all_caps_long"`
 			AllCapsLowerLimit               int     `yaml:"all_caps_lower_limit"`
 			RemoveUrls                      bool    `yaml:"remove_urls"`
+			ApostropheHandling              string  `yaml:"apostrophe_handling"`
 		}{
 			Enabled:                         true,
 			MaxLength:                       20,
@@ -30,10 +32,12 @@ func testTokenFilterConfig() *Config {
 			MaxCaseAlternations:             0.5,
 			MaxNumberLetterMix:              0.3,
 			RejectHashtags:                  true,
+			RejectAtMentions:                true,
 			RejectUrls:                      true,
 			RejectAllCapsLong:               true,
 			AllCapsLowerLimit:               10,
 			RemoveUrls:                      false,
+			ApostropheHandling:              "remove",
 		},
 	}
 }
@@ -194,6 +198,32 @@ func TestShouldFilterTokenHashtags(t *testing.T) {
 		result := shouldFilterToken(tc.token, cfg)
 		if result != tc.shouldFilter {
 			t.Errorf("Hashtag filter: token '%s', expected filter=%t, got %t",
+				tc.token, tc.shouldFilter, result)
+		}
+	}
+}
+
+// TestShouldFilterTokenAtMentions tests the at-mention rejection filter
+func TestShouldFilterTokenAtMentions(t *testing.T) {
+	cfg := testTokenFilterConfig()
+	cfg.TokenFilters.RejectAtMentions = true
+
+	testCases := []struct {
+		token        string
+		shouldFilter bool
+	}{
+		{"normal", false},
+		{"@user", true},
+		{"@test", true},
+		{"word@suffix", false}, // at-mention not at start
+		{"@", true},
+		{"@123", true},
+	}
+
+	for _, tc := range testCases {
+		result := shouldFilterToken(tc.token, cfg)
+		if result != tc.shouldFilter {
+			t.Errorf("AtMention filter: token '%s', expected filter=%t, got %t",
 				tc.token, tc.shouldFilter, result)
 		}
 	}

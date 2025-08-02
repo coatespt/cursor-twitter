@@ -171,9 +171,6 @@ analysis:
   language_filter: "en"
   # K-Means is probably not going to be used anymore.
   kmeans_use_all_words: false  # If true, k-means uses all words in tweets; if false, only busy words
-  # TODO: This was for display only to reduce visual clutter, but I don't think 
-  #    it's even used now. Investigate.
-  min_cluster_size: 5
   # Persistence window configuration for tracking clusters across multiple batches
   # Number of batches to keep in the persistence window (M)
   # TODO: cluster persistence is CPU heavy. 
@@ -193,6 +190,19 @@ analysis:
   # "full_text" is much more restrictive and precise for detecting true continuations
   #persistence_clustering_method: full_text
   persistence_clustering_method: busy_words
+  # Maximum number of tweet texts to display in human-readable output per cluster
+  max_human_tweets_displayed: 10
+  # TODO: This was for display only to reduce visual clutter, but I don't think 
+  #    it's even used now. Investigate.
+  min_cluster_size: 6
+  # Filter out clusters with repetitive meme-like patterns
+  filter_repetitive_patterns: true
+  # Path to file containing banned phrases (one per line, can be regex)
+  banned_phrases_file: "/Users/petercoates/python-work/cursor-twitter/config/banned_phrases.txt"
+  # Threshold for filtering: if this percentage of tweets in a cluster match banned patterns, filter out the cluster
+  repetitive_pattern_threshold: 0.6
+  # Deduplicate tweets by user within each cluster (filters out spam from same user)
+  deduplicate_by_user: true
 
 # Set to true to enable language detection in the Python parser 
 # WARNING: slows parsing to a crawl!!! like 275/second.  We now use a Golang

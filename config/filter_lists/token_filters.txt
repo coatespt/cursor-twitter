@@ -15,6 +15,7 @@ btw
 imo
 idk
 
+
 # Social media noise
 retweet
 rt
@@ -28,6 +29,13 @@ shit
 damn 
 
 # General meaningless nonsense 
+it's
+hadn't 
+wouldn't 
+don't 
+i'll
+wasn't
+take 
 about
 absolutely
 act

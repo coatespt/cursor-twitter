@@ -1,0 +1,42 @@
+# Banned phrases for filtering repetitive meme clusters
+# One pattern per line - can be simple substring or regex
+# Lines starting with # are comments
+ 
+ 
+
+# Engagement bait
+please retweet
+retweet if you
+like if you
+follow me
+rt if you
+favorite if you
+share if you
+tag someone who
+comment if you
+dm me
+
+# Common meme patterns
+# that moment when
+# the moment when
+# when .* happens
+# when .* occurs
+# when .* appears
+# when .* shows up
+# when .* arrives
+# when .* comes
+# when .* gets
+# when .* becomes 
+
+
+The awkward moment
+That awkward moment
+Do you want more Followers
+lose .* weight"
+Please retweet this 
+Xstrology
+starting your own biz
+That horrible moment when
+to earn more money 
+thecashjournal
+OPEN a business of your own
