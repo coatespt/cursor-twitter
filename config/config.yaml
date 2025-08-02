@@ -45,7 +45,8 @@ rebuild_every_files: 10
 # This number affects the sensitivity to usage anomalies. Too big, and they get harder
 #   to see, too small and you see things that aren't there.
 #
-batch: 13000
+#batch: 13000
+batch: 25000     
 
 # Number of batches to keep in the sliding tweet window. This window is used for
 #    clustering recent tweets by buys word, and finding the persistence of clusters.
@@ -194,7 +195,7 @@ analysis:
   max_human_tweets_displayed: 10
   # Minimum number of unique tweets required after deduplication
   # Lowered from 6 to 3 since we now deduplicate by user, so this counts real unique content
-  min_cluster_size: 5
+  min_cluster_size: 9
   # Filter out clusters with repetitive meme-like patterns
   filter_repetitive_patterns: true
   # Path to file containing banned phrases (one per line, can be regex)
@@ -203,6 +204,21 @@ analysis:
   repetitive_pattern_threshold: 0.6
   # Deduplicate tweets by user within each cluster (filters out spam from same user)
   deduplicate_by_user: true
+  # Use Levenshteindistance-based deduplication to detect and remove near-duplicate 
+  #   tweets within clusters
+  # This catches spam variations like "same tweet with different URL/number at end"
+  use_levenshtein_deduplication: true
+
+  # "word" LD is similar to LD, but it works at the word-level, i.e., how many words
+  #   would you have to change to make the two strings the same. 
+  # Distance method: "character" (Levenshtein) or "word" 
+  # Word distance is better for tweets with different URLs, user IDs, hashtags, etc.
+  distance_method: "word"
+  # Normalized distance threshold for near-duplicate detection (0.0-1.0)
+  # Lower values = more strict (fewer near-duplicates detected)
+  # Higher values = less strict (more near-duplicates detected)
+  # Suggested: 0.1 for character distance, 0.2-0.3 for word distance
+  near_duplicate_threshold: 0.2
 
 # Set to true to enable language detection in the Python parser 
 # WARNING: slows parsing to a crawl!!! like 275/second.  We now use a Golang

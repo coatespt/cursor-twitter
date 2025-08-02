@@ -458,9 +458,9 @@ Control-C will send a signal. If the process of writing persisted data to disk i
 
 ## The Analysis Program
 
-This is a utility to get a picture of how the universe of words grows with the number of Tweets processed. You need to point it at a large directory of CSV files.  
+This is a utility to get a picture of how the universe of words grows with the number of Tweets processed. You need to point it at a large directory of CSV files. It's relatively fast at about 70k Tweets per second.
 
-For up to a million Tweets, there are more distinct words than Tweets. At two million, there are slightly more distinct words than Tweets. By four million, the ratio is getting a little smaller. Don't really know when/if it tapers off. It seems like it would almost have to at some point but up to 11,000,000, which is a couple of weeks of the decahose, it doesn't seem to taper off that much.
+See elsewhere for results. Spoiler--new words are frequent and don't decline much in frequency over the full data set of more than two weeks.
 
 cd to cursor-twitter
 go build -o analyze_tokens analyze_tokens.go 
@@ -592,54 +592,43 @@ The program output is now all in JSON format sent to stdout. It can be configure
 
 The new policy is to put only critical messages on the screeen and to write them to stderr so we can preserver stdout for proper output.
     
-## Excessive ????????? Strings in Texts
-We have added code to drop the entire Tweet if there are long strings of question marks. This is usually an artifact of Tweets in some language we're not able to handle. Either way, it should be gone now.
-  
-# TTD and Direction
-
-## Annoying Nonsense.
+## Annoying Nonsense
 Consider a file of phrases that would get a cluster or tweet dropped.
 "The awkward moment"
 "That awkward moment"
-"Do you want more Followers"
-"lose some weight" or "lose * weight"  
-"Please retweet this"
-Names from the Zodiac
-"Xstrology"
-"starting your own biz"
+"Do you want more Followers" 
 
-Some of these constitute significan portions of the entire Tweet stream, like "The awkward moment".
+There is now such a file and it seems pretty effective. There aren't that many such phrases.
 
-The question is, dump them at the beginning or just dump them at the end. There are arguments for both.
+# TTD and Direction
+
+## Major: Skip Messaging for Historical Data
+To process historical data (as opposed to simulating real-time data as we're doing in this demo) you could replace RabbitMQ with simply reading standard in. 
+- Replace the feeder with a program that just cats the lines in the CSV to standard out
+- Replace reading Rabbit msg by msg with a routine that simply reads standard in
 
 
-##  Output Cluster/Batch Numbering
-The JSON output seems to number the batches and the clusters, but the cluster don't seem to be per-batch, they just increment forever. 
-
+## Minor: Excessive ????????? Strings in Texts
+We have added code to drop the entire Tweet if there are long strings of question marks. This is usually an artifact of Tweets in some language we're not able to handle. Either way, it should be gone now.   But it seems not to be! I see some such tweets in the output.
+  
+ 
 ## Ongoing  Items
 - Comments Key areas need to be commented to keep out don't touch, etc.
 
 - Testing has been neglected. Make tests around everything.
  
-## Major Item: Improving Busy Word Detection Quality with Computing Redundantly
+## Major: Improving Busy Word Detection Quality with Computing Redundantly
 
-This would be a significant effort.
+This would be a significant effort.  Interesting idea, but it's not 100% clear that it's worth doing. We need some investigation.
 
-Consider that dual sets of pipelines, or even three sets, each with different hash functions, could do a much more accurate job of filtering out the true busy words for a given set of parameters. This means that for a given acceptable level of collisions, one can either make the filter less discriminatory, i.e., a lower minimum Z value, or you can make the probability of an error much smaller.  
-
-If you use two sets, take only tokens that appear in both busy word pipelines.  If you use three sets, take only tokens that appear in 2/3 or 3/3.  
-
-
-Possible benefits:
-- You would ditch spurious words, resulting in more accurate output.
-- You can tolerate a lower Z score because you have a way to remove the spurious words, which should make it more sensitive.
-
-It is not clear how big an impact this would have on performance. All the BW processors are doing is counting and periodically computing Z on a thousand values. There is a tiny bit more work in the analysis to take only the words that appear in the required number of sets. 
+Consider that dual sets of pipelines, or even three sets, each with different hash functions, could do a much more accurate job of filtering out the true busy words for a given set of parameters.  
+ 
+It is not clear how big an impact this would have on performance. All the BW processors are doing is counting and periodically computing Z on a thousand values. There is a tiny bit more work in the analysis to take only the words that appear in the required number of sets. It doesn't really affect the analysis phase that follows, and it's just a little more work for the main to put the tokens on more queues than before.
 
 Risk. If multiplying the work in the busyword processors made them in aggregate slower than the combined main pipeline and the clustering, it would cause the queues to grow without bound and crash the program. You'd need to detect the problem and throttle the reads if this is a problem. Actually, this should probably be done anyway! Who knows if some combination of config parameters could cause this to happen.
  
-## 3pk Collisions
-Over two weeks of data there are about 11 million distinct tokens. (Note, this figure may be significantly higher than the effective number because we filter 2/3 or so of them out as being useless for busywords) Unfiltered would means there is about a 1/90 chance of a given token colliding with another token's 3pk. Given the birthday paradox, you're probably getting fake busy words in most cycles.
+## Major: 3pk Collisions
+Over two weeks of data there are about 11 million distinct tokens in EN Tweets. (Note, this figure may be significantly higher than the effective number because we filter 2/3 or so of them out as being useless for busywords) Unfiltered would means there is about a 1/90 chance of a given token colliding with another token's 3pk. Given the birthday paradox, you're probably getting fake busy words in most cycles.
 
 This could be greatly mitigated if we only kept 3pk's for the tokens that have non-zero counts, because most of the words will appear once and vanish without a trace. This would keep the actual number of mapped tokens way down.
 
@@ -667,15 +656,7 @@ Went over this with the profiler and chased down a lot of stuff, but it's still 
 The bottleneck seems to be on the main processing line because the FCT is not in the path of the Tweets, and the busyword and analysis portion won't block the main line processing because it is insulated behind queues.
 
 We did an extensive review of concurrency protection in the processing pipeline and found a number of issues, but I'm not sure if we ever got to every item.
-  
-## RT's \#hashtags and @this_n_that
-Many Tweets are identical except for RT's, @this_and_that, #this_and_that. What would be the effect of removing these in the either the clustering or the display?  
-
-We have config parameters to drop \#hashtags, @sign_words,
-
-One suspects that the majority of clusters would disappear or shink radically if these items were not included. Not clear what the meaning and/or desirability of this would be. They may be a legitimate contributor to identifying the emergence of a subject.
- 
-
+   
 
 ## Ongoing 
 - Comments Key areas need to be commented to keep out don't touch, etc.
@@ -684,17 +665,14 @@ One suspects that the majority of clusters would disappear or shink radically if
 
 - Make tests around everything.
 
- 
-## Things That are Stubbed or Partially Built
-
-### More fully populating the token_filters.txt file. Check the busywords in the logs and see what else jumps out.
+- More fully populating the token_filters.txt file. Check the busywords in the logs and see what else jumps out.
  
 
 ## Major: Clustering Across Batches
 
 Note, this has now been implemented but may not be adequately tuned up yet. See above relating to this under speedups. 
 
-## A Graphical Front End
+## Major: A Graphical Front End
 This is a big one!  Not sure how to go about it with Cursor. I wrote the graphics by hand in Java last time!
 
 A busy-word fade-out like the bubbles would be great.
@@ -709,83 +687,60 @@ It seems like it would be good to see these things grouped more hierarchically.
 You often see clusters that seem to be almost the same.
 If the clustering allowed clusters that are unrelated to other clusters and clusters that are composed of sub clusters, it would be great.
 
-# Consider Stripping K-Means Out Entirely
+## Consider Stripping K-Means Out Entirely
 It doesn't do any harm, but we're never going to use it and it could be confusing.
 
-# Tuning 
-The following tuning issues could use attention
-
-## Improve busy word detection
-This relates to the first item in this list, which is parallel busy word detection to eliminate spurious busy words.
-
-### Increasing the number of frequency classes. Say to 20 or 25.
-		- I upped it from 10 to 24 and it seems to be better. 
-		- More experimentation is in order
-		- More threads? More threads might allow higher minimum Z scores.
-
-### Current clustering is graph-based Louvain/modularity. 
-	- Seems to works OK
-	- Added k-means but it didn't seem to work very well.
-		- Still worth fiddling with to see if it's just a tuning problem.
-		- K-means seemed to work well enough on the Java version
-		- Disadvantage is, you need a guess for K and the number of clusters at a given moment seems to vary a lot. 
-	- Couldn't find a good k-means library that worked in Go, so Cursor wrote the routine.
-
-   
+ 
+  
 ## Understand the effect of window size and batch size better.
 Are the numbers below correct.
-
-The window is now 20m tokens, or about 2m Tweets. 
-	- That's about 66 minutes of the decahose, or about 28 minutes of actual time at the rate we consume.  
-	- 66 minutes seems like a reasonable turnover. How far out of sync with the day would you get in an hour? But it could be shorter.  Worth trying.
-
-- Batch size is now 10,000
-	- 10k Tweets is 20 seconds of decahose, just 7 or 8 seconds of actual processing time. Try a larger value.
-		- 10k Tweets is approximately 100k tokens--less than one five minute file.
-		- 100k tokens over 24 busywork processors is about 4000 tokens per processor. Over 1200 counters, that's a mean of only 3.3 per counter.
  
-### Jacquard Similarity
+ 
+## Jacquard Similarity in Clusters
 Jacquard similarity for the clustering seems to be applied to all the tokens in the Tweets. 
   - Is that true, and if so, is it correct? 
   - Maybe it should be only on the busywords. 
   - Jacquard similarity might not be important. Maybe just the raw occurrences?
- 
-## Clustering Quality
-- The clusters don't seem as good as they were with the old Java implementation. See tuning steps above. My guess is, the clusterng is probably off.  See above
- 
-## Language Imbalance in Clusters
-
-At some settings, 100% of the clusters appear to be in Spanish (or maybe some Portuguese). At other settings English Tweets show up better. 
-
-This seems to be influenced by the Z scores. (?!?)
-  - z_scores: [4.0, 5.0, 4.0, 3.5, 3.5, 3.5, 3.5, 3.5, 3.5, 3.0]  got mucho Spanish clusters.
-  - z_scores: [5.0, 5.0, 5.0, 5.0, 3.5, 3.5, 3.5, 3.0, 2.5, 2.5]  got mucho English clusters and only some Spanish and Portuguese.
- 
- 
+   
 # Miscelaneous Details
 
 ## The Big Token Window.
 
 People don't Tweet the same things at breakfast on Monday that they do at 1:00 AM on Saturday.  Also, the world turns, and while New Yorkers are getting up in the morning, people in Bejing are out for the evening.
 
-The number of Tweets necessary to get a large sliding window of the universe of words into the word counts is quite large. The machinery for keeping them in memory and aging out the old ones one at a time becomes burdensome.
+Also, surges in usage continually change the current frequencies.
+
+Because most words are extremely rare, and words beyond the rank of a few thousand it still takes quite a lot of tweets to get even a rough estimate of frequency. Consider that
+- "Dog" is about the 1000th most common word, yet only 1/10,000 of words will be dog. 
+- "Mirror" is the 3000th most common word, and only 3 words out of 100,000 will be mirror.  
+- "Edge" is the 5000th most common word, and it appears only once in 100,000 words
+
+Therefore, you need a lot of words (millions) to get even a reasonably accurate estimate of a word's background frequency. The decahose is 500 Tweets/second or about 5,000 words/second, which is about 3.3 minutes of data. So a window of five million words is about 16.6 minutes.
+
+Five million is a reasonable window size because it's easily fine enough to keep up with the time of day, and not so coarse that it takes a long time to age surges in frequency out.
+
+You have to age tokens out if you want a stable size window, and that gets to be a lot to keep in memory and a lot to do token by token. 
 
 Accordingly, the tokens underlying the token counters are written to disk in batches. After the number of token batch files reaches a defined limit, each time a new batch is written out, the oldest batch is read in (and deleted from disk). The contents of the old batch are then used to decrement the global token counts.
 
-This keeps the token counts relatively up to date with the flow of Tweets.  Note that the number of Tweets underlying a given moment's token counting is much larger than the number of Tweets underlying a busyword processing batch. Batches might be 10,000 Tweets, perhaps 100k tokens. The big token window is typically in the millions.
+This keeps the token counts relatively up to date with the flow of Tweets.  
 
-Note also that frequency calculations typically happen multiple times in the span of time represented by an entire token window.  They are controlled by separate parameters.  
+Note that frequency calculations would typically happen multiple times in the span of time represented by an entire token window.  They are controlled by separate parameters. Say you have a five million word window, i.e., 16 or 17 minutes, you might recompute the frequency filters every couple or three minutes.
 
 ## The Small Window of Tweets
 
-The big token window is only of concern to the off-line frequency calculating thread.  The main thread keeps short window of Tweets in memory for use in the clustering algorithm.
+The big token window is only of concern only to the off-line frequency calculating thread.  The main thread keeps short window of Tweets in memory for use in the clustering algorithm, which is in the main processing line.
 
 This is a conventional queue that keeps a configured number of Tweets, ageing out the old ones as new ones are added.  This would be configured to hold a few processing batches of Tweets. As a batch is typically in the range of one thousand to a few thousands, it would be a small multiple of that size.  
+
+Clustering happens with respect to the latest batch.  However, the persistence of clusters is tracked across previous batches. You can see in this way whether a subject just popped up, or has it been around a while.
 
 The size of a batch, the number of batches kept in memory, and the number of batches used to compute a clustering are all configurable.
  
 
 # Running the Profiler
+
+The profiler is very useful for finding where the CPU goes and whether you are suffering from contention due to concurrency. You can run the program for a while with the following command line to get profile data.  Run it for a good while so that the output is not dominated by startup processing, which is more or less irrelevant to steady state performance.
  
  ./main -config ./config/config.yaml -print-tweets=false -profile
 
@@ -800,33 +755,6 @@ The size of a batch, the number of batches kept in memory, and the number of bat
 
   You can get a quick summary with
   go tool pprof -top cpu.prof
-
- 
-# How to Create Short Lived Git Branches so Cursor Doesn't Trash Yo Shit
-
-## Start From Main branch
-git checkout main
-git pull origin main
-
-
-## Create and Switch to New Branch
-git checkout -b my-feature
-
-
-## Make Your Changes and Commit Them
-git add .
-git commit -m "Test change"
-
-## Switch Back to Main and Merge the Feature Branch
-git checkout main
-git merge my-feature
-
-This will fast-forward merge if no other changes have been made to main.
-
-## Remove an Unneeded Feature Branch 
-This is if it only exists locally.
-
- git branch -d branch-name
  
 
    
@@ -870,36 +798,39 @@ Y: 27021 to 44298119
 ## Test Data Set
 - The big Tweet set is in ../twits/msg_output_3
 
-- It is 139,610,0077, i.e. 139 million Tweets.  This is about a quarter of the entire data set available.
+- The same data set post-processed for language identification is in ../twits/test_language_detect_out
 
-- The analysis program reports that there are 44,298,119 distinct tokens.
+- The full dataset of 5399 files has 598,725,870 Tweets and is about 105 Gigabytes in uncompressed CSV format (Which is significantly smaller than the compressed JSON.)
 
-- 139 million Tweets equals approximately 1.39 billion tokens. So, about one token in 32 is novel over a vast number of Tweets.
+- The analysis program reports that there are 
+  - 44,298,119 distinct tokens in 137 million tweets, 
+  - x distinct tokens in 599 million tweets
 
-- Note that we don't ever have 44 million tokens in the current set, as they are aged out after being in the current count for long enough to process about 2 million tokens, or 220,000 tweets, or with the decahose, about seven minutes of processing.
-
-
-## Twitter Stats
+- 599 million Tweets equals approximately six billion tokens.  
+ 
 - Volume of decahose = 500/sec
 
 - Volume of firehose = 5000/sec
 
-- 500/sec = 30k Tweets/min = 450,000 Tweets/15min  = 1.8m Tweets/hour
+- 500/sec = 30k Tweets/min = 450,000 Tweets/15min  = 1.8m Tweets/hour in nominal Tweet time
 
 - There are an average of 10 words/Tweet = 4,400,000 words/15 min or 18m words/hour
 
-## Our Processing
-- The sender can send about 3000/second
+## Our Processing Speed
+- The sender can send about 3000/second with ACKs. Which you need, or it will simply drop msgs.
 
-- We only receive about 1200/second, or 2.4 Decahoses.
+- We process about 1200/second, or 2.4 Decahoses.
 
 - The Tweets get ACKed, so rabbitMQ manages to never let the queue get very long--it seems to never get up to 50.
   
-- Google says a modern Mac could probably do about 10x as fast as this antique iMac. So, a new machine could handle multiple fire hoses.  This is important, because one of the purposes of this is to make it possible to handle historical data. If a powerful server could handle four firehoses, and you applied one to each year of Tweets, you could process the entire history of Twitter in three months.
+- Google says a modern Mac could probably do about 10x as fast as this antique iMac. If true, that's a couple of firehoses.  This is important, because one of the purposes of this is to make it possible to handle historical data. 
+  - I'm skeptical that better hardware would get a 10x bump. 
+  - The processor on this old machine is actually really fast (4 GHZ), despite being 12 years old. 
+  - Any speedups would be because of faster SSD storage, more cores, and improved instruction set. Most likely, the number of cores would be the overwhelming factor. 
+  - So a 16 core machine would probably just about do the firehose. 
+    - Possibly more if you moved the feeder to a different box.
 
-I'm skeptical. The processor on this machine is actually really fast, despite being 12 years old. The speedups would be because of SSD storage and more cores. So I'm guessing that the number of cores would be the overwhelming factor. 
+- Note that for historical data it will scale in direct proportion to the number of machines so you can do bulk processing essentially as fast as you are willing to pay for.
 
-So a 16 core machine would probably just about do the firehose. Possibly more if you moved the feeder to a different box.
-
-- We have about 350 hours of decahose. At 2.5 decahoses, we could process the entire data set on this machine in about 140 hours or a little under six days. Which seems about right--I think it took a more than two weeks to collect it.
+- We have about 350 hours of decahose. At 2.5 decahoses, we could process the entire data set on this machine in less than a week.
  

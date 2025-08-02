@@ -223,7 +223,10 @@ type Config struct {
 		BannedPhrasesFile           string           `yaml:"banned_phrases_file"`           // Path to file containing banned phrases
 		RepetitivePatternThreshold  float64          `yaml:"repetitive_pattern_threshold"`  // Threshold for filtering repetitive clusters
 		CompiledBannedPatterns      []*regexp.Regexp // Compiled regex patterns (not in yaml)
-		DeduplicateByUser           bool             `yaml:"deduplicate_by_user"` // Deduplicate tweets by user within clusters
+		DeduplicateByUser           bool             `yaml:"deduplicate_by_user"`           // Deduplicate tweets by user within clusters
+		UseLevenshteinDeduplication bool             `yaml:"use_levenshtein_deduplication"` // Use distance-based deduplication
+		DistanceMethod              string           `yaml:"distance_method"`               // "character" or "word" distance method
+		NearDuplicateThreshold      float64          `yaml:"near_duplicate_threshold"`      // Normalized distance threshold
 	} `yaml:"analysis"`
 }
 
@@ -2288,6 +2291,146 @@ func max(a, b int) int {
 	return b
 }
 
+// removeNearDuplicates removes near-duplicate tweets using configurable distance method
+// This catches spam variations like "same tweet with different URL/number at end"
+// Uses the medoid (most typical tweet) as the reference point for comparison
+// Returns the deduplicated tweets and the count of removed tweets
+func removeNearDuplicates(tweetList []*tweets.Tweet, threshold float64, distanceMethod string) ([]*tweets.Tweet, int) {
+	if len(tweetList) <= 1 {
+		return tweetList, 0
+	}
+
+	// Find the medoid (most typical tweet) as the reference point
+	_, medoidIdx, _, _ := findMostTypicalTweets(tweetList, 0.4)
+	medoidTweet := tweetList[medoidIdx]
+
+	var deduplicatedTweets []*tweets.Tweet
+	removedCount := 0
+
+	// Keep the medoid tweet
+	deduplicatedTweets = append(deduplicatedTweets, medoidTweet)
+
+	// Check each other tweet against the medoid
+	for i, tweet := range tweetList {
+		if i == medoidIdx {
+			continue // Skip the medoid itself
+		}
+
+		// Calculate normalized distance based on method
+		var normalizedDistance float64
+		if distanceMethod == "word" {
+			normalizedDistance = normalizedWordDistance(medoidTweet.Text, tweet.Text)
+		} else {
+			// Default to character-based Levenshtein distance
+			distance := levenshteinDistance(medoidTweet.Text, tweet.Text)
+			normalizedDistance = float64(distance) / float64(max(len(medoidTweet.Text), len(tweet.Text)))
+		}
+
+		// Keep tweet if it's different enough
+		if normalizedDistance > threshold {
+			deduplicatedTweets = append(deduplicatedTweets, tweet)
+		} else {
+			removedCount++
+		}
+	}
+
+	return deduplicatedTweets, removedCount
+}
+
+// levenshteinDistance computes the Levenshtein distance between two strings
+func levenshteinDistance(s1, s2 string) int {
+	len1, len2 := len(s1), len(s2)
+
+	// Create a 2D slice for the dynamic programming table
+	dp := make([][]int, len1+1)
+	for i := range dp {
+		dp[i] = make([]int, len2+1)
+	}
+
+	// Initialize the first row and column
+	for i := 0; i <= len1; i++ {
+		dp[i][0] = i
+	}
+	for j := 0; j <= len2; j++ {
+		dp[0][j] = j
+	}
+
+	// Fill the DP table
+	for i := 1; i <= len1; i++ {
+		for j := 1; j <= len2; j++ {
+			if s1[i-1] == s2[j-1] {
+				dp[i][j] = dp[i-1][j-1]
+			} else {
+				dp[i][j] = 1 + min(dp[i-1][j], min(dp[i][j-1], dp[i-1][j-1]))
+			}
+		}
+	}
+
+	return dp[len1][len2]
+}
+
+// wordDistance computes the minimum number of word edits to transform one tweet into another
+// Uses the same dynamic programming approach as Levenshtein but operates on words instead of characters
+func wordDistance(tweet1, tweet2 string) int {
+	// Split tweets into words
+	words1 := strings.Fields(strings.ToLower(tweet1))
+	words2 := strings.Fields(strings.ToLower(tweet2))
+
+	len1, len2 := len(words1), len(words2)
+
+	// Create a 2D slice for the dynamic programming table
+	dp := make([][]int, len1+1)
+	for i := range dp {
+		dp[i] = make([]int, len2+1)
+	}
+
+	// Initialize the first row and column
+	for i := 0; i <= len1; i++ {
+		dp[i][0] = i // Delete i words
+	}
+	for j := 0; j <= len2; j++ {
+		dp[0][j] = j // Insert j words
+	}
+
+	// Fill the DP table
+	for i := 1; i <= len1; i++ {
+		for j := 1; j <= len2; j++ {
+			if words1[i-1] == words2[j-1] {
+				// Words match, no edit needed
+				dp[i][j] = dp[i-1][j-1]
+			} else {
+				// Take minimum of: delete, insert, or substitute
+				dp[i][j] = 1 + min(dp[i-1][j], min(dp[i][j-1], dp[i-1][j-1]))
+			}
+		}
+	}
+
+	return dp[len1][len2]
+}
+
+// normalizedWordDistance returns the word distance normalized by the maximum number of words
+func normalizedWordDistance(tweet1, tweet2 string) float64 {
+	words1 := strings.Fields(strings.ToLower(tweet1))
+	words2 := strings.Fields(strings.ToLower(tweet2))
+
+	if len(words1) == 0 && len(words2) == 0 {
+		return 0.0
+	}
+
+	distance := wordDistance(tweet1, tweet2)
+	maxWords := max(len(words1), len(words2))
+
+	return float64(distance) / float64(maxWords)
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // Batch represents a collection of tweets processed together
 type Batch struct {
 	BatchID  int
@@ -2458,6 +2601,7 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 	// Track the total number of unique tweets after deduplication
 	var uniqueTweetCount int
 	var originalTweetCount int
+	var nearDuplicateRemovedCount int
 
 	// Check if tweet_texts is already stored in the cluster (after deduplication)
 	if storedTexts, ok := clusterMap["tweet_texts"].([]string); ok {
@@ -2534,6 +2678,24 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 			deduplicatedTweets = tweetsStruct
 		}
 
+		// Apply distance-based deduplication if enabled
+		if cfg.Analysis.UseLevenshteinDeduplication && len(deduplicatedTweets) > 1 {
+			distanceMethod := cfg.Analysis.DistanceMethod
+			if distanceMethod == "" {
+				distanceMethod = "word" // Default to word distance
+			}
+
+			LogInfo(func() string {
+				return fmt.Sprintf("Applying %s distance deduplication to %d tweets with threshold %.2f", distanceMethod, len(deduplicatedTweets), cfg.Analysis.NearDuplicateThreshold)
+			})
+			deduplicatedTweets, nearDuplicateRemovedCount = removeNearDuplicates(deduplicatedTweets, cfg.Analysis.NearDuplicateThreshold, distanceMethod)
+			if nearDuplicateRemovedCount > 0 {
+				LogInfo(func() string {
+					return fmt.Sprintf("Removed %d near-duplicate tweets using %s distance", nearDuplicateRemovedCount, distanceMethod)
+				})
+			}
+		}
+
 		// Count unique tweets after deduplication
 		uniqueTweetCount = len(deduplicatedTweets)
 
@@ -2544,6 +2706,7 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 			}
 			tweetTexts = append(tweetTexts, tweet.Text)
 		}
+
 	}
 
 	// Check if we have enough unique tweets after deduplication
@@ -2554,6 +2717,7 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 	// Add size information to show both original and deduplicated counts
 	humanReadable["size"] = uniqueTweetCount
 	humanReadable["original_size"] = originalTweetCount
+	humanReadable["size_info"] = fmt.Sprintf("%d/%d", uniqueTweetCount, originalTweetCount)
 
 	if len(tweetTexts) > 0 {
 		humanReadable["tweet_texts"] = tweetTexts
@@ -2567,6 +2731,11 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 	// Add persistence information if available
 	if persistenceInfo, ok := clusterMap["persistence_info"].(string); ok {
 		humanReadable["persistence_info"] = persistenceInfo
+	}
+
+	// Add metadata about near-duplicate removal if any were removed
+	if nearDuplicateRemovedCount > 0 {
+		humanReadable["near_duplicates_removed"] = nearDuplicateRemovedCount
 	}
 
 	return humanReadable
