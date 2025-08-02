@@ -39,14 +39,22 @@ func (tc *TokenCounter) IncrementTokens(tokens []string) {
 func (tc *TokenCounter) DecrementTokens(tokens []string) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
+
+	zeroCountTokens := 0
 	for _, token := range tokens {
 		tc.counts[token]--
 		if tc.counts[token] <= 0 {
 			delete(tc.counts, token) // Clean up to save memory
+			// Add to cleanup queue for 3PK collision mitigation
+			AddToCleanupQueue(token)
+			zeroCountTokens++
 		}
 		// Update running total (decrement by 1)
 		atomic.AddInt64(&tc.totalCount, -1)
 	}
+
+	// Note: Removed logging of tokens added to cleanup queue to reduce log noise
+	// The cleanup system is working well and processing thousands of tokens per file
 }
 
 // GetCount returns the count for a specific token.

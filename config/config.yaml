@@ -219,6 +219,11 @@ analysis:
   # Higher values = less strict (more near-duplicates detected)
   # Suggested: 0.1 for character distance, 0.2-0.3 for word distance
   near_duplicate_threshold: 0.2
+  # 3PK collision mitigation: cleanup zero-count tokens
+  # Trigger cleanup every N tweets to remove tokens with zero counts
+  # This helps prevent 3PK collisions by cleaning up inactive tokens
+  cleanup_trigger_batch_size: 500    # Trigger cleanup every N tweets
+  cleanup_max_items: 2000            # Process up to M items per cleanup cycle
 
 # Set to true to enable language detection in the Python parser 
 # WARNING: slows parsing to a crawl!!! like 275/second.  We now use a Golang

@@ -1,58 +1,87 @@
 package pipeline
 
 import (
-	"cursor-twitter/src/tweets"
 	"testing"
 )
 
-// mockThreePartKey returns a fixed ThreePartKey for collision simulation
-// Rationale: We want to simulate a hash collision between two different tokens.
-func mockThreePartKey() tweets.ThreePartKey {
-	return tweets.ThreePartKey{Part1: 1, Part2: 2, Part3: 3}
-}
+func TestCleanupQueue(t *testing.T) {
+	// Test basic cleanup queue functionality
+	t.Run("BasicCleanupQueue", func(t *testing.T) {
+		// First, add tokens to the 3PK mappings so they can be removed
+		GenerateThreePartKey("test1")
+		GenerateThreePartKey("test2")
+		GenerateThreePartKey("test3")
 
-// TestThreePartKeyCollisionHandling verifies that when two tokens map to the same 3PK,
-// the latest token overrides the previous one in the lookup table.
-//
-// Rationale:
-// - 3PKs are not guaranteed to be unique; collisions are possible, though rare.
-// - The system policy is that the latest token wins for a given 3PK.
-// - This test ensures the system behaves as designed and does not panic or misbehave on collision.
-// - This is acceptable for the use case, as collisions are extremely rare and not catastrophic.
-func TestThreePartKeyCollisionHandling(t *testing.T) {
-	// Clear global maps before test
-	// Rationale: Ensure a clean state for the test, avoiding interference from previous tests.
-	TokenTo3PK = make(map[string]tweets.ThreePartKey)
-	ThreePKToToken = make(map[tweets.ThreePartKey]string)
+		// Add some tokens to the cleanup queue
+		AddToCleanupQueue("test1")
+		AddToCleanupQueue("test2")
+		AddToCleanupQueue("test3")
 
-	tokenA := "tokenA"
-	tokenB := "tokenB"
-	collidingKey := mockThreePartKey()
+		// Check queue size
+		queueSize := GetCleanupQueueSize()
+		if queueSize != 3 {
+			t.Errorf("Expected queue size 3, got %d", queueSize)
+		}
 
-	// Manually insert tokenA with the colliding key
-	// Rationale: Simulate the first token being assigned a 3PK.
-	TokenTo3PK[tokenA] = collidingKey
-	ThreePKToToken[collidingKey] = tokenA
+		// Process 2 items from the queue
+		removedCount := ProcessCleanupQueue(2)
+		if removedCount != 2 {
+			t.Errorf("Expected to remove 2 items, got %d", removedCount)
+		}
 
-	// Now insert tokenB with the same key (simulate collision)
-	// Rationale: Simulate a collision where a new token gets the same 3PK as an existing one.
-	TokenTo3PK[tokenB] = collidingKey
-	ThreePKToToken[collidingKey] = tokenB
+		// Check remaining queue size
+		queueSize = GetCleanupQueueSize()
+		if queueSize != 1 {
+			t.Errorf("Expected remaining queue size 1, got %d", queueSize)
+		}
 
-	// The lookup table should now map the colliding key to tokenB (latest wins)
-	// Rationale: This is the intended system behavior for collisions.
-	if got := ThreePKToToken[collidingKey]; got != tokenB {
-		t.Errorf("Expected ThreePKToToken to map to latest token (tokenB), got %s", got)
-	}
+		// Process remaining items
+		removedCount = ProcessCleanupQueue(10) // Process more than available
+		if removedCount != 1 {
+			t.Errorf("Expected to remove 1 item, got %d", removedCount)
+		}
 
-	// Only the latest token is retrievable by the 3PK
-	// Rationale: Both tokens should still exist as keys in TokenTo3PK, but only the latest is mapped in ThreePKToToken.
-	if _, exists := TokenTo3PK[tokenA]; !exists {
-		t.Errorf("TokenTo3PK should still contain tokenA as a key")
-	}
-	if _, exists := TokenTo3PK[tokenB]; !exists {
-		t.Errorf("TokenTo3PK should contain tokenB as a key")
-	}
+		// Check queue is empty
+		queueSize = GetCleanupQueueSize()
+		if queueSize != 0 {
+			t.Errorf("Expected empty queue, got size %d", queueSize)
+		}
+	})
 
-	// Rationale: This test demonstrates that 3PK collisions result in the latest token overwriting the previous mapping in ThreePKToToken. This is by design and is acceptable due to the rarity of collisions.
+	t.Run("EmptyQueue", func(t *testing.T) {
+		// Test processing empty queue
+		removedCount := ProcessCleanupQueue(10)
+		if removedCount != 0 {
+			t.Errorf("Expected to remove 0 items from empty queue, got %d", removedCount)
+		}
+	})
+
+	t.Run("LargeQueue", func(t *testing.T) {
+		// First, add tokens to the 3PK mappings so they can be removed
+		for i := 0; i < 100; i++ {
+			GenerateThreePartKey("token" + string(rune(i)))
+		}
+
+		// Add many tokens to test batch processing
+		for i := 0; i < 100; i++ {
+			AddToCleanupQueue("token" + string(rune(i)))
+		}
+
+		// Process in batches
+		removedCount := ProcessCleanupQueue(30)
+		if removedCount != 30 {
+			t.Errorf("Expected to remove 30 items, got %d", removedCount)
+		}
+
+		queueSize := GetCleanupQueueSize()
+		if queueSize != 70 {
+			t.Errorf("Expected remaining queue size 70, got %d", queueSize)
+		}
+
+		// Process remaining
+		removedCount = ProcessCleanupQueue(100)
+		if removedCount != 70 {
+			t.Errorf("Expected to remove 70 items, got %d", removedCount)
+		}
+	})
 }

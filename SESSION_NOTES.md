@@ -381,6 +381,12 @@ Note, you can stop and restart the program and it will ignore the input for whic
 
 - ./language_detector -input ../twits/test_language_detect -output ../twits/test_language_detect_out 
 
+## Tailing the Logs
+Nothing goes to standard out except the output. See the pipeline logs for all the diagnostic and performance output.
+
+You can do it manually, but the following program run from cursor-twitter will find the latest one and run tail -f on it.
+
+tail-the-log.sh	
 
 ## Test program for parsed data
 This program reads CSV files to ensure that we can create Tweets from them. Most users will not need this.
@@ -482,6 +488,11 @@ make build-find-csv
 Run it:
 ./find_csv_file -dir /path/to/csv/files -datetime "2012-02-14 19:35:55" -n 3
 
+The following will return a filename an hour before Whitney Houston's death is reported.
+
+ ./find_csv_file -dir ../twits/test_language_detect_out/ -datetime "2012-02-12 00:00:00" -n 3
+ 
+gnip.csv_1329003852976_1329004152976.csv
 
 A handy way to check it:
 The following will print the first few lines of the file.
@@ -534,6 +545,9 @@ This is interesting because is shows how extremely Z
 
 It's mostly the relatively rare words we care about because they carry the most meaning when they surge in usage.
  
+
+
+
 ## Tests
 We have fallen behind in unit tests!  This is a little obsolete now and needs to be upgraded.
 
@@ -556,23 +570,40 @@ make test-race
 cd to cursor-twitter
 ./run_tests
 
-# Notes On Things That Have Been Checked/Explored
+# Notes On Things That Have Been Checked/Fixed/Explored
 
-## Seemingly Excessive Token Rejection
-We were getting huge percentages of rejection of tokens because of token length and/or tokens being on the ingore list. 30% and 40% respectively.
+
+## 3pk Collisions
+Most distinct tokens are, for practical purposes, unique. Permanently storing the 3pk values for super-rare tokens incurs two costs:
+- It wastes a ton of space
+  - With a token window size of three million, and fifty token files on disk, each time we age out a file of tokens, about 20k words in the counter map go to zero.
+  - The FCT thread removes these zero count tokens from the counter map.
+  - However, the main thread keeps a 3pk <-> token map that had no way to age out useless token mappings. 
+  - It adds about 100MB of memory an hour to permanently store mappings that (a) will probably never mean anything and (b) are easily recreated.  
+- The bloated 3pk<->token map increases the probability of collisions. 
+  - There are something like 135M distinct tokens in teh data set.
+  - The 3pk mapping space is only one or two billion. 
+
+We solve this bloat problem by having the FCT put tokens on a queue when their counts go to zero in the FCT's counter map. 
+
+The main thread picks them up ever few hundred Tweets and deletes the corresponding entries in the 3pk<->token mapping.  
+
+This is harmless, because if the token ever shows up again, it will automatically recreate it anyway.
+
+Interestingly, it seemed to produce a significant bump in speed. From around 1100/sec to 1300/sec.
  
-Those numbers were not supurious. I turned that functionality off and they were as expected. It means both are very effective and doing their job. You definitely want min length = 3
+## Seemingly Excessive Token Rejection
+We were getting huge percentages of rejection of tokens because of token length and/or tokens being on the ingore list. More than 30% and 40% respectively.
+ 
+Those numbers were not supurious. I turned that functionality off and the result was as expected. It means both are very effective and doing their job. You definitely want min length = 3.
 
 ## Effect if Computing Cluster Persistence
-### Checking at all
+
 I went from checking over six batches to checking over 1 batch. Not a huge effect. Maybe 100/second.
 
 ### Checking all words v checking busy words
-This aspect has NOT been reviewed
-
-
-## Running with the subject persistence turned off 
-This is a big user of CPU but turning it off did not cause a huge speed increase.
+This aspect of the problem has NOT been reviewed
+ 
 
 ## Running with config/token_filters.txt empty
 
@@ -623,31 +654,10 @@ This would be a significant effort.  Interesting idea, but it's not 100% clear t
 
 Consider that dual sets of pipelines, or even three sets, each with different hash functions, could do a much more accurate job of filtering out the true busy words for a given set of parameters.  
  
-It is not clear how big an impact this would have on performance. All the BW processors are doing is counting and periodically computing Z on a thousand values. There is a tiny bit more work in the analysis to take only the words that appear in the required number of sets. It doesn't really affect the analysis phase that follows, and it's just a little more work for the main to put the tokens on more queues than before.
+It is not clear how big an impact this would have on performance. All the BW processors are doing is counting and periodically computing Z on a thousand values in each of the three counter arrays. There is a tiny bit more work in the analysis to take only the words that appear in the required number of sets. It doesn't really affect the analysis phase that follows, and it's just a little more work for the main to put the tokens on more queues than before.
 
 Risk. If multiplying the work in the busyword processors made them in aggregate slower than the combined main pipeline and the clustering, it would cause the queues to grow without bound and crash the program. You'd need to detect the problem and throttle the reads if this is a problem. Actually, this should probably be done anyway! Who knows if some combination of config parameters could cause this to happen.
  
-## Major: 3pk Collisions
-Over two weeks of data there are about 11 million distinct tokens in EN Tweets. (Note, this figure may be significantly higher than the effective number because we filter 2/3 or so of them out as being useless for busywords) Unfiltered would means there is about a 1/90 chance of a given token colliding with another token's 3pk. Given the birthday paradox, you're probably getting fake busy words in most cycles.
-
-This could be greatly mitigated if we only kept 3pk's for the tokens that have non-zero counts, because most of the words will appear once and vanish without a trace. This would keep the actual number of mapped tokens way down.
-
-This could be done in a thread-safe efficient way if:
-- The FCT put any token the count of which hits zero on a queue that is read by the main thread. 
-  - Minor point: The FCT would have to remove the entry from the counts, not just set the count to zero!
-
-  - The main checks this queue whenever it is convenient. E.g. every thousand or ten thousand Tweets.
-
-- This means that the probablilty of a given token colliding would be more like one divided by the cardinality of the global counter map, which is typically in the 100's of thousands, i.e. about 1% of the universe of words.
-
-- This does not seem like a hugely expensive item. 
-  - You'd pay a little bit for the extra insertions and deletions from the map. - The map is read asynchronously by the busyword processors so thread safety is an issue, and thefore contention for the resource. But a few thousand deletions from a map is not a huge item.
- 
-
-Note, it would be unusual, but in theory the busyword processors could require a token for a 3pk that has been deleted since the cycle started. This has to be guarded against.
-
-Be careful about threading issues.
-
 ## Performance
 We started to get a significant slow-down at some point. It's about 1100/second now, and it used to be in the mid-2000's. This could be consequence of some real piece of functionality, or it could be something stupid. 
 
@@ -803,8 +813,11 @@ Y: 27021 to 44298119
 - The full dataset of 5399 files has 598,725,870 Tweets and is about 105 Gigabytes in uncompressed CSV format (Which is significantly smaller than the compressed JSON.)
 
 - The analysis program reports that there are 
-  - 44,298,119 distinct tokens in 137 million tweets, 
-  - x distinct tokens in 599 million tweets
+  - 44,298,119 distinct tokens in 137 million Tweets, 
+  - 135,315,247 distinct tokens in 584,230,000 Tweets
+
+The analyis program is pretty fast, at 52,683 Tweets/sec    
+
 
 - 599 million Tweets equals approximately six billion tokens.  
  
@@ -821,7 +834,7 @@ Y: 27021 to 44298119
 
 - We process about 1200/second, or 2.4 Decahoses.
 
-- The Tweets get ACKed, so rabbitMQ manages to never let the queue get very long--it seems to never get up to 50.
+- The Tweets get ACKed, so RabbitMQ manages to never let the queue get very long--it seems to never get up to 50.
   
 - Google says a modern Mac could probably do about 10x as fast as this antique iMac. If true, that's a couple of firehoses.  This is important, because one of the purposes of this is to make it possible to handle historical data. 
   - I'm skeptical that better hardware would get a 10x bump. 

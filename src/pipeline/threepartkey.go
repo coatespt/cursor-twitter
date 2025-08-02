@@ -11,6 +11,9 @@ var TokenTo3PK = make(map[string]tweets.ThreePartKey)
 var ThreePKToToken = make(map[tweets.ThreePartKey]string)
 var Token3PKMutex sync.RWMutex
 
+// Cleanup queue for zero-count tokens
+var cleanupQueue = NewCleanupQueue()
+
 // Global array length for 3PK generation (set from main.go)
 var GlobalArrayLen int = 1000 // Default, will be set from config
 
@@ -56,4 +59,40 @@ func AddWordTo3PKMapping(word string, threePK tweets.ThreePartKey) {
 	defer Token3PKMutex.Unlock()
 	ThreePKToToken[threePK] = word
 	TokenTo3PK[word] = threePK
+}
+
+// AddToCleanupQueue adds a token to the cleanup queue for later removal
+// This is called by the FCT when a token count reaches zero
+func AddToCleanupQueue(token string) {
+	cleanupQueue.Enqueue(token)
+}
+
+// ProcessCleanupQueue processes up to maxItems tokens from the cleanup queue
+// This is called by the main thread periodically
+func ProcessCleanupQueue(maxItems int) int {
+	// Get items to process from queue
+	itemsToRemove := cleanupQueue.DequeueBatch(maxItems)
+	if len(itemsToRemove) == 0 {
+		return 0
+	}
+
+	// Process the items (remove from 3PK mappings)
+	Token3PKMutex.Lock()
+	defer Token3PKMutex.Unlock()
+
+	removedCount := 0
+	for _, token := range itemsToRemove {
+		if threePK, exists := TokenTo3PK[token]; exists {
+			delete(TokenTo3PK, token)
+			delete(ThreePKToToken, threePK)
+			removedCount++
+		}
+	}
+
+	return removedCount
+}
+
+// GetCleanupQueueSize returns the current size of the cleanup queue
+func GetCleanupQueueSize() int {
+	return cleanupQueue.Size()
 }

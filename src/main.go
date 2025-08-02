@@ -227,6 +227,8 @@ type Config struct {
 		UseLevenshteinDeduplication bool             `yaml:"use_levenshtein_deduplication"` // Use distance-based deduplication
 		DistanceMethod              string           `yaml:"distance_method"`               // "character" or "word" distance method
 		NearDuplicateThreshold      float64          `yaml:"near_duplicate_threshold"`      // Normalized distance threshold
+		CleanupTriggerBatchSize     int              `yaml:"cleanup_trigger_batch_size"`    // Trigger cleanup every N tweets
+		CleanupMaxItems             int              `yaml:"cleanup_max_items"`             // Process up to M items per cleanup cycle
 	} `yaml:"analysis"`
 }
 
@@ -1204,6 +1206,32 @@ func main() {
 						"batch_size", cfg.BatchSize)
 				}
 			}
+		}
+
+		// Process cleanup queue every N tweets to remove zero-count tokens
+		// This mitigates 3pk collisions by cleaning up tokens that are no longer active
+		if cfg.Analysis.CleanupTriggerBatchSize > 0 && TotalTweetsRead%cfg.Analysis.CleanupTriggerBatchSize == 0 && TotalTweetsRead > 0 {
+			cleanupMaxItems := cfg.Analysis.CleanupMaxItems
+			if cleanupMaxItems <= 0 {
+				cleanupMaxItems = 2000 // Default if not configured
+			}
+
+			// Get queue size before processing
+			queueSizeBefore := pipeline.GetCleanupQueueSize()
+
+			removedCount := pipeline.ProcessCleanupQueue(cleanupMaxItems)
+
+			// Get queue size after processing
+			queueSizeAfter := pipeline.GetCleanupQueueSize()
+
+			// Log cleanup performance (always log, not just in verbose mode)
+			slog.Info("3PK cleanup performance",
+				"tweet_count", TotalTweetsRead,
+				"queue_size_before", queueSizeBefore,
+				"queue_size_after", queueSizeAfter,
+				"items_processed", removedCount,
+				"max_items_per_cycle", cleanupMaxItems,
+				"cleanup_trigger_batch_size", cfg.Analysis.CleanupTriggerBatchSize)
 		}
 
 		// Acknowledge successful message processing
