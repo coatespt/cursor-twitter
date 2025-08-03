@@ -48,6 +48,38 @@ type Logger struct {
 // Global logger instance
 var globalLogger *Logger
 
+// ========================================================================
+// CRITICAL CONCURRENCY PROTECTION - DO NOT MODIFY WITHOUT EXPLICIT APPROVAL
+// ========================================================================
+// The concurrency protection in this codebase has been carefully tuned and
+// tested. Adding unnecessary mutexes, channels, or other synchronization
+// primitives can cause:
+// 1. Deadlocks
+// 2. Performance degradation
+// 3. Race conditions
+// 4. Complex debugging issues
+//
+// COMMON ANTI-PATTERNS TO AVOID:
+// 1. Wrapping thread-safe data structures in mutexes (e.g., sync.Map with mutex)
+// 2. Using mutexes where atomic operations would suffice (e.g., counters, flags)
+// 3. Adding mutexes to already thread-safe channels
+// 4. Double-wrapping with multiple layers of synchronization
+// 5. Adding mutexes to individual fields instead of protecting the whole struct
+// 6. Using RWMutex when a regular Mutex would work
+//
+// IMPORTANT RULES:
+// 1. DO NOT add mutexes without explicit approval
+// 2. DO NOT add channels without explicit approval
+// 3. DO NOT add wait groups without explicit approval
+// 4. DO NOT modify existing synchronization without explicit approval
+// 5. The current design uses minimal, targeted synchronization
+// 6. If you think you need more concurrency protection, ASK FIRST
+// 7. Consider atomic operations before reaching for mutexes
+// 8. Use the most specific synchronization primitive for the job
+//
+// This has been broken multiple times by adding unnecessary synchronization.
+// ========================================================================
+
 // Global batch window for persistence tracking
 var (
 	batchWindow      []*Batch
@@ -100,6 +132,22 @@ func Log(level LogLevel, messageFn func() string) {
 	}
 
 	fmt.Fprintf(globalLogger.stderr, "%s\n", messageFn())
+}
+
+// parseLogLevel converts a string log level to LogLevel enum
+func parseLogLevel(levelStr string) LogLevel {
+	switch strings.ToUpper(levelStr) {
+	case "DEBUG":
+		return DEBUG
+	case "INFO":
+		return INFO
+	case "WARN":
+		return WARN
+	case "ERROR":
+		return ERROR
+	default:
+		return INFO // Default to INFO if invalid
+	}
 }
 
 // Convenience functions for different log levels
@@ -157,6 +205,7 @@ type Config struct {
 
 	Verbose              bool      `yaml:"verbose"`
 	LogDir               string    `yaml:"log_dir"`
+	LogLevel             string    `yaml:"log_level"` // DEBUG, INFO, WARN, ERROR
 	FreqClasses          int       `yaml:"freq_classes"`
 	BWArrayLen           int       `yaml:"bw_array_len"`
 	ZScores              []float64 `yaml:"z_scores"`
@@ -342,6 +391,23 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 	go func() {
 		resultCount := 0
 
+		// ========================================================================
+		// CRITICAL STATE LOADING LOGIC - DO NOT MODIFY WITHOUT EXPLICIT APPROVAL
+		// ========================================================================
+		// This section handles state loading and consistency checking for the FCT.
+		// The main thread NEVER knows about this - it just continues reading tweets.
+		// 
+		// IMPORTANT DESIGN PRINCIPLES:
+		// 1. Main thread never waits for filters
+		// 2. Main thread never coordinates with FCT
+		// 3. Main thread never knows about state files
+		// 4. FCT handles all state loading independently
+		// 5. If state loading fails, fall back to building from scratch
+		//
+		// This logic has been broken multiple times by adding coordination between
+		// main thread and FCT. DO NOT add waiting, timeouts, or coordination here.
+		// ========================================================================
+		
 		// Handle loaded state if provided
 		if loadedState != nil {
 			LogInfo(func() string {
@@ -352,32 +418,72 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 				return fmt.Sprintf("Informing FCT to load state with %d total tokens...", totalTokens)
 			})
 
-			// Tell FCT to load its own state
-			fct.LoadState(loadedState)
+			// Check for state consistency - verify that we have the expected number of token files
+			expectedTokenFiles := cfg.TokenPersistFiles
+			if expectedTokenFiles > 0 {
+				// Count how many token files actually exist in the state directory
+				tokenFilePattern := filepath.Join(cfg.Persistence.StateDir, "token_*.json")
+				tokenFiles, err := filepath.Glob(tokenFilePattern)
+				if err == nil {
+					actualTokenFiles := len(tokenFiles)
+					if actualTokenFiles != expectedTokenFiles {
+						fmt.Fprintf(os.Stderr, "⚠️  WARNING: State inconsistency detected - expected %d token files, found %d\n", expectedTokenFiles, actualTokenFiles)
+						fmt.Fprintf(os.Stderr, "   Falling back to building filters from scratch...\n")
+						LogInfo(func() string { return "State inconsistency detected - falling back to building from scratch" })
+						loadedState = nil // Treat as if no state was loaded
+					} else {
+						LogInfo(func() string { return fmt.Sprintf("State consistency verified - %d token files found", actualTokenFiles) })
+					}
+				}
+			}
 
-			// Rebuild frequency class filters from the loaded token counts
-			LogInfo(func() string { return "Rebuilding frequency class filters from loaded token counts..." })
-			rebuildStartTime := time.Now()
-			var result pipeline.FreqClassResult
-			if cfg.MinCountThreshold > 0 {
-				result = pipeline.BuildFrequencyClassHashSetsAdaptive(loadedState, cfg.FreqClasses, cfg.MinCountThreshold)
-			} else {
-				result = pipeline.BuildFrequencyClassHashSets(loadedState, cfg.FreqClasses, nil, nil)
+						// Only proceed with state loading if state is consistent
+			if loadedState != nil {
+				// Make a copy of the state map to avoid concurrent modification issues
+				stateCopy := make(map[string]int, len(loadedState))
+				for k, v := range loadedState {
+					stateCopy[k] = v
+				}
+
+				// Tell FCT to load its own state (using the copy)
+				fct.LoadState(stateCopy)
+
+				// Rebuild frequency class filters from the loaded token counts (using the original)
+				LogInfo(func() string { return "Rebuilding frequency class filters from loaded token counts..." })
+				rebuildStartTime := time.Now()
+				
+				// Add panic recovery for corrupted state data
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							fmt.Fprintf(os.Stderr, "⚠️  ERROR: Failed to rebuild frequency class filters from loaded state: %v\n", r)
+							fmt.Fprintf(os.Stderr, "   The state files appear to be corrupted. Falling back to building from scratch.\n")
+							// Don't set any filters - let the FCT build them from scratch
+							LogInfo(func() string { return "State corruption detected - FCT will build filters from scratch" })
+						}
+					}()
+					
+					var result pipeline.FreqClassResult
+					if cfg.MinCountThreshold > 0 {
+						result = pipeline.BuildFrequencyClassHashSetsAdaptive(loadedState, cfg.FreqClasses, cfg.MinCountThreshold)
+					} else {
+						result = pipeline.BuildFrequencyClassHashSets(loadedState, cfg.FreqClasses, nil, nil)
+					}
+					pipeline.SetGlobalFilters(result.Filters)
+					rebuildDuration := time.Since(rebuildStartTime)
+					LogInfo(func() string {
+						return fmt.Sprintf("Frequency class filters rebuilt: %d classes in %v", len(result.Filters), rebuildDuration)
+					})
+				}()
 			}
-			pipeline.SetGlobalFilters(result.Filters)
-			rebuildDuration := time.Since(rebuildStartTime)
-			LogInfo(func() string {
-				return fmt.Sprintf("Frequency class filters rebuilt: %d classes in %v", len(result.Filters), rebuildDuration)
-			})
 		} else {
-			// If no state loaded, we need to wait for the FCT to build initial filters
-			// This is a temporary solution - ideally we'd have a proper synchronization mechanism
-			LogInfo(func() string { return "No state loaded - waiting for FCT to build initial filters..." })
-			for !pipeline.HasGlobalFilters() {
-				time.Sleep(100 * time.Millisecond)
-			}
-			LogInfo(func() string { return "Initial filters are now available" })
+			// If no state loaded, don't wait for filters - let FCT build them as tokens arrive
+			LogInfo(func() string { return "No state loaded - FCT will build filters as tokens arrive" })
 		}
+		
+		// ========================================================================
+		// END CRITICAL STATE LOADING LOGIC
+		// ========================================================================
 
 		// Track results by batch
 		currentBatch := make(map[int][]string) // class -> busy words
@@ -799,6 +905,29 @@ func initializeLogger(cfg *Config) (*slog.Logger, *os.File, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	
+	// Set the slog level based on config
+	logLevel := parseLogLevel(cfg.LogLevel)
+	var slogLevel slog.Level
+	switch logLevel {
+	case DEBUG:
+		slogLevel = slog.LevelDebug
+	case INFO:
+		slogLevel = slog.LevelInfo
+	case WARN:
+		slogLevel = slog.LevelWarn
+	case ERROR:
+		slogLevel = slog.LevelError
+	default:
+		slogLevel = slog.LevelInfo
+	}
+	
+	// Create a new logger with the configured level
+	handler := slog.NewTextHandler(logFile, &slog.HandlerOptions{
+		Level: slogLevel,
+	})
+	logger = slog.New(handler)
+	
 	return logger, logFile, nil
 }
 
@@ -967,7 +1096,8 @@ func main() {
 	}
 
 	// Initialize our custom logging framework
-	InitializeLogger(cfg.Verbose, INFO, cfg.LogDir) // Default to INFO level, can be made configurable later
+	logLevel := parseLogLevel(cfg.LogLevel)
+	InitializeLogger(cfg.Verbose, logLevel, cfg.LogDir)
 
 	LogInfo(func() string { return "*** CONFIG LOADED SUCCESSFULLY ***" })
 
@@ -1043,30 +1173,6 @@ func main() {
 	// Start the analysis thread to process busy word results and run clustering
 	startAnalysisThread(freqClassProcessor.GetResultChannel(), cfg, loadedState)
 
-	// Wait for frequency class filters to become available before starting tweet processing
-	LogInfo(func() string { return "Waiting for frequency class filters to become available..." })
-
-	// Progress indicator for filter building
-	progressCount := 0
-	progressChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
-	for !pipeline.HasGlobalFilters() {
-		// Update progress indicator every 2 seconds
-		if progressCount%20 == 0 { // 20 * 100ms = 2 seconds
-			progressChar := progressChars[(progressCount/20)%len(progressChars)]
-			fmt.Fprintf(os.Stderr, "\r%s Building filters... (waiting for sufficient token data)", progressChar)
-		}
-		time.Sleep(100 * time.Millisecond)
-		progressCount++
-	}
-
-	// Clear the progress line and show completion
-	fmt.Fprintf(os.Stderr, "\r✓ Filters ready! Starting tweet processing...\n")
-
-	LogInfo(func() string {
-		return fmt.Sprintf("Frequency class filters are now available (%d classes)", pipeline.GetGlobalFiltersCount())
-	})
-
 	timestamp := time.Now().Format("20060102_150405")
 	clusterFileName := fmt.Sprintf("clusters_%s.txt", timestamp)
 	clusterOutputFilePath = filepath.Join(cfg.LogDir, clusterFileName)
@@ -1122,59 +1228,64 @@ func main() {
 		// Add tweet to global queue for clustering
 		globalTweetQueue.Enqueue(tweet)
 
+		// ========================================================================
+		// CRITICAL TOKEN PROCESSING LOGIC - DO NOT MODIFY WITHOUT EXPLICIT APPROVAL
+		// ========================================================================
+		// This section handles token processing and 3PK mapping population.
+		// 
+		// IMPORTANT DESIGN PRINCIPLES:
+		// 1. ALWAYS put tokens on inbound queue (regardless of filter availability)
+		// 2. ALWAYS populate 3PK mappings (regardless of filter availability)
+		// 3. Only route tokens to frequency classes if filters exist
+		// 4. If no filters, just continue reading tweets (no waiting)
+		// 5. Main thread never waits or coordinates with FCT
+		//
+		// This logic has been broken multiple times by adding filter availability
+		// checks before token processing. DO NOT add waiting or coordination here.
+		// ========================================================================
+		
 		// Always add new tweet tokens to the inbound queue for FCT to build frequency filters
 		if len(tweet.Tokens) > 0 {
 			inboundTokenQueue.Enqueue(tweet.Tokens)
 
-			// Route each token to its appropriate frequency class (only if filters are available)
-			if pipeline.HasGlobalFilters() {
-				// Debug: Log when filters are available (verbose only)
-				if cfg.Verbose && TotalTweetsRead%10000 == 0 {
-					slog.Info("Filters are available for token routing",
-						"tweet_count", TotalTweetsRead,
-						"num_filters", pipeline.GetGlobalFiltersCount())
+			// Always populate 3PK mappings for all tokens (regardless of filter availability)
+			for _, token := range tweet.Tokens {
+				// Get token info (3PK and frequency class) in a single operation
+				threePK, freqClass, exists := pipeline.GetTokenInfo(token)
+				if !exists {
+					// New token: create 3PK, insert into mapping
+					threePK = pipeline.GenerateThreePartKey(token)   // This inserts into the mapping
+					if pipeline.HasGlobalFilters() {
+						freqClass = pipeline.GetGlobalFiltersCount() - 1 // Least frequent class (highest number)
+					}
 				}
 
-				// CRITICAL TOKEN ROUTING LOGIC - DO NOT MODIFY
-				// This section has been the source of multiple bugs where tokens were incorrectly dropped.
-				// The logic is now correct and verified:
-				// 1. Every token gets processed (no filtering/dropping)
-				// 2. Existing tokens get their assigned frequency class
-				// 3. New tokens get 3PK created and assign to least frequent class (Class 6)
-				// 4. All tokens are routed to their appropriate frequency class
-				//
-				// DO NOT add any master filter checks or token filtering here.
-				// DO NOT modify the token routing logic without explicit approval.
-				// The GetTokenInfo function handles all the necessary logic correctly.
-
-				// Route tokens to frequency classes
-				for _, token := range tweet.Tokens {
-					// Get token info (3PK and frequency class) in a single operation
-					threePK, freqClass, exists := pipeline.GetTokenInfo(token)
-					if !exists {
-						// New token: create 3PK, insert into mapping, assign to least frequent class
-						threePK = pipeline.GenerateThreePartKey(token)   // This inserts into the mapping
-						freqClass = pipeline.GetGlobalFiltersCount() - 1 // Least frequent class (highest number)
+				// Route tokens to frequency classes only if filters are available
+				if pipeline.HasGlobalFilters() {
+					// Debug: Log when filters are available (verbose only)
+					if cfg.Verbose && TotalTweetsRead%10000 == 0 {
+						slog.Debug("Filters are available for token routing",
+							"tweet_count", TotalTweetsRead,
+							"num_filters", pipeline.GetGlobalFiltersCount())
 					}
 
 					// Enqueue to appropriate frequency class
 					freqClassProcessor.EnqueueToFrequencyClass(freqClass, threePK)
-				}
-
-			} else {
-				// No filters available yet - log occasionally (verbose only)
-				if cfg.Verbose && TotalTweetsRead%10000 == 0 {
-					slog.Info("No frequency class filters available yet",
-						"tweet_count", TotalTweetsRead)
-				}
-				// No filters available yet - log occasionally (verbose only)
-				if cfg.Verbose && TotalTweetsRead%10000 == 0 {
-					slog.Info("Skipping batch termination - no frequency class filters available yet",
-						"tweet_count", TotalTweetsRead,
-						"batch_size", cfg.BatchSize)
+				} else {
+					// No filters available yet - this is normal during startup
+					// The FCT will build filters as tokens arrive via the inboundTokenQueue
+					// Log occasionally (verbose only) to show progress
+					if cfg.Verbose && TotalTweetsRead%10000 == 0 {
+						slog.Info("No frequency class filters available yet - FCT building from scratch",
+							"tweet_count", TotalTweetsRead)
+					}
 				}
 			}
 		}
+		
+		// ========================================================================
+		// END CRITICAL TOKEN PROCESSING LOGIC
+		// ========================================================================
 
 		// Send termination signals to busy word processors every batch number of tweets
 		// Only send if frequency class filters are available
@@ -1192,18 +1303,20 @@ func main() {
 				}
 
 				if cfg.Verbose {
-					slog.Info("Main: Sent termination signals to busy word processors",
+					slog.Debug("Main: Sent termination signals to busy word processors",
 						"tweet_count", TotalTweetsRead,
 						"batch_size", cfg.BatchSize,
 						"total_freq_classes", freqClasses,
 						"active_freq_classes", activeCount)
 				}
 			} else {
-				// No filters available yet - log occasionally
-				if TotalTweetsRead%10000 == 0 {
-					slog.Info("Skipping batch termination - no frequency class filters available yet",
-						"tweet_count", TotalTweetsRead,
-						"batch_size", cfg.BatchSize)
+				// No filters available yet - this is normal during startup
+				// Skip batch termination until filters are built
+				if cfg.Verbose && TotalTweetsRead%10000 == 0 {
+					LogDebug(func() string {
+						return fmt.Sprintf("Skipping batch termination - no frequency class filters available yet: tweet_count=%d batch_size=%d", 
+							TotalTweetsRead, cfg.BatchSize)
+					})
 				}
 			}
 		}
@@ -1224,14 +1337,14 @@ func main() {
 			// Get queue size after processing
 			queueSizeAfter := pipeline.GetCleanupQueueSize()
 
-			// Log cleanup performance (always log, not just in verbose mode)
-			slog.Info("3PK cleanup performance",
-				"tweet_count", TotalTweetsRead,
-				"queue_size_before", queueSizeBefore,
-				"queue_size_after", queueSizeAfter,
-				"items_processed", removedCount,
-				"max_items_per_cycle", cleanupMaxItems,
-				"cleanup_trigger_batch_size", cfg.Analysis.CleanupTriggerBatchSize)
+			// Log cleanup performance (debug level - only shows in verbose mode)
+			// Only log when items were actually processed (queue wasn't empty)
+			if removedCount > 0 {
+				LogDebug(func() string {
+					return fmt.Sprintf("3PK cleanup performance: tweet_count=%d queue_size_before=%d queue_size_after=%d items_processed=%d max_items_per_cycle=%d cleanup_trigger_batch_size=%d",
+						TotalTweetsRead, queueSizeBefore, queueSizeAfter, removedCount, cleanupMaxItems, cfg.Analysis.CleanupTriggerBatchSize)
+				})
+			}
 		}
 
 		// Acknowledge successful message processing
@@ -1482,7 +1595,7 @@ func printStats() {
 	// fmt.Printf("Token filter statistics will be handled by analysis thread\n")
 
 	// Print frequency class stats (ordered from lowest to highest class number)
-	slog.Info("--- Frequency Class Stats ---")
+	LogDebug(func() string { return "--- Frequency Class Stats ---" })
 	for i := 0; i < freqClasses; i++ {
 		queueKey := fmt.Sprintf("freq_class_%d_queue_size", i)
 		processorKey := fmt.Sprintf("freq_class_%d_tokens_processed", i)
@@ -1500,9 +1613,14 @@ func printStats() {
 			}
 		}
 
-		slog.Info("Frequency Class Stats", "class", i, "queue", queueSize, "processed", tokensProcessed, "distinct", distinctTokens)
+		// Use lazy evaluation for expensive formatting
+		classIndex := i
+		LogDebug(func() string {
+			return fmt.Sprintf("Frequency Class Stats: class=%d queue=%d processed=%d distinct=%d", 
+				classIndex, queueSize, tokensProcessed, distinctTokens)
+		})
 	}
-	slog.Info("----------------------")
+	LogDebug(func() string { return "----------------------" })
 
 	// Also log to slog
 	slog.Info("Pipeline stats",
@@ -2713,15 +2831,7 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 				distanceMethod = "word" // Default to word distance
 			}
 
-			LogInfo(func() string {
-				return fmt.Sprintf("Applying %s distance deduplication to %d tweets with threshold %.2f", distanceMethod, len(deduplicatedTweets), cfg.Analysis.NearDuplicateThreshold)
-			})
 			deduplicatedTweets, nearDuplicateRemovedCount = removeNearDuplicates(deduplicatedTweets, cfg.Analysis.NearDuplicateThreshold, distanceMethod)
-			if nearDuplicateRemovedCount > 0 {
-				LogInfo(func() string {
-					return fmt.Sprintf("Removed %d near-duplicate tweets using %s distance", nearDuplicateRemovedCount, distanceMethod)
-				})
-			}
 		}
 
 		// Count unique tweets after deduplication

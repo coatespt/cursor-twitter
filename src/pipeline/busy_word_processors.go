@@ -418,17 +418,12 @@ func (fcp *FrequencyClassProcessor) printBatchSummary(classResults map[int][]str
 		words := classResults[classIndex]
 		totalBusyWords += len(words)
 		if len(words) > 0 {
-			// Log class count and busy words
-			slog.Info("Batch class results",
-				"batch", fcp.batchNumber,
-				"class", classIndex,
-				"busy_words", len(words),
-				"words", strings.Join(words, ", "))
+			// Log class count and busy words in concise format
+			slog.Info(fmt.Sprintf("batch=%d class=%d busy:: %s", 
+				fcp.batchNumber, classIndex, strings.Join(words, ", ")))
 		} else {
-			slog.Info("Batch class results",
-				"batch", fcp.batchNumber,
-				"class", classIndex,
-				"busy_words", len(words))
+			slog.Info(fmt.Sprintf("batch=%d class=%d busy_words=%d", 
+				fcp.batchNumber, classIndex, len(words)))
 		}
 	}
 
@@ -469,14 +464,14 @@ func (fcp *FrequencyClassProcessor) EnqueueToFrequencyClass(classIndex int, key 
 	}
 	fcp.queues[classIndex].Enqueue([]tweets.ThreePartKey{key})
 
-	// Debug: Log enqueuing occasionally
-	queueSize := fcp.queues[classIndex].Len()
-	if queueSize%1000 == 0 && queueSize > 0 {
-		slog.Info("3pk enqueued to frequency class",
-			"class_index", classIndex,
-			"queue_size", queueSize,
-			"three_pk", key)
-	}
+	// Debug: Log enqueuing occasionally - REMOVED due to excessive noise
+	// queueSize := fcp.queues[classIndex].Len()
+	// if queueSize%1000 == 0 && queueSize > 0 {
+	// 	slog.Debug("3pk enqueued to frequency class",
+	// 		"class_index", classIndex,
+	// 		"queue_size", queueSize,
+	// 		"three_pk", key)
+	// }
 }
 
 // EnqueueKeysToFrequencyClass routes multiple ThreePartKeys to a frequency class queue
@@ -702,7 +697,7 @@ func (bwp *BusyWordProcessor) CalculateZScores(counts []int, stats ArrayStats, t
 			}
 		}
 
-		slog.Info("Z-score stats", "class_index", bwp.classIndex, "min_z", minZ, "max_z", maxZ)
+		slog.Debug("Z-score stats", "class_index", bwp.classIndex, "min_z", minZ, "max_z", maxZ)
 	}
 
 	return highZScores

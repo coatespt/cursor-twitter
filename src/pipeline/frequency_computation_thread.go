@@ -184,9 +184,9 @@ func (fct *FrequencyComputationThread) run() {
 
 			// Debug: Log rebuild flag status more frequently
 			if fct.loopCount%1000 == 0 {
-				slog.Info("FCT: Rebuild flag check",
-					"loop_count", fct.loopCount,
-					"should_rebuild", shouldRebuild)
+						slog.Debug("FCT: Rebuild flag check",
+			"loop_count", fct.loopCount,
+			"should_rebuild", shouldRebuild)
 			}
 
 			// ALWAYS log when rebuild flag is true (this should be rare)
@@ -287,7 +287,7 @@ func (fct *FrequencyComputationThread) processTokens() {
 		if err := fct.writeTokenFile(tokensForFile); err != nil {
 			slog.Error("Failed to write token file", "error", err)
 		} else {
-			slog.Info("Token file written successfully",
+			slog.Debug("Token file written successfully",
 				"tokens_written", len(tokensForFile),
 				"file_counter", fct.tokenFileCounter-1)
 		}
@@ -305,7 +305,7 @@ func (fct *FrequencyComputationThread) processTokens() {
 			if err := fct.writeTokenFile(tokensForFile); err != nil {
 				slog.Error("Failed to write additional token file", "error", err)
 			} else {
-				slog.Info("Additional token file written successfully",
+				slog.Debug("Additional token file written successfully",
 					"tokens_written", len(tokensForFile),
 					"file_counter", fct.tokenFileCounter-1)
 			}
@@ -320,7 +320,7 @@ func (fct *FrequencyComputationThread) processTokens() {
 	if inboundProcessed > 0 {
 		// Only log every 1000 iterations to reduce logging overhead
 		if fct.loopCount%1000 == 0 {
-			slog.Info("FCT processed tokens",
+			slog.Debug("FCT processed tokens",
 				"inbound_processed", inboundProcessed,
 				"inbound_queue_size_after", fct.inboundTokenQueue.Len(),
 				"tokens_since_last_write", fct.tokensSinceLastWrite,
@@ -609,7 +609,7 @@ func (fct *FrequencyComputationThread) rotateTokenFiles() error {
 			if err := os.Remove(oldestFile); err != nil {
 				slog.Error("Failed to delete old token file", "file", oldestFile, "error", err)
 			} else {
-				slog.Info("Deleted old token file", "file", oldestFile)
+				slog.Debug("Deleted old token file", "file", oldestFile)
 			}
 		}
 	}
@@ -640,6 +640,6 @@ func (fct *FrequencyComputationThread) decrementTokensFromFile(filename string) 
 	// Decrement token counts
 	fct.tokenCounter.DecrementTokens(tokens)
 
-	slog.Info("Decremented tokens from file", "file", filename, "token_count", len(tokens))
+	slog.Debug("Decremented tokens from file", "file", filename, "token_count", len(tokens))
 	return nil
 }

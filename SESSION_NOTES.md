@@ -572,6 +572,45 @@ cd to cursor-twitter
 
 # Notes On Things That Have Been Checked/Fixed/Explored
 
+## Processing Rate
+A large set of enhancements, from concurrency changes to logging, have bumped the speed up steadily.  
+
+Formerly, it was getting 1.1k Tweets/second on the iMac and 2 point something on the 76. Now it is getting a little more than 8k Tweets/second on the System 76.  That is 1.6 firehoses.
+
+The 76 is a fairly fast five year old laptop with four hardware cores.  It would be most interesting to try running this on a real server with say, 32 cores.
+
+The feeder is running on the same box, but is just feeding CSV via RabbitMQ.
+
+This might be considerably faster if either:
+- The feeder were writing to STDOUT and the main reading fro STDIN
+- The main were reading the files directly
+
+It is also not clear whether the feeder running on another machine with Rabbit writing over the LAN would net slower of faster.
+
+
+## Interesting confirmation of the z score mechanism. 
+These are from the logs. Note that the low Z scores are all quite small negative numbers, as you'd expect.  The high z scores are up in the double digits. This says it's spotting anomalies effetively.
+
+"Z-score stats" class_index=20 min_z=-0.209818386948746 max_z=18.370296042703444
+
+"Z-score stats" class_index=22 min_z=-0.26988490658743347 max_z=12.244939390813714
+
+"Z-score stats" class_index=23 min_z=-1.66058739959313 max_z=7.069655295369607
+
+"Z-score stats" class_index=0 min_z=-0.13493075129053422 max_z=19.828340714364074
+
+"Z-score stats" class_index=22 min_z=-0.27382076781547243 max_z=12.423513223627806
+
+"Z-score stats" class_index=11 min_z=-0.3258363554161604 max_z=11.41178451692391
+
+"Z-score stats" class_index=22 min_z=-0.2729404421546748 max_z=12.93385514597475
+
+"Z-score stats" class_index=11 min_z=-0.3311012931553238 max_z=11.297996719324528
+
+"Z-score stats" class_index=17 min_z=-0.2367758067288478 max_z=15.911842496557954
+
+"Z-score stats" class_index=12 min_z=-0.241437616624771 max_z=19.08450355887032
+
 
 ## 3pk Collisions
 Most distinct tokens are, for practical purposes, unique. Permanently storing the 3pk values for super-rare tokens incurs two costs:
@@ -633,11 +672,34 @@ There is now such a file and it seems pretty effective. There aren't that many s
 
 # TTD and Direction
 
-## Major: Skip Messaging for Historical Data
-To process historical data (as opposed to simulating real-time data as we're doing in this demo) you could replace RabbitMQ with simply reading standard in. 
-- Replace the feeder with a program that just cats the lines in the CSV to standard out
-- Replace reading Rabbit msg by msg with a routine that simply reads standard in
+## Load State Problems
+On Linux, it seems to be failing because of corrupted files. This always worked so check in the linux fixes and see if the problem is limited to linux.
 
+## Put a more set of config values on the screen at startup (stderr)
+
+## Reduce the logging. It's excessive.  
+Maybe it's just a matter of setting the right log level?
+
+## Major: Ability to Skip Messaging for Historical Data
+To process historical data (as opposed to simulating real-time data as we're doing in this demo) you could replace RabbitMQ with simply reading standard in or reading from files. As the output goes to stdout, stdin might not be a bad option.
+
+- Supplement the feeder with a program that just cats the lines in the CSV to standard out. Does it need to be speed limited or will it somehow self-throttle.
+- Add a mode for reading from standard in
+
+##  Important. Regularize the Patch Cursor Made Last Night
+
+Current design assumes you will always have state files. This is wrong. (It worked until recently--what changed?!)
+
+This is is not true--it is not some kind of edge case--you normally don't have them. The -load-state flag is a development convenience to avoid having to wait for many minutes when you are starting and stopping to test things.
+
+The probelm as cursor reports is that the
+No state -> waits forever for tokens. App never starts because it can't build the filters and the filters never get built because the app never starts.
+
+- Check if flag to load from disk is set and if disk files exist to be read in.
+- If both are yes, load from disk.
+- if both are not yes, start consuming immediately.
+
+This formerly worked because I have loaded from scratch many times. Why did it revert?! 
 
 ## Minor: Excessive ????????? Strings in Texts
 We have added code to drop the entire Tweet if there are long strings of question marks. This is usually an artifact of Tweets in some language we're not able to handle. Either way, it should be gone now.   But it seems not to be! I see some such tweets in the output.

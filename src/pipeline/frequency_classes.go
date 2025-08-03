@@ -242,7 +242,7 @@ func BuildFrequencyClassHashSets(tokenCounts map[string]int, F int, bloomSizes [
 		for _, token := range classes[i] {
 			classUsage += tokenCounts[token] // Direct map lookup - O(1)
 		}
-		slog.Info("Frequency class distribution",
+		slog.Debug("Frequency class distribution",
 			"class", i+1,
 			"distinct_tokens", len(classes[i]),
 			"total_usages", classUsage)
