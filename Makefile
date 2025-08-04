@@ -12,25 +12,25 @@ build:
 # Build language detector
 build-language-detector:
 	@echo "Building language detector..."
-	go build -o language_detector language_detector.go
+	go build -o language_detector util_go/language_detector.go
 	@echo "Language detector build complete!"
 
 # Build CSV file finder
 build-find-csv:
 	@echo "Building CSV file finder..."
-	go build -o find_csv_file find_csv_file.go
+	go build -o find_csv_file util_go/find_csv_file.go
 	@echo "CSV file finder build complete!"
 
 # Build CSV file mapping
 build-csv-mapping:
 	@echo "Building CSV file mapping..."
-	go build -o csv_file_mapping csv_file_mapping.go
+	go build -o csv_file_mapping util_go/csv_file_mapping.go
 	@echo "CSV file mapping build complete!"
 
 # Build token frequency analyzer
 build-token-frequency:
 	@echo "Building token frequency analyzer..."
-	go build -o token_frequency_analyzer token_frequency_analyzer.go
+	go build -o token_frequency_analyzer util_go/token_frequency_analyzer.go
 	@echo "Token frequency analyzer build complete!"
 
 # Clean build artifacts

@@ -127,7 +127,7 @@ Nothing goes to standard out except the output. See the pipeline logs for all th
 
 You can do it manually, but the following program run from cursor-twitter will find the latest one and run tail -f on it.
 
-tail-the-log.sh	
+util_shell/tail-the-log.sh	
 
 ## Test program for parsed data
 This program reads CSV files to ensure that we can create Tweets from them. Most users will not need this.
@@ -428,6 +428,8 @@ Needless to say, it can be left empty.
 "Do you want more Followers" 
 
 # TTD and Direction
+
+## Move the Utilities Out of Root and Into util
 
 ## Possible logic error
 We get notification of burst of 3pk's not mapping to tokens. This should be almost impossible (it says so right in the warning message.) 'Sup with that?
