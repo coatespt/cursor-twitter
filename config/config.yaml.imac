@@ -1,0 +1,285 @@
+# Sample configuration for the Twitter subject detection pipeline
+
+# So far the only input mode is RabbitMQ
+mode: mqj
+mq_host: localhost
+mq_port: 5672
+mq_queue: tweet_in
+
+# The number of tokens (not tweets) in the rolling window. This needs to be big
+# enough to give realistic background word frequency stats, but you don't want it so
+# big that it takes forever to startup cold. A few million is reasonable.
+# 
+# If we process 1200 Tweets/second that's 12,000 tokens/second. 
+#    1,000,000 / 12,000 = 83.33 seconds clock seconds (not nominal Tweet time)
+#    per million tokens to start up cold.  
+# You start up immediately if you are restarting from cached state (good for 
+#    development, bad for real results.)  
+# The size affects both accuracy (more gives fewer spurious busywords) and the fluidity
+#    with which surges in word use are aged out. (more keeps surges around longer.)
+window: 3000000
+
+# We roll tokens out of the token window (above) file-by-file. This is the number
+#   of token files to keep window (see above) tokens in on disk before using the 
+#   oldest file age tokens out of the the window.  
+#   Therefore, there are window/token_persist_files tokens in each file. This affects
+#   the fluidity of aging out surges in word use.
+token_persist_files: 50
+
+
+# Frequency class rebuild interval (expressed as token_persist_files).
+# Rebuild the frequency filters every this many files.
+# This affects the fluidity with which surges in word use are aged out, but a tiny
+# number also has an impact on performance, as rebuilding frequency filters is a 
+#    compute-intensive operation.
+# 
+rebuild_every_files: 20
+
+# The number of tweets to process in each busy-word process cycle. 
+# I've been setting this in the 10 to 15k range for the following reason. Needs testing.
+# 10k=100k tokens. 100k/24 classes = 4166 per frequency class. At 1000 counters, that
+#    is a mean of 4.6 3pk hits per counter.  A surge in an unusual word needs to show up
+#    distinctly against this background. 10,000 tweets at 1200/second is only 8.3 sec.
+# It boils down to how many usages of an offbeat word shows up as anomalous in 8.3 
+#    seconds?  
+# This number affects the sensitivity to usage anomalies. Too big, and they get harder
+#   to see, too small and you see things that aren't there.
+#
+#batch: 13000
+batch: 25000     
+
+# Number of batches to keep in the sliding tweet window. This window is used for
+#    clustering recent tweets by buys word, and finding the persistence of clusters.
+# It's just what we keep, not what we necessarily use, so bigger just means more memory
+#    usage and a modest CPU hit for copying the set to another thread for analysis. It 
+#    is copied to minimize contention between the main thread and hte analysis.
+window_batches: 10
+
+# Whether to log to the console
+# This may be obsolete or have it's precise meaning changed because we no longer
+# log anything to the console other than the JSON output.
+verbose: true 
+
+# The directory to log to. Full pathsnames are best.
+log_dir: /Users/petercoates/python-work/cursor-twitter/logs
+
+# Log level: DEBUG, INFO, WARN, ERROR
+# DEBUG shows all messages including frequent operational details
+# INFO shows important events and progress (default)
+# WARN shows only warnings and errors
+# ERROR shows only error messages
+log_level: INFO
+
+# Array of z-scores for each frequency class (must match freq_classes count)
+# Higher values = more restrictive (require bigger surges to be "busy")
+# Lower values = less restrictive (easier to detect anomalies) 
+# Number is the 5-6 range should exclude almost any count that isn't consistent
+#   with random variation.  The logs give some information on what Z's are actually
+#   seen in real life.
+z_scores: [6.0, 6.0, 7.0, 6.5, 6.5, 5.5, 5.5, 5.5, 5.5, 5.5, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0,5.0,5.0,5.0,5.0] 
+
+# The number of frequency classes to create
+# Fewer gives increast variation in the underlying frequencies of words in a 
+#   frequency class. Too many is burdensome computationally in memory and CPU.
+# This has run with as few as 7, but I'm using 24 or more for less variability.
+freq_classes: 24
+
+# The length of the busy word processor counter arrays and the 3pk range.
+# This quantity cubed is the size of the 3pk space. 1000^3 = 1 billion.
+#  1250 gives a space of just under two billion distinct keys.
+bw_array_len: 1250
+
+# List of frequency classes (1-based) to skip for busy word detection. 
+#   E.g., [1, 2] skips the most frequent and second most frequent classes.  
+# The reason for skipping is that the super-common classes probably don't carry a lot
+#   of useful information "the", "an", "lol" and muddy things up while still costing
+#   compute cycles. This would have a similar effect to putting huge values in 
+#   the z_scores table above but it skips the computation entirely
+skip_frequency_classes: [1,2,3,4]  
+
+# Minimum count threshold for frequency class inclusion (0 = no threshold)
+# DO NOT CHANGE THIS FROM 0 UNLESS YOU KNOW WHAT YOU ARE DOING! 
+min_count_threshold: 0
+
+# Busyword classes to consider in clustering.
+# There is probably no point in using words from the most frequent classes.
+# TODO: This seems redundant given skip_frequency_classes above. Investigate.
+busyword_classes: [5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+
+# Word filtering configuration
+filter:
+  # Enable word filtering. This explicitly discards tokens in the filter_file.
+  # There are a large number of tokens that carry no information, as well as 
+  #   numerous tokens that are so offensive that you probably don't want them used
+  #   as busy words. Many of these start with the letter 'n'.  This file is hugely
+  #   effective, as most words are junk, e.g., "an", "and", "lol", etc. 
+  # It's the miracle of the Ziph distribution.
+  enabled: true
+  # Path to file containing words to filter out
+  filter_file: "/Users/petercoates/python-work/cursor-twitter/config/filter_lists/token_filters.txt"
+
+# Persistence configuration
+persistence:
+  # Directory for storing state files (counts, filters) for fast restarts
+  state_dir: "/Users/petercoates/data/state"
+
+# Sender status tracking
+sender:
+  # File to track the last processed CSV file for sending. 
+  status_file: "/Users/petercoates/data/sender/sender_status.txt"
+
+  # Maximum number of messages in RabbitMQ queue before pausing sender
+  # TODO: PROBABLY OBSOLETE! RabbitMQ seems to be throttling on its own because of 
+  #   message acking. Need to confirm and remove this and code counterpart if true.
+  max_queue_depth: 10000
+  # Duration to pause when queue is full (seconds)
+  pause_duration: 1.0
+
+
+
+# Analysis and clustering configuration.
+analysis:
+  # Clustering method: "graph" (default, Louvain/modularity) or "kmeans" (busy word vector k-means)
+  clustering_method: graph   
+  # Output mode: "verbose" (full tweet metadata) or "human" (cluster metadata + tweet texts only)
+  output_mode: human   
+  # Number of clusters for k-means (only used if clustering_method is "kmeans")
+  kmeans_k: 5
+  # Number of batches of recent tweets to use for clustering
+  # TODO: Make sure this is persistence clustersing not top level clustering! This might
+  #    be some wacky thing Cursor changed.
+  clustering_window_batches: 3
+  # Minimum number of busy words a tweet must contain to be included in clustering.
+  #   Logs show Tweet count for each busyword count. Too low and you get spurious 
+  #   clusters, too high and you get no clusters.
+  min_busy_words_per_tweet: 2
+  # Minimum Jaccard similarity threshold for creating edges between tweets (0.0-1.0)
+  #   Set entirely by guessing. 
+  # TODO: Need some isolated testing to determine the most effective value.
+  min_jaccard_similarity: 0.4
+  # Maximum number of tweets to cluster (0 = no limit, for performance safety)
+  # TODO: IS THIS USED? NOT SURE WHAT IT IS DOING.
+  # TODO: Check logs to see how big clusters actually get. Most are small. A three digit
+  #     number seems unusual. 
+  max_tweets_to_cluster: 10000
+  # Suppress duplicate tweets in cluster visualization (removes leading @mentions, 
+  #     RT, trailing URLs), etc.
+  # TODO: See if this is stull used and/or meaningful and how it interacts with output
+  #     for downstream display. Might be better left to downstream.
+  suppress_duplicates: true
+  # Similarity threshold for considering tweets as duplicates (0.0-1.0)
+  # TODO: Is this affecting display only or computation?
+  duplicate_similarity_threshold: 0.9
+  # Language filtering: "en" for English only, "all" for all languages, or any other language code
+  # Examples: "en", "es", "fr", "de", "all"
+  # IMPORTANT: language specified in the Tweets is useless. Only use if you are checking
+  #   language explicitly. Setting this field is very CPU heavy, so doing it in real time
+  #   requires significant work in the feeder. (It's 10x more than everything else put
+  #   together!)
+  language_filter: "all"
+  # K-Means is probably not going to be used anymore.
+  kmeans_use_all_words: false  # If true, k-means uses all words in tweets; if false, only busy words
+  # Persistence window configuration for tracking clusters across multiple batches
+  # Number of batches to keep in the persistence window (M)
+  # TODO: cluster persistence is CPU heavy. 
+  # TODO: confirm that this is the number we preserve and 
+  #     window _batches_persistence_check is the number we are clustering over.
+  #     The next four items need to be reviewed together
+  window_batches_persistence: 7
+  # Number of batches to check for persistence analysis (K, should be <= M)
+  window_batches_persistence_check: 6
+  # Minimum number of shared busy words required for clusters to be considered related (for persistence tracking)
+  # Higher values = more restrictive (fewer continuations detected)
+  # Lower values = less restrictive (more continuations detected)
+  # Default: 2 (previous hardcoded value)
+  min_shared_busywords_for_persistence: 3
+  # Method for determining cluster relationships across batches
+  # Options: "busy_words" (compare shared busy words) or "full_text" (compare actual tweet texts)
+  # "full_text" is much more restrictive and precise for detecting true continuations
+  #persistence_clustering_method: full_text
+  persistence_clustering_method: busy_words
+  # Maximum number of tweet texts to display in human-readable output per cluster
+  max_human_tweets_displayed: 10
+  # Minimum number of unique tweets required after deduplication
+  # Lowered from 6 to 3 since we now deduplicate by user, so this counts real unique content
+  min_cluster_size: 9
+  # Filter out clusters with repetitive meme-like patterns
+  filter_repetitive_patterns: true
+  # Path to file containing banned phrases (one per line, can be regex)
+  banned_phrases_file: "/Users/petercoates/python-work/cursor-twitter/config/banned_phrases.txt"
+  # Threshold for filtering: if this percentage of tweets in a cluster match banned patterns, filter out the cluster
+  repetitive_pattern_threshold: 0.6
+  # Deduplicate tweets by user within each cluster (filters out spam from same user)
+  deduplicate_by_user: true
+  # Use Levenshteindistance-based deduplication to detect and remove near-duplicate 
+  #   tweets within clusters
+  # This catches spam variations like "same tweet with different URL/number at end"
+  use_levenshtein_deduplication: true
+
+  # "word" LD is similar to LD, but it works at the word-level, i.e., how many words
+  #   would you have to change to make the two strings the same. 
+  # Distance method: "character" (Levenshtein) or "word" 
+  # Word distance is better for tweets with different URLs, user IDs, hashtags, etc.
+  distance_method: "word"
+  # Normalized distance threshold for near-duplicate detection (0.0-1.0)
+  # Lower values = more strict (fewer near-duplicates detected)
+  # Higher values = less strict (more near-duplicates detected)
+  # Suggested: 0.1 for character distance, 0.2-0.3 for word distance
+  near_duplicate_threshold: 0.2
+  # 3PK collision mitigation: cleanup zero-count tokens
+  # Trigger cleanup every N tweets to remove tokens with zero counts
+  # This helps prevent 3PK collisions by cleaning up inactive tokens
+  cleanup_trigger_batch_size: 500    # Trigger cleanup every N tweets
+  cleanup_max_items: 4000            # Process up to M items per cleanup cycle
+  # Sort clusters by size: true=descending (biggest first), false=ascending (biggest last)
+  # Default: false (ascending) so biggest clusters appear last (closest to console)
+  cluster_sort_descending: false
+
+# Set to true to enable language detection in the Python parser 
+# WARNING: slows parsing to a crawl!!! like 275/second.  We now use a Golang
+# language detector to post process the CSV files.
+# TODO: This should probably be removed from here and from the parser.
+detect_language: false
+
+# The minimum length of a token to be considered useful. This has a huge effect as
+#   many of the most common words are one or two characters. It wouuld be nice to bump
+#   it to 4, but then you'd lose FBI, CIA, FDA, etc.
+min_token_len: 3
+
+# Token filtering configuration. These items are used to dump a lot of junk tokens.
+# You can turn the entire thing off with "enabled:false"
+# TODO: All of these could be reviewd. A look at the profiler output would be good.
+# TODO: Removing @, URL's and # are particularly important to look at.
+token_filters:
+  # Enable token filtering
+  enabled: true
+  # Maximum token length (0 = no limit). People use silly tokens like hahaha...ha 
+  max_length: 30
+  # Minimum character diversity for long tokens (0.0-1.0)
+  min_character_diversity: 0.3
+  # Only apply diversity filter to tokens >= this length
+  min_character_diversity_lower_limit: 8
+  # Maximum ratio of consecutive repeated characters (0.0-1.0)
+  max_character_repetition: 0.5
+  # Maximum ratio of case alternations (0.0-1.0)
+  max_case_alternations: 0.4
+  # Maximum ratio of digits in token (0.0-1.0)
+  max_number_letter_mix: 0.3
+  # Reject hashtags (tokens starting with #)
+  reject_hashtags: true
+  # Reject at-mentions (tokens starting with @)
+  reject_at_mentions: true
+  # Reject URLs (tokens starting with http or www)
+  reject_urls: true
+  # Reject all-caps tokens above a certain length
+  reject_all_caps_long: false
+  # Only reject all-caps if token length >= this value
+  all_caps_lower_limit: 5
+  remove_urls: true
+  # Apostrophe handling: "keep" (leave as-is), "truncate" (remove from apostrophe onwards), "remove" (remove apostrophe)
+  apostrophe_handling: "keep"
+  # If true, drop tweets where the text contains an excessive number of '?' characters 
+  # (likely due to decoding errors or non-Latin scripts)
+  # TOOD: Check that this is being done. I think I've seen ????????...? stuff in output.
+  drop_excessive_questions: true
+
