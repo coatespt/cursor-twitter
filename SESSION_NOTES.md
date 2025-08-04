@@ -573,23 +573,36 @@ cd to cursor-twitter
 # Notes On Things That Have Been Checked/Fixed/Explored
 
 ## Processing Rate
-A large set of enhancements, from concurrency changes to logging, have bumped the speed up steadily.  
+A large set of enhancements have greatly improved throughput.
 
-Formerly, it was getting 1.1k Tweets/second on the iMac and 2 point something on the 76. Now it is getting a little more than 8k Tweets/second on the System 76.  That is 1.6 firehoses.
+Formerly, it was getting 1.1k Tweets/second on the iMac and a little more than 2.1 on the 76 laptop. Now it is more like 2300 on the iMac and 8000 on the System 76, which is also a four-core machine.  That is 1.6 firehoses.
 
-The 76 is a fairly fast five year old laptop with four hardware cores.  It would be most interesting to try running this on a real server with say, 32 cores.
-
-The feeder is running on the same box, but is just feeding CSV via RabbitMQ.
+The feeder is running on the same box feeding CSV via RabbitMQ.
 
 This might be considerably faster if either:
 - The feeder were writing to STDOUT and the main reading fro STDIN
 - The main were reading the files directly
 
+The latter is very consistent with using this for historical data.
+
 It is also not clear whether the feeder running on another machine with Rabbit writing over the LAN would net slower of faster.
 
+The speedups were a combination of many things that are worth remembering:
+- Removing contention caused by unnecessary concurrency protections
+- Tightening up encapsulation. Everything is now independent, connected by queues.
+- Better memory management, especially getting rid of old 3pK mappings for zero count tokens
+- Deduplication of clusters, i.e. scrapping nearly identical Tweets. (A modified verison of Levenshtein distance that works on the word level rather than the character level.)
+- Greatly reduced logging and use of a framework that controls how much gets written
 
-## Interesting confirmation of the z score mechanism. 
-These are from the logs. Note that the low Z scores are all quite small negative numbers, as you'd expect.  The high z scores are up in the double digits. This says it's spotting anomalies effetively.
+
+## Confirmation of the Z-score Principle
+The data technically violates the assumptions of Z because a Gaussian distribution is for continuous data, not integer counts. There is an argument to be made for Poission based scoring.
+
+Also, we pre-suppose that only the underlying frequencies are approximately Gaussian. We are assuming that the busywords impose an explicitly non-Gaussian distribution on top of the main distribution of pseudo random values.
+
+Nevertheless, use of Z in this way is fairly common as we are only identifying anomalies and don't really need to know exactly how anomalous they are.
+
+The following are excerpted from the logs. Note that the low Z scores are all quite small negative numbers, as you'd expect.  The high z scores are up in the double digits. This says it's spotting anomalies effetively.
 
 "Z-score stats" class_index=20 min_z=-0.209818386948746 max_z=18.370296042703444
 
@@ -613,103 +626,86 @@ These are from the logs. Note that the low Z scores are all quite small negative
 
 
 ## 3pk Collisions
-Most distinct tokens are, for practical purposes, unique. Permanently storing the 3pk values for super-rare tokens incurs two costs:
+Most distinct tokens are, for practical purposes, unique on the time scale of a day. The majority, in fact, don't appear more than once in two weeks. Permanently storing the 3pk values for super-rare tokens incurs two very significant costs:
 - It wastes a ton of space
-  - With a token window size of three million, and fifty token files on disk, each time we age out a file of tokens, about 20k words in the counter map go to zero.
-  - The FCT thread removes these zero count tokens from the counter map.
-  - However, the main thread keeps a 3pk <-> token map that had no way to age out useless token mappings. 
-  - It adds about 100MB of memory an hour to permanently store mappings that (a) will probably never mean anything and (b) are easily recreated.  
-- The bloated 3pk<->token map increases the probability of collisions. 
-  - There are something like 135M distinct tokens in teh data set.
-  - The 3pk mapping space is only one or two billion. 
+  - With a token window size of three million, and fifty token files on disk, each time we age out a cached file of tokens, about 20k tokens that are in the counter map go to zero.
+  - The FCT thread removes these zero count tokens from the counter map to prevent bloat.
+  - However, the main thread keeps a 3pk <-> token map that formerly had no way to age out useless token mappings. 
+  - Those useless mappings accumulate a cost about 100MB of memory per hour to store permanently.  
+- The bloated 3pk<->token map also increase the probability of collisions. 
+  - There are something like 135M distinct tokens in the two-week data set.
+  - The 3pk mapping space is only one or two billion. If you kept them all, 3pK collisions would be constant.
 
-We solve this bloat problem by having the FCT put tokens on a queue when their counts go to zero in the FCT's counter map. 
+We solve this bloat problem by having the FCT put tokens on a queue when their counts in the FCT's counter map go down to zero. 
 
-The main thread picks them up ever few hundred Tweets and deletes the corresponding entries in the 3pk<->token mapping.  
+The main thread takes a chunk of thes values from the queue every few hundred Tweets and deletes the corresponding entries in the 3pk<->token mapping.  
 
-This is harmless, because if the token ever shows up again, it will automatically recreate it anyway.
+This is harmless, because if the token ever shows up again, the main thread will automatically recreate it anyway.
 
-Interestingly, it seemed to produce a significant bump in speed. From around 1100/sec to 1300/sec.
+Interestingly, doing this seemed to produce a significant bump in speed. From around 1100/sec to 1300/sec on the iMac. Not clear why. It would make sense if it slowed down after hundreds of millions of Tweets, by why quickly?
  
 ## Seemingly Excessive Token Rejection
-We were getting huge percentages of rejection of tokens because of token length and/or tokens being on the ingore list. More than 30% and 40% respectively.
+We were getting huge percentages of rejection of tokens because of too-short token length and/or tokens being on the ingore list. More than 30% and 40% respectively. The list of rejected tokens is in config/token_filters.txt.
  
-Those numbers were not supurious. I turned that functionality off and the result was as expected. It means both are very effective and doing their job. You definitely want min length = 3.
+Those numbers were not supurious. Turning that functionality off gave the expected result and it is consistent with the Ziph distribution. It means both are very effective and doing their job. You definitely want min length = 3.  The two things strip out a huge amount of processing at the very beginning of the pipeline.
 
 ## Effect if Computing Cluster Persistence
 
-I went from checking over six batches to checking over 1 batch. Not a huge effect. Maybe 100/second.
+I went from checking over six batches to checking over 1 batch without producing a huge speedup. Maybe 100/second faster.
 
-### Checking all words v checking busy words
+### Checking all words v checking busy words when doing cluster persistence checking
 This aspect of the problem has NOT been reviewed
  
 
-## Running with config/token_filters.txt empty
+## Is token splitting on periods, commas, and dashes happening?
 
-Emptying out the test_filters.txt file did not result in a noticable speedup but it did reduce the number rejected on that basis to zero. So the 40% rejection rate when that file is active is real.
-
-## Setting minimum token length to 1 
-This (as it should) resulted in the rejections for minimum token length to go from 35% to 0%. So that parameter is functioning.
-
-## Is token splitting on periods, commas, and dashes happening
-It was not happening.  The token cleanup in Go now does this. Note that we can optionally split or not split on apostrophes. The default is to not split so that O'Brian and M'kele M'beme can continue to be tokens.
+No, it was not happening.  The token cleanup in Go now does this. Note that we can optionally split or not split on apostrophes. (See config.yaml) The default is to not split so that O'Brian and M'kele M'beme can continue to be tokens.
 
 ## Overhaul of ASCII Output and Reduction of Logs
 
-Logging has been majorly overhauled with logging almost all going to the designated log file and almost none to the screen except some startup info going to stderr.
+Logging has been overhauled with logging almost all going to the designated log file and almost none to the screen except some startup info going to stderr.
 
 The program output is now all in JSON format sent to stdout. It can be configured to be more complete, for machines, or more readable, for humans. 
+
+The rest of the logging now has the customary DEBUG/INFO/WARNING/ERROR levels in config.yaml
 
 The new policy is to put only critical messages on the screeen and to write them to stderr so we can preserver stdout for proper output.
     
 ## Annoying Nonsense
-Consider a file of phrases that would get a cluster or tweet dropped.
+
+We now have a file called banned_phrases.txt that contains a number of phrases that occur in a disproportionate number of essentially meaningless Tweets. No doubt the contents of such a file should be adjusted to a moment in time.
+
 "The awkward moment"
 "That awkward moment"
 "Do you want more Followers" 
-
-There is now such a file and it seems pretty effective. There aren't that many such phrases.
+ 
 
 # TTD and Direction
 
-## Load State Problems
-On Linux, it seems to be failing because of corrupted files. This always worked so check in the linux fixes and see if the problem is limited to linux.
+## Possible logic error
+We get notification of burst of 3pk's not mapping to tokens. This should be almost impossible (it says so right in the warning message.) 'Sup with that?
+ 
+## Put more of the set of config values on the screen at startup (stderr)
+We just have the basics. I don't think we need them all, but a lot of them would be good as reminders that they exist and may have been $#@!'d with.
+ 
+## New Input Mode(s)
+The main is now fed through RabbitMQ. It would be interestin to have a history mode specifically 
+for mass consumption as fast as possible.
 
-## Put a more set of config values on the screen at startup (stderr)
-
-## Reduce the logging. It's excessive.  
-Maybe it's just a matter of setting the right log level?
-
-## Major: Ability to Skip Messaging for Historical Data
-To process historical data (as opposed to simulating real-time data as we're doing in this demo) you could replace RabbitMQ with simply reading standard in or reading from files. As the output goes to stdout, stdin might not be a bad option.
-
-- Supplement the feeder with a program that just cats the lines in the CSV to standard out. Does it need to be speed limited or will it somehow self-throttle.
+- Supplement the feeder with a program that just cats the lines in the CSV to standard out. Does it need to be speed limited or will it somehow self-throttle?
 - Add a mode for reading from standard in
 
-##  Important. Regularize the Patch Cursor Made Last Night
+Alternatively, have a main program mode that reads files of CSV itself.
 
-Current design assumes you will always have state files. This is wrong. (It worked until recently--what changed?!)
-
-This is is not true--it is not some kind of edge case--you normally don't have them. The -load-state flag is a development convenience to avoid having to wait for many minutes when you are starting and stopping to test things.
-
-The probelm as cursor reports is that the
-No state -> waits forever for tokens. App never starts because it can't build the filters and the filters never get built because the app never starts.
-
-- Check if flag to load from disk is set and if disk files exist to be read in.
-- If both are yes, load from disk.
-- if both are not yes, start consuming immediately.
-
-This formerly worked because I have loaded from scratch many times. Why did it revert?! 
-
-## Minor: Excessive ????????? Strings in Texts
-We have added code to drop the entire Tweet if there are long strings of question marks. This is usually an artifact of Tweets in some language we're not able to handle. Either way, it should be gone now.   But it seems not to be! I see some such tweets in the output.
-  
  
 ## Ongoing  Items
 - Comments Key areas need to be commented to keep out don't touch, etc.
 
 - Testing has been neglected. Make tests around everything.
+
+- More fully populating the token_filters.txt file. Check the busywords in the logs and see what else jumps out.  This may be nearly done.
  
+
 ## Major: Improving Busy Word Detection Quality with Computing Redundantly
 
 This would be a significant effort.  Interesting idea, but it's not 100% clear that it's worth doing. We need some investigation.
@@ -719,30 +715,17 @@ Consider that dual sets of pipelines, or even three sets, each with different ha
 It is not clear how big an impact this would have on performance. All the BW processors are doing is counting and periodically computing Z on a thousand values in each of the three counter arrays. There is a tiny bit more work in the analysis to take only the words that appear in the required number of sets. It doesn't really affect the analysis phase that follows, and it's just a little more work for the main to put the tokens on more queues than before.
 
 Risk. If multiplying the work in the busyword processors made them in aggregate slower than the combined main pipeline and the clustering, it would cause the queues to grow without bound and crash the program. You'd need to detect the problem and throttle the reads if this is a problem. Actually, this should probably be done anyway! Who knows if some combination of config parameters could cause this to happen.
- 
-## Performance
-We started to get a significant slow-down at some point. It's about 1100/second now, and it used to be in the mid-2000's. This could be consequence of some real piece of functionality, or it could be something stupid. 
-
-Went over this with the profiler and chased down a lot of stuff, but it's still slower. Cursor's opinion is that it is probably primarily in taking tweets from RabbitMQ. I doubt it, because we've taken them off at up to 3000/second in the past when we weren't doing anything with them.  
-
-The bottleneck seems to be on the main processing line because the FCT is not in the path of the Tweets, and the busyword and analysis portion won't block the main line processing because it is insulated behind queues.
-
-We did an extensive review of concurrency protection in the processing pipeline and found a number of issues, but I'm not sure if we ever got to every item.
    
-
-## Ongoing 
-- Comments Key areas need to be commented to keep out don't touch, etc.
-
-- Clean up the excessive logging and print outs
-
-- Make tests around everything.
-
-- More fully populating the token_filters.txt file. Check the busywords in the logs and see what else jumps out.
- 
 
 ## Major: Clustering Across Batches
 
-Note, this has now been implemented but may not be adequately tuned up yet. See above relating to this under speedups. 
+Note, this has now been implemented in the form of looking to see many cycles a cluster has been present for. 
+
+Jacquard similarity for the clustering seems to be applied to all the tokens in the Tweets. 
+  - Is that true, and if so, is it correct? This may have been done.
+  - Maybe it should be only on the busywords. 
+  - Jacquard similarity might not be important. Maybe just the raw occurrences?
+ 
 
 ## Major: A Graphical Front End
 This is a big one!  Not sure how to go about it with Cursor. I wrote the graphics by hand in Java last time!
@@ -753,27 +736,11 @@ A busy-word fade-out like the bubbles would be great.
 - Vertical axis is the frequency class
 
 
-## Major: Clustering Clusters
-Could the same graph algorithm be applied to the already clustered clusters?   
-It seems like it would be good to see these things grouped more hierarchically.
-You often see clusters that seem to be almost the same.
-If the clustering allowed clusters that are unrelated to other clusters and clusters that are composed of sub clusters, it would be great.
-
 ## Consider Stripping K-Means Out Entirely
 It doesn't do any harm, but we're never going to use it and it could be confusing.
-
- 
-  
-## Understand the effect of window size and batch size better.
-Are the numbers below correct.
- 
- 
-## Jacquard Similarity in Clusters
-Jacquard similarity for the clustering seems to be applied to all the tokens in the Tweets. 
-  - Is that true, and if so, is it correct? 
-  - Maybe it should be only on the busywords. 
-  - Jacquard similarity might not be important. Maybe just the raw occurrences?
    
+## Document What is Known About Tuning Performance and Accuracy
+
 # Miscelaneous Details
 
 ## The Big Token Window.

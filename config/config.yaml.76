@@ -61,7 +61,7 @@ window_batches: 10
 verbose: true 
 
 # The directory to log to. Full pathsnames are best.
-log_dir: /Users/petercoates/python-work/cursor-twitter/logs
+log_dir: /home/petercoates/cursor-twitter/logs
 
 # Log level: DEBUG, INFO, WARN, ERROR
 # DEBUG shows all messages including frequent operational details
@@ -116,17 +116,17 @@ filter:
   # It's the miracle of the Ziph distribution.
   enabled: true
   # Path to file containing words to filter out
-  filter_file: "/Users/petercoates/python-work/cursor-twitter/config/filter_lists/token_filters.txt"
+  filter_file: "/home/petercoates/cursor-twitter/config/filter_lists/token_filters.txt"
 
 # Persistence configuration
 persistence:
   # Directory for storing state files (counts, filters) for fast restarts
-  state_dir: "/Users/petercoates/data/state"
+  state_dir: "/home/petercoates/data/state"
 
 # Sender status tracking
 sender:
   # File to track the last processed CSV file for sending. 
-  status_file: "/Users/petercoates/data/sender/sender_status.txt"
+  status_file: "/home/petercoates/data/sender/sender_status.txt"
 
   # Maximum number of messages in RabbitMQ queue before pausing sender
   # TODO: PROBABLY OBSOLETE! RabbitMQ seems to be throttling on its own because of 
@@ -206,7 +206,7 @@ analysis:
   # Filter out clusters with repetitive meme-like patterns
   filter_repetitive_patterns: true
   # Path to file containing banned phrases (one per line, can be regex)
-  banned_phrases_file: "/Users/petercoates/python-work/cursor-twitter/config/banned_phrases.txt"
+  banned_phrases_file: "/home/petercoates/cursor-twitter/config/banned_phrases.txt"
   # Threshold for filtering: if this percentage of tweets in a cluster match banned patterns, filter out the cluster
   repetitive_pattern_threshold: 0.6
   # Deduplicate tweets by user within each cluster (filters out spam from same user)
@@ -231,9 +231,6 @@ analysis:
   # This helps prevent 3PK collisions by cleaning up inactive tokens
   cleanup_trigger_batch_size: 500    # Trigger cleanup every N tweets
   cleanup_max_items: 4000            # Process up to M items per cleanup cycle
-  # Sort clusters by size: true=descending (biggest first), false=ascending (biggest last)
-  # Default: false (ascending) so biggest clusters appear last (closest to console)
-  cluster_sort_descending: false
 
 # Set to true to enable language detection in the Python parser 
 # WARNING: slows parsing to a crawl!!! like 275/second.  We now use a Golang
