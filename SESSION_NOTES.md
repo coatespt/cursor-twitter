@@ -1,15 +1,15 @@
 # Session Notes
 
+The document PROJECT_DESCRIPTION.md has information on project goals, what it does, and most general interest material.
+
 This document covers
 - Loud warnings to Cursor not to mess with any code without asking
-- Two-fold purpose of the project
-- Notes on whay conventional frequency and semantic analysis aren't enough
-- Notes on how it works
 - Instructions for running the main program and utilities
 	- There are numerous parameters for the main program
 	- Utilities for pre-processing the data
 	- Utilities for analysis
 - Notes on throughput and behavior
+- Lessons learned
 - TTD for fixes, enhancements, analysis, etc.
 
 
@@ -36,279 +36,19 @@ When a test doesn't pass, we have to look at why before changing anything. No re
 If any changes seem to involve multiple threads, be sure to get my agreement before doing anything. Anytime there thread safety constructs like mutex, etc., always check. We keep getting into trouble with unnecessary and incorrect thread complexity.
 
 
-# Project Goal
-This project has both a narrow goal and a broader goal. Both concern the ability to understand what people are saying on X/Twitter in near real time at a granularity of seconds.
-
-## The Narrow Goal: Getting New Subjects (News)From the X/Twitter firehose in Real Time
-
-The weaknesses of X/Twitter and similar micro-blogging platforms has always been the difficulty of finding out what is there, or seen the other way, the difficulty bloggers have connecting with readers with whom the don't have prior. There's no TV-Guide.
-
-In practice, this problem is mostly solved by punting it to the users.  It's up to the blogger to markup posts with hashtags, and up to the receiver to discover people, hashtags, etc. to subscribe to. Ironically, this is usually done indirectly, by finding interesting people by other means, then seeking them out on X.  
-
-The project presents a way discover the new subjects appearing in the Tweet stream in near real time, i.e., within a span of time comparable to how long it might take to read a Tweet amd compose a response. 
-
-Even important news often takes on the order of hours to surface in conventional media, so real time identification within seconds is a major advantage if knowing things first matters. When you see a subject characterized by "train, chemical, crash, evacuation, and environment" suddenly pop up, you may want to short Dow Chemical in a hurry.
- 
-## Broader Goal: History
-
-To be able to analyze the full stream at a granularity of seconds and at a multiple of the real firehose rate makes it possible to study this ephemeral record of history in a new way. 
-
-You can see the subjects that arise and ramify minute by minute during events as ordinary and well-defined as the Super Bowl or a concert, or as complex as evolving conspiracy theories, the BLM movement, the Arab Spring, or the invasion of Ukraine.   
-
-To study the flow in real time by conventional means takes an enormous investment in equipment and technical expertise, and it may not be effective because one way or another, it generally requires at some level, knowing what you are looking for in advance.
-
-With the resources typically available to researchers, it is often only practical to analyze limited dimensions of the stream, which must be segmented by:
-- Subject
-- Time slice
-- Analyzing only a random fraction of the full stream
-- Possibly most importantly, by limiting the granularity of examination, i.e.,look at subjects that are big enough and persistent enough. 
-
- 
-# Statistics and Semantics
-
-A driving insight is that it would be essentially useless to 
-analyse all the subjects that are active at any one time because this number is enormous by any reasonable definition of "subject." 
-
-However, if one settles for only seeing new subjects as they arrive:
-- The amount of data for a human to be exposed to is manageable
-- The subjects arrive newest, i.e., most important, first
-- As time passes, you asymptotically approach getting **all** current subjects.
-- Focussing on newness at the level of seconds, you can see a new subject ramify into sub-subjects in near real time. You can watch the hive-mind communicate with itself.
-
-While X/Twitter is a firehose of data, fortunately, new subjects tend to arrive at a manageable rate. Depending upon exactly how you parameterize the definition of "subject," new subjects that will ever involve more than a handful of Tweets arrive perhaps every few seconds. Significant subject arrive at an almost stately pace. With proper tuning, you get something with about the information density of the Times Square News Ticker.
-
-To find these subjects by characterizing the semantics of thousands of Tweets per second, and then grouping them together based upon subject similarity is a daunting task computationally. It's not even clear how to do it, as it's not just a matter of understanding Tweet-by-Tweet. Semantic understanding is useful only if you can related subjects of Tweets into clusters. Certainly it would be extremely difficult and resource intensive to do this in real time on thousands of Tweets per second. 
-
-### Semantic Insight is More Helpful In Understanding Subjects Than In Finding Them
-
-The critical insight is that semantic analysis isn't necessary, and arguably, isn't particularly helpful. In practice, groups of meaningful words used together are an excellent proxy for subjects, and semantics can be ignored in the process of indentifying new subject in the stream.
-
-### Pure Statistics
- 
-Frequency-based approaches seem like an obvious way to go, but it turns out that frequently used words are not very useful for finding new subjects. At any given moment, literally thousands of subjects include "P Diddy", "Donald Trump", "Taylor Swift", or "Superbowl."
-
-The words that characterize identifiable subjects are more often words that:
-- Are usually rare, perhaps not normally used at all.
-- Are suddenly being used anomalously frequently. 
-
-Conveniently, words have a Zipf distribution, which means that overwhelming majority of words are very rarely used. By a wide margin, the most common number of times per day for a randomly selected word to be used is zero. The next most common number of times is one, again by a wide margin. 
-
-The distribution tail is so long that the most common 250 words in English language Tweets are used more than the next 11,000,000 words combined. 
-
-The importance of this is that when you find several one-in-millions words that normally appear between zero and a handful of times a day suddenly appearing together in the same Tweets dozens of times, you almost certainly have identified a "subject."
-
-For this to be helpful, the anomalously frequently used words (called hereafter, busywords) must be detected quickly enough that it remains computationally practical to analyse the corresponding window of Tweets for clusterings of the busy words. This is demanding in part because clustering tends to be non-linear in the number of elements concerned. Logically, it's a simple problem. In practice, it is difficult to do in real time.
-
-#### What's Tough About Frequency
-Ordinary word frequency computation is hard to do fast enough because of the sheer volume of the firehose.
-
-The relative frequencies of word use change continuously throughout the day, both because human activity changes with the hour and because new subjects come and go.
-
-You can't just rely on frequency of word use over a few seconds, because the variance is too high. Only a tiny fraction of words, even of relatively common words, get used in any given few seconds. 
-
-To manage the variance, you need a rolling window of perhaps many minutes to an hour's duration, with relative frequency computed at the time-granularity you require. This includes comparing the latest relative frequencies to the previous relative frequencies to determine which words are suddenly anomalously busy. 
-
-And herein is the rub. Tweets arrive at a rate of thousands per second, and each tweet uses ten to thirty words. In just ten seconds you'd be clustering over fifty thousand Tweets and perhaps a million words. It's a serious computing challenge.
-
-#### Relative Frequency Turns Out to Be a Red Herring
-
-We tend to think of relative frequency as the core problem, but looked at a different way, the only point of computing relative frequency is to use it to recognize surges in frequency of use. They are two different things. The surging is what we actually care about, not the relative frequency itself.
-  
-The key to getting past this barrier is a probabilistic heuristic that identifies surges in word frequency without doing global word counting and frequency analysis inline. The core of the heuristic is fast enough that it tends to be limited by waiting for enough Tweets to operate on before it is limited by processing capacity. The non-linearity of the clustering implies the seeming tautology, but the faster it runs, the faster it can run.
-
-You can't get away global frequency computations entirely. You need keep up with background word usage changes caused by time of day, day of week, etc., as well as with ongoing changes due to the emergence of new subjects that people Tweet about. But you can get away with doing them only periodically, and keeping them offline with respect to the main processing pipeline. While busyword and subject analysis must place at intervals of a few seconds, these offline frequency analysis operations can take place at intervals of many minutes, not only orders of magnitude less often, but also outside of the main processing flow.
-
-The heuristic can be fast because it is only sensitive to the leading edge of a surge in usage of a word. Moreover, it is inherently blind to a sustained increase in frequency. Threfore,it automatically forgets words that surge only briefly in usage, as well as words that surge and then stay at an elevated level unless/until that word again surges in relative frequency.
-
-The heuristic is extremely fast--on an adequate server, it can be considerably faster than the firehose rate. Running on a twelve-year old iMac, the heuristic processes about two and a half Decahoses, including feeding the Tweets. A modern server with many hardware cores could run at multiple firehose speeds.  
- 
-
-# Input and Output
-
-The input available for development purposes is two weeks of the decahose (about 500 Tweets/second.) It consists of JSON-formatted Tweets in files that have the file order encoded in the filenames as Unix start and end times. The files are about five minutes of Tweets at about 500 Tweets/second. The original files are unpacked into uncompressed CSV files.  
-
-In production the input could be either files (for historical processing) or the actual live Tweet stream (for real time processing).  
-
-Using files is not a "cheat" because any system would typicaly receive Tweets and feed them somehow. The actual development feed is from a process running on the same meachine and sending the Tweets via RabbitMQ.
-
-The non-graphical output is a series of clustered sets of Tweets that are about new subjects. There is not yet a graphical front end.
- 
-
-# The Approach
-
-The fundamental principle is that "subjects" are best identified by joint use of shared sets of words that are suddenly appearing with anomalous frequency.
-
-Word usage famously has a Zipf distribution, which means that 99% of words are very rarely used. "Rarely" in this context typically means perhaps zero, once, or a few times a day. A word that is suddenly appearing unusually frequently we call a "busyword."
-
-Because most words are very rare, not even one-in-a-million in a text stream, if two or three busy words suddenly start to appear together in Tweets, it is a strong indicator of either a new subject or of an existing subject that is seeing sudden growth.
- 
-A word being busy is not about its absolute frequency. Rather, it is about an abrupt
-increase, i.e., the first derivative, of the frequency of use, which might suddenly go from zero instances per hour, to several instances in the last few seconds or minutes. 
-
-Counterintuitively, when it comes to identifying subjects, it is the rare, offbeat words that tend to drag the super-common names along with them, rather than the other way around. Common words, like "the", "a", "Trump", "Beyonce", or "Swift" contain almost no information because they appear in thousands of ongoing conversations. It is proper names of people and places, economic, scientific, geographic, or political terms, suddenly popping up together, that usually signify that people are saying something new. 
-
-If a hot subject comes along, i.e. people are tweeting and retweeting text that contains some subset of three or four busy words, the subject will tend to be forgotten after a while because the anomalous rates of use that caused them to be marked as busy words slowly either becomes the new norm, or decline to their old obscurity. It is a truism that frequency can't increase indefinitely--it can't even increase rapidly for very long. 
-
-But doesn't this imply that a subject will only be visible for a short time? Yes, even if it is hugely important. But if a subject is significant, it will usually keep getting augmented with other unusual words used in subsequent Tweets. These tend to keep the subject fresh far beyond the period of novelty of the original busy words. This is in keeping with our intuition. As a conversation evolves, the original subject words hang around, but they are elaborated with language that reflects evolving viewpoints and new commenters.
-
-The key to making it work is that the sliding window on the stream of Tweets has to be small, e.g., typically in the range of thousands of Tweets. With too wide a window the granularity of the view erodes and the computational cost increases disproportionately.  
-
-So sum up, the algorithm 
-- Detects the leading edge of surges in word usage.
-- Finds the Tweets in the current window that use a proper subset of these words
-- Discards all the other Tweets
-- Clusters the remaining Tweets by the busy words they use. Clusterings need not be unique or deterministic.
-
-We optionally do one more thing. We can also cluster the clusters over the preceding multiple batches of processing to discover the persistence of subjects.
-
- 
-# The Heuristic
-This section explains the core heuristic for finding the busywords.
-
-## Word Frequency Computations
-
-As explained above, to achieve adequate speed, the global frequency calculations must not be in the main processing path. 
- 
-We use a periodic offline computation of global word frequency to create a set of filters that are used to partition the flow of words into F frequency classes, with the most frequently used words in the first class and the least frequent words in the last class. 
-
-The classes have very different numbers of words, but they each represent the same amount of word usage. (The filters are just hashed sets. Partitioning the stream is fast because of the extreme Ziph distribuition. Most words are in the first class, and almost all words are in the first few.) A large enough F value is chosen that there is not much variation in frequency among the words in a given class. An F between 7 and 28 is a reasonable choice.
-
-This frequency partitioning filters are computed over a substantial sliding window of Tweets, perhaps several hundred thousand to millions. This is necessary to lower the variance in frequency. To see why, imagine if the window were really small, say 1000 Tweets. Even common words might not show up at all, leading to many spurious busywords when they show up in the Tweet stream.
-
-Note that the size of the window and the frequency of the re-computation of the filters are two different things. The frequency filters might be recomputed many times over the duration of the window of Tweets. 
-
-Note also that the frequency of the cycles of computing busywords and clustering are independent of both. The big window might be 500k Tweets, but the filters might be recomputed every 100k Tweets, while the busyword/clustering might be computed every 15k Tweets.
- 
-New words come along all the time, even after weeks of the firehose. A novel word doesn't match to any frequency class the first time it is seen. It won't show up in the frequency filters until they are recomputed.  This is not a problem, however. The window is large, so any incoming word that doesn't match to a frequency class is almost certainly very rare and can therefore default to being treated as being in the least frequent class which, courtesy of Ziph's law, which will have only one occurrence of each word. When the next update to the frequency class filters is occurs, the novel word will no longer be an unknown.
- 
-
-## Receiving Tweets
-The main routine reads inbound Tweets from RabbitMQ in CSV format. This detail is a convenience because the Tweet data is canned. They could be received in any format, including the native JSON. Either way, as each new Tweet is received, the main routine parses it and converts it to Tweet structs in memory.
-
-The receiving phase:
-
-- Maintains an in-memory sliding window of the latest Tweets. This is not to be confused with the window used for frequency analysis. The Tweet window is much shorter and holds the entire Tweet struct for every Tweet that contributed to the last several cycles of busy-word processing. This will typically be less than a minute of Tweets. They are continually aged out and discarded to limit the size in memory.
-
-- Extracts the words from each incoming Tweet and normalizes them. This include unifying the case, dealing with diacritics and such, discarding junk words, etc. The result is a stream of meaningful tokens.
-
-- Puts the tokens on a queue for the off-line frequency calculations to use for the periodic asynchronous frequency calculations.
-
-- Obtains the frequency class for each token using the frequency class filters.
-
-- Looks up the "three part key" (3pk) for each token. If a 3pk doesn't yet exist, it computes one for the token and inserts it into the lookup table.
-
-- Puts the 3pk on the busyword queue for the token's frequency class.
-
-When one "batch" (perhaps 10 or 20k) of incoming Tweets has been processed, the main processor puts a special 3pk that cannot correspond to any real token, on each queue to signal to the busyword processors that the latest batch is complete. The busyword processors all get the signal at the same place in the Tweet stream, which keeps them synchonized.
-
-With the handing off of the 3pk's for the tokens in the current Tweet to the busy-word processor queues, the main processing loop is at its end, and it starts over with the next Tweet. 
-
-The queues for the frequency counting thread and the F busy-word processing threads provide elasticity, so no synchronization with the main loop is necessary other than what is implicit in the thread-safe queues. 
- 
- 
-## The 3pK's
-We haven't said exactly what a 3pk is.  A 3pk is just an ordered triple of hashes modulo C for some token or word.  The hashes are each parameterized with a different value, so it is really just three pseudo-random numbers in a defined range.  This size of this range is a global parameter, but it is ordinarily somewhere around a thousand or so for reasons that will be made clear later.
-
-As mentioned above, a global mapping of 3pk's to tokens, and tokens to 3pk's is maintained. If a 3pk corresponds to an existing token, it will always exist in this mapping.
-
-If the 3pk hash range is 1000, that gives a 3pk a logical space of a billion different pseudo-random triples. There are only at most few million distinct words in the global computation at any one time, so there is a possibility of a collision for any given token. However, as we will see later, collisions are neither frequent nor very harmful.  
-
-The range can be increased to reduce this probablility farther, but there are computational costs to a larger range. How to compute the optimal range size is an open question.
-
-## The Busyword Processor Threads
- 
-Each of the F busyword processors works the same way. 
-
-The purpose of the frequency partitioning is to ensure that the background frequency of the tokens received by a busyword processor are appoximately equal.
-
-The hashes from each 3pk are used to index into three corresponding arrays of counters of size C. (The array size is the same as the 3pk range.) One counter in each of the three arrays gets bumped for each incoming 3pk.
-
-Because the 3pk values are pseudo random, if every word had the same probability, the counts would have a Gaussian distribution.  
-
-However, we are assuming that some of the words assigned to a given frequency class are anomalously busy (after all, that is the point of the exercise.) Therefore, some of the counters will have exceptionally high counts.  For instance, if you have 10,000 Tweets in a batch, with an average of 10 tokens in each Tweet text, that's 100,000 tokens spread over, say, 24 busyword processors. This means each processor would get about 4,166 tokens, and the counter values would average about 4.166 when the signal 3pk is detected. (We use {-1, -1, -1}) at which point the processor suspends reading the queue and processes the batch.
-
-- A Z-score is computed for each counter as if the distribution were Gaussian.  
-	- A Z-score is a normalized standard deviation that gives the improbability of any given sample value's deviation from the mean due to randomn variability. 
-	- Technically, our counters are not Gaussian
-		- Firstly because the values are discrete, not continuous
-		- Secondly, because while the frequency class is constructed so that all the words have the same frequency, the busywords are by definition non-conforming. 
-	- However, Z scores are fairly robust and this is an acceptable technique for isolating anomalies.  
- 	- The average Z is 0, by definition (Z can be positive or negative), and the higher the Z, the less likely that a large value is just random variation. Any statistics book will give a fuller explanation.  
-- This is useful for detecting anomalies because
-	- A Z score beyond 4.0 be expected by random chance no more than about once per cycle if all words in the frequency class were arriving at their normal background rate. A Z of 5.0 or greater would almost never occur.
-	- By choosing our Z cut-off, we can adjust how freakishly un-random a count has to be for us to treat it as "busy."
-
-One of the configuration parameters is an F-length array of Z-values, one for each frequency class (as some classes tend to have more natural volatility than others.)
-
-Here is where the magic happens:
-
-- The sets of indexes of counters with freakishly high Z scores are collected for each of the three counter arrays. Note that we chose Z to keep cardinality of the set quite small relative to the number of counters. A Z that limits the average number of high values to under ten would be reasonable value.
-
-- The Cartesian product of the three index sets is computed. This gives you a large set of three-part keys, some of which should correspond to actual busy words, and the others (the vast majority) are just spurious junk. The lambs are separated from the goats by checking for whether each 3pk's corresponds to a value that exists in the global mapping.
-
-- The 3pk's that exist give you the busy words for the current window. Note that this is a somewhat leaky filter. 
-	- Some randomly generated 3pk's will usually correspond to real tokens just by random chance because with a range of 1000, there are only a billion possible keys. 
-	- Collisons happen. Occasionally, more than one token could map to a 3pk.
-
-## Processing the Batch of Busywords.
-
-Each of the F frequency classes puts its set of busyword on a queue to an analysis thread. The results are kept in synch by a concurrency "barrier" to keep the F batches of busywords together.
-
-When the analysis thread gets all F batches of busywords, it does the clustering as follows.
-
-- It filters a configured range of the set of recent Tweets for Tweets that contain at least M busywords. M might typically be 2, 3, or 4, but any number can be used.
-
-- With proper configuration, this set of Tweets is quite small compared to the total number of Tweets upon which the batch of busywords was computed. This makes sense because most Tweet subjects at any one moment are not new.
-
-- A graph clustering algorithm is applied to the set of Tweets that contain at least the minimum number of busywords. The algorithm finds groups of Tweets that have the most joint similarity in the sets of busywords they contain. 
-
-- This is a non-deterministic process because clusters can overlap a little. For instance, one group might be characterized by five busywords, and another by four, but they happen to share one busyword. However, despite that overlap, they the two groups are identifiably different.  These properties can be tuned to suit.
-
-## The Output
-The is text, for the moment.  The clusters are computed and grouped in clusters that are printed out as an ASCII tree. 
-
-A more complete text output should print the essential information needed for display to standard out or to a named file.
-This would be include:
-- The clusters, in a computationally friendly format.
-- The busy word information, in a computationally friendly format.
-- Both should include admin information like the run time, the time as given in the Tweets (this will be easy to obtain down to a minute or so,) etc.
-- The lines can be commingled so long as they have an identifying leading field, e.g, CLUSTER, BUSYWORD, ADMIN, ETC.
-- We would need to print all the diagnostics and other screen junk to stderr.
-
-
-A graphical front end is in the offing.
- 
-
 # Speed of Computation and Significant Events
 
-Ideally, we want to be able to process at a multiple of the firehose rate. These results of testing referred to here are on a 14-year old iMac. 
- 
-The Tweet sample was recorded from two weeks of a Decahose. However, the Tweets can be consumed at any speed. 
+We can do about 16 decahoses on the System76 Laptop.
 
-The program sustains a thoughput of about 1100 Tweets/second. It is convenient to run it with filtering for English only to make the output more comprehensible. It processes at the rate of about 2.2 decahoses.  
+The dataset: 
+- Starts around 2012-01-28 16:16:46, i.e. quarter after five on New Years Day
+- Ends at 2012-02-15 03:22:36, which is 3:22 AM the day after Valentine's day.
 
-The Tweets are read from Rabbit MQ and Tweets excluded because of language are discarded after parsing. This means you don't get much difference in run speed due to filtering or not filtering for language. 
+There are a number of newsworthy evens during that period.
 
-Each CSV file is about five minutes of the decahose, i.e., about 30,000 Tweets per file, or 33 files per million Tweets, or about 2.7 logical hours of the decahose. We are actually processing that million Tweets in about 1.2 hours.
+## News of Whitney Houston's Death
 
-This is useful to know if you want to start processing at a given date/time.  You need to start at a point sufficiently many files earlier than your nominal start date in order to have the system primed. 
-
-If you are starting and stopping frequently, the system can optionally read in the existing frequency data, for an instant start.  Beware that if you are starting at some random point, the saved frequency data will be wrong to an unpredictable degree. This means you need to either start fresh or disregard the results until you have run for long enough to completely update the background statistics.
-
-You can use the utilities mentioned below to find the date/time you want to start at a specific place in the two-week interval.
-
-### Persistence of Subjects
-
-In addition to computing the new subjects, the system can give information about how long those new subjects have existed in terms of the number of batches. This is given in the form of a list of the previous N batches that also match the new subject.
-
-Persistence of subjects is a major consumer of CPU, bigger than the cost as the clustering itself.  It can be turned on and off, but the effectiveness of turning it off is still to be determined. It's not clear that it affects throughput, which may be bottlenecked elsewhere.
-
-# Significant Events in the Data Set
-
-## News of Whitney Houston's Death .
-
-Her body was discovered at 3:30 PM PST February 11, 2012
-She was pronounced dead at 3:55 PM PST
+Her death was discovered at 3:30 PM PST February 11, 2012 and she was pronounced dead at 3:55 PM PST
 
 So that would be 11:30/11:55 GMT aka Zulu i.e. 23:30/23:55 GMT
 
@@ -319,27 +59,17 @@ Note the superbowl is also a great place to see real conversations starting up. 
 
 ## The Lion King 
 
+## The Grammy Lead Up
+
 
 # Data Set Time Fields
  
 The timestamps in the original data are Unix time, which is Zulu, aka GMT, aka UTC.
 
-We have a per-tweet created_at field in UTC.
-The foratted date-time fields in individual Tweets are rendered in UTC for the batch and as both UTC and local time for the Tweeter, e.g., in the case of California, i.e., PST
-
-# Data Set Start and End Time
-
-We have a little more than two weeks of almost unbroken data. The feed was restarted briefly once or twice over that time span--probably not enough to matter. 
-
-- Starts around 2012-01-28 16:16:46, i.e. quarter after five on New Years Day
-- Ends at 2012-02-15 03:22:36, which is 3:22 AM the day after Valentine's day.
-
-The very first hour or so may or may not be fully trustworthy as there may have been some starts and stops. This can be investigated using the file/time utility. It doesn't seem to matter.
-
 
 # Running the Program and Utilities
 
-In addition to the main program, there are several programs to parse the original JSON into CVS, run RabbitMQ, send the data, and various utilities for data conversion and analysis. This section tells how to run them all.
+In addition to the main program, there are several programs to parse the original JSON into CVS, run RabbitMQ, send the data, as well as various utilities for analysis, data conversion, etc. This section tells how to run them all.
 
 ## Parsing JSON files to CSV
 
@@ -559,11 +289,8 @@ This is interesting because is shows how extremely Z
 
 It's mostly the relatively rare words we care about because they carry the most meaning when they surge in usage.
  
-
-
-
 ## Tests
-We have fallen behind in unit tests!  This is a little obsolete now and needs to be upgraded.
+We have fallen behind a little in unit tests!  Some of this may be obsolete. 
 
 cd /Users/petercoates/python-work/cursor-twitter
 
@@ -583,6 +310,8 @@ make test-race
 ### This will run them all
 cd to cursor-twitter
 ./run_tests
+
+
 
 # Notes On Things That Have Been Checked/Fixed/Explored
 
@@ -607,7 +336,6 @@ The speedups were a combination of many things that are worth remembering:
 - Better memory management, especially getting rid of old 3pK mappings for zero count tokens
 - Deduplication of clusters, i.e. scrapping nearly identical Tweets. (A modified verison of Levenshtein distance that works on the word level rather than the character level.)
 - Greatly reduced logging and use of a framework that controls how much gets written
-
 
 ## Confirmation of the Z-score Principle
 The data technically violates the assumptions of Z because a Gaussian distribution is for continuous data, not integer counts. There is an argument to be made for Poission based scoring.
@@ -638,7 +366,6 @@ The following are excerpted from the logs. Note that the low Z scores are all qu
 
 "Z-score stats" class_index=12 min_z=-0.241437616624771 max_z=19.08450355887032
 
-
 ## 3pk Collisions
 Most distinct tokens are, for practical purposes, unique on the time scale of a day. The majority, in fact, don't appear more than once in two weeks. Permanently storing the 3pk values for super-rare tokens incurs two very significant costs:
 - It wastes a ton of space
@@ -658,7 +385,9 @@ This is harmless, because if the token ever shows up again, the main thread will
 
 Interestingly, doing this seemed to produce a significant bump in speed. From around 1100/sec to 1300/sec on the iMac. Not clear why. It would make sense if it slowed down after hundreds of millions of Tweets, by why quickly?
  
+ 
 ## Seemingly Excessive Token Rejection
+
 We were getting huge percentages of rejection of tokens because of too-short token length and/or tokens being on the ingore list. More than 30% and 40% respectively. The list of rejected tokens is in config/token_filters.txt.
  
 Those numbers were not supurious. Turning that functionality off gave the expected result and it is consistent with the Ziph distribution. It means both are very effective and doing their job. You definitely want min length = 3.  The two things strip out a huge amount of processing at the very beginning of the pipeline.
@@ -673,7 +402,7 @@ This aspect of the problem has NOT been reviewed
 
 ## Is token splitting on periods, commas, and dashes happening?
 
-No, it was not happening.  The token cleanup in Go now does this. Note that we can optionally split or not split on apostrophes. (See config.yaml) The default is to not split so that O'Brian and M'kele M'beme can continue to be tokens.
+No, it was not happening.  The token cleanup in Go now does this. Note that we can optionally split or not split on apostrophes. (See config.yaml) The default is to not split so that O'Brian and M'kele M'beme, and f'oc'sle can continue to be tokens.
 
 ## Overhaul of ASCII Output and Reduction of Logs
 
@@ -685,24 +414,26 @@ The rest of the logging now has the customary DEBUG/INFO/WARNING/ERROR levels in
 
 The new policy is to put only critical messages on the screeen and to write them to stderr so we can preserver stdout for proper output.
     
-## Annoying Nonsense
+## Annoying Nonsense Tweets
 
 We now have a file called banned_phrases.txt that contains a number of phrases that occur in a disproportionate number of essentially meaningless Tweets. No doubt the contents of such a file should be adjusted to a moment in time.
+Needless to say, it can be left empty.
 
 "The awkward moment"
+
 "That awkward moment"
+
+...
+
 "Do you want more Followers" 
- 
 
 # TTD and Direction
 
 ## Possible logic error
 We get notification of burst of 3pk's not mapping to tokens. This should be almost impossible (it says so right in the warning message.) 'Sup with that?
+May be an artifact of startup.
  
-## Put more of the set of config values on the screen at startup (stderr)
-We just have the basics. I don't think we need them all, but a lot of them would be good as reminders that they exist and may have been $#@!'d with.
- 
-## New Input Mode(s)
+## Possible New Input Mode(s)
 The main is now fed through RabbitMQ. It would be interestin to have a history mode specifically 
 for mass consumption as fast as possible.
 
@@ -713,11 +444,11 @@ Alternatively, have a main program mode that reads files of CSV itself.
 
  
 ## Ongoing  Items
-- Comments Key areas need to be commented to keep out don't touch, etc.
+- Comments key areas need to be commented to keep out don't touch, etc.
 
 - Testing has been neglected. Make tests around everything.
 
-- More fully populating the token_filters.txt file. Check the busywords in the logs and see what else jumps out.  This may be nearly done.
+- More fully populating the token_filters.txt file. Check the busywords in the logs and see what else jumps out.  This may be nearly done. Apostrophized words may need to be added.
  
 
 ## Major: Improving Busy Word Detection Quality with Computing Redundantly
