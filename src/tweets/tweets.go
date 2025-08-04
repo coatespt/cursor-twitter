@@ -11,6 +11,7 @@ type ThreePartKey struct {
 type Tweet struct {
 	IDStr        string   `json:"id_str"`
 	Unix         int64    `json:"unix"`
+	CreatedAt    string   `json:"created_at"` // Formatted timestamp with timezone
 	UserIDStr    string   `json:"user_id_str"`
 	Text         string   `json:"text"`
 	Tokens       []string `json:"tokens"`

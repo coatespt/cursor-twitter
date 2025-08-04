@@ -497,12 +497,12 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 
 			// Check if this is a new batch
 			if currentBatchNumber != result.BatchNumber {
-				// Run clustering for previous batch if it exists
-				if currentBatchNumber >= 0 {
-					// Get recent tweets from global queue for clustering
-					recentTweets := globalTweetQueue.GetRecentTweets(cfg.WindowBatches * cfg.BatchSize)
-					runClusteringForBatch(currentBatch, recentTweets, currentBatchNumber, cfg)
-				}
+							// Run clustering for previous batch if it exists
+			if currentBatchNumber >= 0 {
+				// Get recent tweets from global queue for clustering
+				recentTweets := globalTweetQueue.GetRecentTweets(cfg.Analysis.ClusteringWindowBatches * cfg.BatchSize)
+				runClusteringForBatch(currentBatch, recentTweets, currentBatchNumber, cfg)
+			}
 
 				// Start new batch
 				currentBatch = make(map[int][]string)
@@ -537,7 +537,7 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 		// Run clustering for final batch
 		if currentBatchNumber >= 0 {
 			// Get recent tweets from global queue for clustering
-			recentTweets := globalTweetQueue.GetRecentTweets(cfg.WindowBatches * cfg.BatchSize)
+			recentTweets := globalTweetQueue.GetRecentTweets(cfg.Analysis.ClusteringWindowBatches * cfg.BatchSize)
 			runClusteringForBatch(currentBatch, recentTweets, currentBatchNumber, cfg)
 		}
 
@@ -655,9 +655,9 @@ func runKMeansClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[s
 	var batchTimeStr string
 	if len(tweetsWithBusyWords) > 0 {
 		firstTweet := tweetsWithBusyWords[0]
-		batchTimeStr = time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
+		batchTimeStr = time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05 UTC")
 	} else {
-		batchTimeStr = time.Now().Format("2006-01-02 15:04:05")
+		batchTimeStr = time.Now().UTC().Format("2006-01-02 15:04:05 UTC")
 	}
 
 	// Collect all clusters for this batch
@@ -694,8 +694,31 @@ func runKMeansClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[s
 		persistenceInfo := getContinuationInfo(cluster, currentBatchWindow, batchNumber, cfg)
 
 		// Create cluster data for output
+		// Find the earliest tweet chronologically (not just the first in DFS order)
 		firstTweet := cluster.Tweets[0]
-		timeStr := time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
+		earliestTime := firstTweet.Unix
+		latestTime := firstTweet.Unix
+		for _, tweet := range cluster.Tweets {
+			if tweet.Unix < earliestTime {
+				earliestTime = tweet.Unix
+				firstTweet = tweet
+			}
+			if tweet.Unix > latestTime {
+				latestTime = tweet.Unix
+			}
+		}
+		timeStr := firstTweet.CreatedAt
+		
+		// Debug: Log the time span of this cluster
+		timeSpan := latestTime - earliestTime
+		if timeSpan > 300 { // More than 5 minutes
+			slog.Warn("Large time span in cluster", 
+				"cluster_id", i+1, 
+				"time_span_seconds", timeSpan,
+				"earliest", time.Unix(earliestTime, 0).Format("2006-01-02 15:04:05 UTC"),
+				"latest", time.Unix(latestTime, 0).Format("2006-01-02 15:04:05 UTC"),
+				"cluster_size", len(cluster.Tweets))
+		}
 
 		clusterData := map[string]interface{}{
 			"cluster_id":         i + 1,
@@ -758,9 +781,9 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 	var batchTimeStr string
 	if len(tweetsWithBusyWords) > 0 {
 		firstTweet := tweetsWithBusyWords[0]
-		batchTimeStr = time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
+		batchTimeStr = time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05 UTC")
 	} else {
-		batchTimeStr = time.Now().Format("2006-01-02 15:04:05")
+		batchTimeStr = time.Now().UTC().Format("2006-01-02 15:04:05 UTC")
 	}
 
 	// Collect all clusters for this batch
@@ -797,8 +820,31 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 		persistenceInfo := getContinuationInfo(cluster, currentBatchWindow, batchNumber, cfg)
 
 		// Create cluster data for output
+		// Find the earliest tweet chronologically (not just the first in DFS order)
 		firstTweet := cluster.Tweets[0]
-		timeStr := time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05")
+		earliestTime := firstTweet.Unix
+		latestTime := firstTweet.Unix
+		for _, tweet := range cluster.Tweets {
+			if tweet.Unix < earliestTime {
+				earliestTime = tweet.Unix
+				firstTweet = tweet
+			}
+			if tweet.Unix > latestTime {
+				latestTime = tweet.Unix
+			}
+		}
+		timeStr := firstTweet.CreatedAt
+		
+		// Debug: Log the time span of this cluster
+		timeSpan := latestTime - earliestTime
+		if timeSpan > 300 { // More than 5 minutes
+			slog.Warn("Large time span in cluster", 
+				"cluster_id", i+1, 
+				"time_span_seconds", timeSpan,
+				"earliest", time.Unix(earliestTime, 0).Format("2006-01-02 15:04:05 UTC"),
+				"latest", time.Unix(latestTime, 0).Format("2006-01-02 15:04:05 UTC"),
+				"cluster_size", len(cluster.Tweets))
+		}
 
 		clusterData := map[string]interface{}{
 			"cluster_id":         i + 1,
@@ -1145,6 +1191,46 @@ func main() {
 	fmt.Fprintf(os.Stderr, "Building frequency class filters... (this may take a few minutes)\n")
 	fmt.Fprintf(os.Stderr, "Progress: ")
 
+	// Also log the same config information to the log file
+	LogInfo(func() string { return "=== TWITTER SUBJECT DETECTION PIPELINE STARTUP ===" })
+	LogInfo(func() string { return fmt.Sprintf("Config file: %s", *configPath) })
+	LogInfo(func() string { return fmt.Sprintf("Log level: %s", cfg.LogLevel) })
+	LogInfo(func() string { return fmt.Sprintf("Verbose mode: %v", cfg.Verbose) })
+	LogInfo(func() string { return "--- Core Pipeline Settings ---" })
+	LogInfo(func() string { return fmt.Sprintf("Frequency classes: %d", cfg.FreqClasses) })
+	LogInfo(func() string { return fmt.Sprintf("Batch size: %d tweets", cfg.BatchSize) })
+	LogInfo(func() string { return fmt.Sprintf("Window batches: %d", cfg.WindowBatches) })
+	LogInfo(func() string { return fmt.Sprintf("Window size: %d", cfg.WindowSize) })
+	LogInfo(func() string { return fmt.Sprintf("BW array length: %d", cfg.BWArrayLen) })
+	LogInfo(func() string { return fmt.Sprintf("Min token length: %d", cfg.MinTokenLen) })
+	LogInfo(func() string { return fmt.Sprintf("Z-scores: %v", cfg.ZScores) })
+	LogInfo(func() string { return fmt.Sprintf("Skip frequency classes: %v", cfg.SkipFrequencyClasses) })
+	LogInfo(func() string { return fmt.Sprintf("Busyword classes: %v", cfg.BusywordClasses) })
+	LogInfo(func() string { return "--- Persistence Settings ---" })
+	LogInfo(func() string { return fmt.Sprintf("Token persist files: %d", cfg.TokenPersistFiles) })
+	LogInfo(func() string { return fmt.Sprintf("Rebuild every files: %d", cfg.RebuildEveryFiles) })
+	LogInfo(func() string { return fmt.Sprintf("Window batches persistence: %d", cfg.Analysis.WindowBatchesPersistence) })
+	LogInfo(func() string { return fmt.Sprintf("Window batches persistence check: %d", cfg.Analysis.WindowBatchesPersistenceCheck) })
+	LogInfo(func() string { return fmt.Sprintf("Min shared busywords for persistence: %d", cfg.Analysis.MinSharedBusyWordsForPersistence) })
+	LogInfo(func() string { return "--- Clustering Settings ---" })
+	LogInfo(func() string { return fmt.Sprintf("Clustering method: %s", cfg.Analysis.ClusteringMethod) })
+	LogInfo(func() string { return fmt.Sprintf("Output mode: %s", cfg.Analysis.OutputMode) })
+	LogInfo(func() string { return fmt.Sprintf("Min busy words per tweet: %d", cfg.Analysis.MinBusyWordsPerTweet) })
+	LogInfo(func() string { return fmt.Sprintf("Min Jaccard similarity: %.3f", cfg.Analysis.MinJaccardSimilarity) })
+	LogInfo(func() string { return fmt.Sprintf("Duplicate similarity threshold: %.3f", cfg.Analysis.DuplicateSimilarityThreshold) })
+	LogInfo(func() string { return fmt.Sprintf("Min cluster size: %d", cfg.Analysis.MinClusterSize) })
+	LogInfo(func() string { return fmt.Sprintf("Language filter: %s", cfg.Analysis.LanguageFilter) })
+	LogInfo(func() string { return fmt.Sprintf("Cluster sort descending: %v", cfg.Analysis.ClusterSortDescending) })
+	LogInfo(func() string { return "--- Filter Settings ---" })
+	LogInfo(func() string { return fmt.Sprintf("Filter enabled: %v", cfg.Filter.Enabled) })
+	LogInfo(func() string { return fmt.Sprintf("RabbitMQ: %s:%d/%s", cfg.MQHost, cfg.MQPort, cfg.MQQueue) })
+	LogInfo(func() string { return fmt.Sprintf("Load state: %v", *loadState) })
+	LogInfo(func() string { return fmt.Sprintf("Print tweets: %v", *printTweets) })
+	LogInfo(func() string { return "--- Additional Settings ---" })
+	LogInfo(func() string { return "Token filtering parameters available in config.yaml (token_filters section)" })
+	LogInfo(func() string { return "=== STARTUP PROGRESS ===" })
+	LogInfo(func() string { return "Building frequency class filters... (this may take a few minutes)" })
+
 	// Verbose mode test message and z-score array print
 	if cfg.Verbose {
 		LogInfo(func() string { return "*** VERBOSE MODE ENABLED (config.yaml) ***" })
@@ -1211,6 +1297,12 @@ func main() {
 	fmt.Fprintf(os.Stderr, "✓ Clustering output will be printed to stdout\n")
 	fmt.Fprintf(os.Stderr, "✓ Logs saved to: %s\n", cfg.LogDir)
 	fmt.Fprintf(os.Stderr, "=== STARTUP COMPLETE ===\n\n")
+
+	// Also log the completion messages to the log file
+	LogInfo(func() string { return "✓ Pipeline ready! Consuming tweets from RabbitMQ..." })
+	LogInfo(func() string { return "✓ Clustering output will be printed to stdout" })
+	LogInfo(func() string { return fmt.Sprintf("✓ Logs saved to: %s", cfg.LogDir) })
+	LogInfo(func() string { return "=== STARTUP COMPLETE ===" })
 
 	setupSignalHandling()
 
@@ -1711,6 +1803,7 @@ func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
 	tweet := &tweets.Tweet{
 		IDStr:        record[0],
 		Unix:         createdAt.Unix(),
+		CreatedAt:    createdAt.Format("2006-01-02 15:04:05 UTC"),
 		UserIDStr:    record[2],
 		Text:         record[4],
 		Retweeted:    record[5] == "True",
@@ -2295,7 +2388,7 @@ func runKMeansClusteringGo(tweetList []*tweets.Tweet, busyWords map[string]bool,
 			if j == maxTweetsToShow-1 || j == len(cluster.Tweets)-1 {
 				prefix = "│  └─"
 			}
-			writeOutput("%s \"%s\"", prefix, tweet.Text)
+			writeOutput("%s [%s] \"%s\"", prefix, tweet.CreatedAt, tweet.Text)
 		}
 		writeOutput("│")
 	}
@@ -2431,13 +2524,47 @@ func findMostTypicalTweets(tweets []*tweets.Tweet, threshold float64) (mostConne
 	n := len(tweets)
 	connections := make([]int, n)
 	simSums := make([]float64, n)
+	
+	// Calculate temporal weights based on tweet timestamps
+	temporalWeights := make([]float64, n)
+	if n > 1 {
+		// Find the median timestamp to use as reference
+		timestamps := make([]int64, n)
+		for i, tweet := range tweets {
+			timestamps[i] = tweet.Unix
+		}
+		
+		// Sort timestamps to find median
+		sort.Slice(timestamps, func(i, j int) bool {
+			return timestamps[i] < timestamps[j]
+		})
+		medianTimestamp := timestamps[n/2]
+		
+		// Calculate temporal weights (closer to median = higher weight)
+		maxTimeDiff := int64(300) // 5 minutes in seconds
+		for i, tweet := range tweets {
+			timeDiff := abs(tweet.Unix - medianTimestamp)
+			if timeDiff > maxTimeDiff {
+				temporalWeights[i] = 0.1 // Very low weight for tweets far from median time
+			} else {
+				// Weight decreases linearly with time difference
+				temporalWeights[i] = 1.0 - (float64(timeDiff) / float64(maxTimeDiff)) * 0.5
+			}
+		}
+	} else {
+		// Single tweet gets full weight
+		temporalWeights[0] = 1.0
+	}
+	
 	for i := 0; i < n; i++ {
 		for j := 0; j < n; j++ {
 			if i == j {
 				continue
 			}
 			sim := jaccard(tweets[i].Tokens, tweets[j].Tokens)
-			simSums[i] += sim
+			// Apply temporal weight to similarity score
+			weightedSim := sim * temporalWeights[i]
+			simSums[i] += weightedSim
 			if sim >= threshold {
 				connections[i]++
 			}
@@ -2456,6 +2583,14 @@ func findMostTypicalTweets(tweets []*tweets.Tweet, threshold float64) (mostConne
 		}
 	}
 	return
+}
+
+// Helper function for absolute value
+func abs(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 // Helper function
@@ -2790,6 +2925,8 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 			if i >= maxToShow {
 				break
 			}
+			// If the stored text already includes a timestamp, use it as-is
+			// Otherwise, we can't add timestamp since we don't have the original tweet
 			tweetTexts = append(tweetTexts, text)
 		}
 	} else if tweetsInterface, ok := clusterMap["tweets"].([]interface{}); ok {
@@ -2822,14 +2959,19 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 		// Count unique tweets after deduplication
 		uniqueTweetCount = len(deduplicatedTweets)
 
-		// Convert deduplicated tweets to texts
+		// Convert deduplicated tweets to texts with timestamps
 		for i, tweetInterface := range deduplicatedTweets {
 			if i >= maxToShow {
 				break
 			}
 			if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
 				if text, ok := tweetMap["text"].(string); ok {
-					tweetTexts = append(tweetTexts, text)
+					if createdAt, ok := tweetMap["created_at"].(string); ok {
+						tweetWithTime := fmt.Sprintf("[%s] %s", createdAt, text)
+						tweetTexts = append(tweetTexts, tweetWithTime)
+					} else {
+						tweetTexts = append(tweetTexts, text)
+					}
 				}
 			}
 		}
@@ -2870,12 +3012,13 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 		// Count unique tweets after deduplication
 		uniqueTweetCount = len(deduplicatedTweets)
 
-		// Convert deduplicated tweets to texts
+		// Convert deduplicated tweets to texts with timestamps
 		for i, tweet := range deduplicatedTweets {
 			if i >= maxToShow {
 				break
 			}
-			tweetTexts = append(tweetTexts, tweet.Text)
+			tweetWithTime := fmt.Sprintf("[%s] %s", tweet.CreatedAt, tweet.Text)
+			tweetTexts = append(tweetTexts, tweetWithTime)
 		}
 
 	}
@@ -2894,10 +3037,17 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 		humanReadable["tweet_texts"] = tweetTexts
 	}
 
-	// Add the most typical tweet text
-	if mostTypicalTweet, ok := clusterMap["most_typical_tweet"].(*tweets.Tweet); ok && mostTypicalTweet != nil {
-		humanReadable["medoid_tweet_text"] = mostTypicalTweet.Text
-	}
+			// Add the most typical tweet text with timestamp
+		if mostTypicalTweet, ok := clusterMap["most_typical_tweet"].(*tweets.Tweet); ok && mostTypicalTweet != nil {
+			medoidWithTime := fmt.Sprintf("[%s] %s", mostTypicalTweet.CreatedAt, mostTypicalTweet.Text)
+			humanReadable["medoid_tweet_text"] = medoidWithTime
+			
+			// Debug: Log the medoid tweet details
+			slog.Debug("Medoid tweet details",
+				"unix_time", mostTypicalTweet.Unix,
+				"created_at", mostTypicalTweet.CreatedAt,
+				"text_preview", mostTypicalTweet.Text[:min(50, len(mostTypicalTweet.Text))])
+		}
 
 	// Add persistence information if available
 	if persistenceInfo, ok := clusterMap["persistence_info"].(string); ok {

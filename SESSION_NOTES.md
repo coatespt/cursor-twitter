@@ -302,28 +302,39 @@ You can use the utilities mentioned below to find the date/time you want to star
 In addition to computing the new subjects, the system can give information about how long those new subjects have existed in terms of the number of batches. This is given in the form of a list of the previous N batches that also match the new subject.
 
 Persistence of subjects is a major consumer of CPU, bigger than the cost as the clustering itself.  It can be turned on and off, but the effectiveness of turning it off is still to be determined. It's not clear that it affects throughput, which may be bottlenecked elsewhere.
+
+# Significant Events in the Data Set
+
+## News of Whitney Houston's Death .
+
+Her body was discovered at 3:30 PM PST February 11, 2012
+She was pronounced dead at 3:55 PM PST
+
+So that would be 11:30/11:55 GMT aka Zulu i.e. 23:30/23:55 GMT
+
+### Super Bowl
+Note the superbowl is also a great place to see real conversations starting up. It occurs on Feb 5 2012.  
+
+## Beyonce Has a Baby
+
+## The Lion King 
+
+
+# Data Set Time Fields
  
+The timestamps in the original data are Unix time, which is Zulu, aka GMT, aka UTC.
+
+We have a per-tweet created_at field in UTC.
+The foratted date-time fields in individual Tweets are rendered in UTC for the batch and as both UTC and local time for the Tweeter, e.g., in the case of California, i.e., PST
 
 # Data Set Start and End Time
 
-We have a little more than two weeks of almost unbroken data. The feed was restarted briefly once or twice over that time span--probably not enough to matter.
-
-
-## The Data Set
+We have a little more than two weeks of almost unbroken data. The feed was restarted briefly once or twice over that time span--probably not enough to matter. 
 
 - Starts around 2012-01-28 16:16:46, i.e. quarter after five on New Years Day
 - Ends at 2012-02-15 03:22:36, which is 3:22 AM the day after Valentine's day.
 
 The very first hour or so may or may not be fully trustworthy as there may have been some starts and stops. This can be investigated using the file/time utility. It doesn't seem to matter.
-
-## News of Whitney Houston's death Seems to Start Around Here.
-gnip.csv_1329008058666_1329008358666.csv:168498929640550400, Feb 12 00:57:30 
-
-This is toward the end of the 2-week+ period covered by the feed.
-
-
-### Super Bowl
-Note the superbowl is also a great place to see real conversations starting up. It occurs on Feb 5 2012.  
 
 
 # Running the Program and Utilities
@@ -476,7 +487,7 @@ go build -o analyze_tokens analyze_tokens.go
 
 There are more than two weeks of decahose in 5000+ files. If you process Tweets starting at some given point in the multi-week interval available starting at January 1, 2012 and running to approximately January 15, 2012, you can find the file to start with by using this utility.
 
-You can put the file name in the data/sender directory to tell the sender where to start.
+You can put the file name in the data/sender/sender_status.txt.<whatever> and copy that file to sender_status.txt for repeatable sender start files.
 
 Note that it takes an argument, N, which is the number of CSV files prior to the one you want. This is because in most cases, you will have to fire it up from scratch in order to have it primed when it gets to the date you seek.  The number of files is a function of how many tokens you specify in config. I've been using 2,000,000, which is about a quarter of a million tweets, divided by 30k tweets in a file should be N=eight or nine files.
 
@@ -488,11 +499,14 @@ make build-find-csv
 Run it:
 ./find_csv_file -dir /path/to/csv/files -datetime "2012-02-14 19:35:55" -n 3
 
-The following will return a filename an hour before Whitney Houston's death is reported.
+The following will return a file where the first "batch_time" is "2012-02-11 16:49:05 UTC".
 
- ./find_csv_file -dir ../twits/test_language_detect_out/ -datetime "2012-02-12 00:00:00" -n 3
+ ./find_csv_file -dir /home/petercoates/gnip-csv-lang/ -datetime "2012-02-11 23:00:00" -n 15
+
+ starting with file:
+
+ ../../gnip-csv-lang/gnip.csv_1328996644096_1328996944096.csv
  
-gnip.csv_1329003852976_1329004152976.csv
 
 A handy way to check it:
 The following will print the first few lines of the file.

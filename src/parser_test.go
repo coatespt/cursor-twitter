@@ -66,6 +66,12 @@ func TestParseCSVToTweetValid(t *testing.T) {
 		t.Errorf("Expected Unix timestamp %d, got %d", expectedTime.Unix(), tweet.Unix)
 	}
 
+	// Verify formatted timestamp
+	expectedFormatted := expectedTime.Format("2006-01-02 15:04:05 UTC")
+	if tweet.CreatedAt != expectedFormatted {
+		t.Errorf("Expected formatted timestamp '%s', got '%s'", expectedFormatted, tweet.CreatedAt)
+	}
+
 	// Verify tokens were generated
 	expectedTokens := []string{"this", "is", "a", "test", "tweet", "with", "some", "interesting", "words"}
 	if len(tweet.Tokens) != len(expectedTokens) {
