@@ -2,15 +2,15 @@
 
 The document PROJECT_DESCRIPTION.md has information on project goals, what it does, and most general interest material.
 
+The document USER_MANUAL.md has instructions for the application, the sender, analytics programs, and utilities.
+
 This document covers
 - Loud warnings to Cursor not to mess with any code without asking
-- Instructions for running the main program and utilities
-	- There are numerous parameters for the main program
-	- Utilities for pre-processing the data
-	- Utilities for analysis
-- Notes on throughput and behavior
-- Lessons learned
 - TTD for fixes, enhancements, analysis, etc.
+- Notes on speed, throughput, distributions, and behavior
+- Time Fields
+- Notes on Issues That Have Been Investigated or Fixed
+- Lessons learned
 
 
 # Cursor Principles 
@@ -35,6 +35,76 @@ When a test doesn't pass, we have to look at why before changing anything. No re
 
 If any changes seem to involve multiple threads, be sure to get my agreement before doing anything. Anytime there thread safety constructs like mutex, etc., always check. We keep getting into trouble with unnecessary and incorrect thread complexity.
 
+# TTD and Direction
+
+## Write a GUI Interface For Canned Results 
+
+## Produce a flag that supresses all the Tweets other than the medioid for compact output.
+
+It's not as exciting as live, but it would be quite useful for exploring.
+
+## A Possible Logic Error
+We get notification of burst of 3pk's not mapping to tokens. This should be almost impossible (it says so right in the warning message.) 'Sup with that?
+This be an artifact of startup reading token files that are out of date with respect to the restart.
+ 
+## Possible New Input Mode(s)
+The main is now fed through RabbitMQ. It would be interestin to have a history mode specifically 
+for mass consumption as fast as possible.
+
+- Supplement the feeder with a program that just cats the lines in the CSV to standard out. Does it need to be speed limited or will it somehow self-throttle?
+- Add a mode for reading from standard in
+
+Alternatively, have a main program mode that reads files of CSV itself.
+ 
+## Ongoing  Items
+- Comments key areas need to be commented to keep out don't touch, etc.
+
+- Testing has been neglected. Make tests around everything.
+
+- More fully populating the token_filters.txt file. Check the busywords in the logs and see what else jumps out.  This may be nearly done. Apostrophized words may need to be added.
+ 
+
+## Major: Improving Busy Word Detection Quality with Computing Redundantly
+
+This would be a significant effort.  Interesting idea, but it's not 100% clear that it's worth doing. We need some investigation.
+
+Consider that dual sets of pipelines, or even three sets, each with different hash functions, could do a much more accurate job of filtering out the true busy words for a given set of parameters.  
+ 
+It is not clear how big an impact this would have on performance. All the BW processors are doing is counting and periodically computing Z on a thousand values in each of the three counter arrays. There is a tiny bit more work in the analysis to take only the words that appear in the required number of sets. It doesn't really affect the analysis phase that follows, and it's just a little more work for the main to put the tokens on more queues than before.
+
+Risk. If multiplying the work in the busyword processors made them in aggregate slower than the combined main pipeline and the clustering, it would cause the queues to grow without bound and crash the program. You'd need to detect the problem and throttle the reads if this is a problem. Actually, this should probably be done anyway! Who knows if some combination of config parameters could cause this to happen.
+   
+
+## Major: Clustering Across Batches
+
+Note, this has now been implemented in the form of looking to see many cycles a cluster has been present for. 
+
+Jacquard similarity for the clustering seems to be applied to all the tokens in the Tweets. 
+  - Is that true, and if so, is it correct? This may have been done.
+  - Maybe it should be only on the busywords. 
+  - Jacquard similarity might not be important. Maybe just the raw occurrences?
+ 
+
+## Major: A Graphical Front End
+This is a big one!  Not sure how to go about it with Cursor. I wrote the graphics by hand in Java last time!
+
+A busy-word fade-out like the bubbles would be great.
+- The size proportional to the number of Tweets the busy word is in. Or perhaps logarithmically proportional.
+- When the BW was last seen, fading off the left
+- Vertical axis is the frequency class
+
+
+## Consider Stripping K-Means Out Entirely
+It doesn't do any harm, but we're never going to use it and it could be confusing.
+   
+## Document What is Known About Tuning Performance and Accuracy
+
+
+
+
+
+
+
 
 # Speed of Computation and Significant Events
 
@@ -44,9 +114,9 @@ The dataset:
 - Starts around 2012-01-28 16:16:46, i.e. quarter after five on New Years Day
 - Ends at 2012-02-15 03:22:36, which is 3:22 AM the day after Valentine's day.
 
-There are a number of newsworthy evens during that period.
+##There are a number of newsworthy evens during that period.
 
-## News of Whitney Houston's Death
+### News of Whitney Houston's Death
 
 Her death was discovered at 3:30 PM PST February 11, 2012 and she was pronounced dead at 3:55 PM PST
 
@@ -55,20 +125,19 @@ So that would be 11:30/11:55 GMT aka Zulu i.e. 23:30/23:55 GMT
 ### Super Bowl
 Note the superbowl is also a great place to see real conversations starting up. It occurs on Feb 5 2012.  
 
-## Beyonce Has a Baby
+### Beyonce Has a Baby
 
-## The Lion King 
+### The Lion King 
 
-## The Grammy Lead Up
+### The Grammy Lead Up
 
-
-# Data Set Time Fields
+## Data Set Time Fields
  
 The timestamps in the original data are Unix time, which is Zulu, aka GMT, aka UTC.
 
-
-# Distinct Tokens for English (en)
+## Distinct Tokens for English (en)
 This is interesting because is shows how extremely Zipfy the data is.  
+There is a utility for generating token counts, relative frequency, cumulative frequency, etc.
 
 - 11,522,129 distinct tokens appear in "en" Tweets.  
 - The top 220 tokens (which are almost all words) account for half of all usage.
@@ -77,7 +146,7 @@ This is interesting because is shows how extremely Zipfy the data is.
 - The top 615,473 tokens account for 99% of all usage.
 - The other 95%, 10,906,656, tokens account for only 1% of all usage.
   
-It's mostly the relatively rare words we care about because they carry the most meaning when they surge in usage.
+It's mostly the relatively rare words that we care about because they carry the most meaning when they surge in usage. In information theory terms, the high entropy tokens.
  
 ## Tests
 We have fallen behind a little in unit tests!  Some of this may be obsolete. 
@@ -212,98 +281,43 @@ Needless to say, it can be left empty.
 
 "Do you want more Followers" 
 
-# TTD and Direction
+# Miscelaneous Issues and Details
 
-## Write a GUI Interface For Canned Results 
+## The Big Token Window
 
-## Produce a flag that supresses all the Tweets other than the medioid for compact output.
+Word distributions change thoughout the day and week. People don't Tweet the same things at breakfast on Monday that they do at 1:00 AM on Saturday.  Also, the world turns, and while New Yorkers are getting up in the morning, people in Bejing are out for the evening.
 
-It's not as exciting as live, but it would be quite useful for exploring.
+Equally importantly, surges in usage continually adjust the current background frequencies.
 
-## A Possible Logic Error
-We get notification of burst of 3pk's not mapping to tokens. This should be almost impossible (it says so right in the warning message.) 'Sup with that?
-This be an artifact of startup reading token files that are out of date with respect to the restart.
- 
-## Possible New Input Mode(s)
-The main is now fed through RabbitMQ. It would be interestin to have a history mode specifically 
-for mass consumption as fast as possible.
+Note, these issues are best thought of in terms of the logical time in the Tweets, independently of the actual time to process. In a live field, these are the same, but with stored data, processing can be considerably faster than logical time.
 
-- Supplement the feeder with a program that just cats the lines in the CSV to standard out. Does it need to be speed limited or will it somehow self-throttle?
-- Add a mode for reading from standard in
+### Word Distribution
 
-Alternatively, have a main program mode that reads files of CSV itself.
- 
-## Ongoing  Items
-- Comments key areas need to be commented to keep out don't touch, etc.
+See "Zipf Distribution" in any reference for details.
 
-- Testing has been neglected. Make tests around everything.
+Consider that 
 
-- More fully populating the token_filters.txt file. Check the busywords in the logs and see what else jumps out.  This may be nearly done. Apostrophized words may need to be added.
- 
-
-## Major: Improving Busy Word Detection Quality with Computing Redundantly
-
-This would be a significant effort.  Interesting idea, but it's not 100% clear that it's worth doing. We need some investigation.
-
-Consider that dual sets of pipelines, or even three sets, each with different hash functions, could do a much more accurate job of filtering out the true busy words for a given set of parameters.  
- 
-It is not clear how big an impact this would have on performance. All the BW processors are doing is counting and periodically computing Z on a thousand values in each of the three counter arrays. There is a tiny bit more work in the analysis to take only the words that appear in the required number of sets. It doesn't really affect the analysis phase that follows, and it's just a little more work for the main to put the tokens on more queues than before.
-
-Risk. If multiplying the work in the busyword processors made them in aggregate slower than the combined main pipeline and the clustering, it would cause the queues to grow without bound and crash the program. You'd need to detect the problem and throttle the reads if this is a problem. Actually, this should probably be done anyway! Who knows if some combination of config parameters could cause this to happen.
-   
-
-## Major: Clustering Across Batches
-
-Note, this has now been implemented in the form of looking to see many cycles a cluster has been present for. 
-
-Jacquard similarity for the clustering seems to be applied to all the tokens in the Tweets. 
-  - Is that true, and if so, is it correct? This may have been done.
-  - Maybe it should be only on the busywords. 
-  - Jacquard similarity might not be important. Maybe just the raw occurrences?
- 
-
-## Major: A Graphical Front End
-This is a big one!  Not sure how to go about it with Cursor. I wrote the graphics by hand in Java last time!
-
-A busy-word fade-out like the bubbles would be great.
-- The size proportional to the number of Tweets the busy word is in. Or perhaps logarithmically proportional.
-- When the BW was last seen, fading off the left
-- Vertical axis is the frequency class
-
-
-## Consider Stripping K-Means Out Entirely
-It doesn't do any harm, but we're never going to use it and it could be confusing.
-   
-## Document What is Known About Tuning Performance and Accuracy
-
-# Miscelaneous Details
-
-## The Big Token Window.
-
-People don't Tweet the same things at breakfast on Monday that they do at 1:00 AM on Saturday.  Also, the world turns, and while New Yorkers are getting up in the morning, people in Bejing are out for the evening.
-
-Also, surges in usage continually change the current frequencies.
-
-Because most words are extremely rare, and words beyond the rank of a few thousand it still takes quite a lot of tweets to get even a rough estimate of frequency. Consider that
-- "Dog" is about the 1000th most common word, yet only 1/10,000 of words will be dog. 
+- "Dog" is about the 1000th most common word, yet only 1/10,000 of words will be dog.
 - "Mirror" is the 3000th most common word, and only 3 words out of 100,000 will be mirror.  
 - "Edge" is the 5000th most common word, and it appears only once in 100,000 words
+- "Shocking", "critical", "stripper", and "java" are all about rank 10,000 and appear somewhat less than once in a million words. 
+- The most common 250 words in the corpus occur as much as the least common 11 million.
 
-Therefore, you need a lot of words (millions) to get even a reasonably accurate estimate of a word's background frequency. The decahose is 500 Tweets/second or about 5,000 words/second, which is about 3.3 minutes of data. So a window of five million words is about 16.6 minutes.
+Because even fairly ordinary words are literally one-in-a-million or fewer, you need a lot of words (millions) to get even a reasonably accurate estimate of a word's background frequency. The decahose is 500 Tweets/second or about 5,000 words/second, which is about 3.3 minutes of data. So a window of five million words is about 16.6 logical minutes.
 
-Three million is a reasonable window size because it's easily fine enough to keep up with the time of day, and not so coarse that it takes a long time to age surges in frequency out.
+So why not have a window of fifty or a hundred million?  Because there is a trade off between the quality of the frequency statistics and having a short enough window to both keep up with the time of day and to allow surges of frequency associated with subjects to age out reasonably quickly.  Three million tokens is about 300,000 Tweets, which is about ten files of five logical minutes each. Fifty minutes, of the decahose give or take. 
 
-You have to age tokens out if you want a stable size window, and that gets to be a lot to keep in memory and a lot to do token by token. 
+This is an interesting point because with the decahose, the time it takes to get enough tokens to accumulate a good picture of word frequency is long enough that time of day comes into play and it multiplies the benchmark of what is "new" times ten. Playing the Tweets ten times as fast isn't the same as the full firehose because the decahose requires ten times as much logical time for the same number of tweets.
 
-Accordingly, the tokens underlying the token counters are written to disk in batches. After the number of token batch files reaches a defined limit, each time a new batch is written out, the oldest batch is read in (and deleted from disk). The contents of the old batch are then used to decrement the global token counts.
+Because the window has to be large, the tokens underlying the token counters are written to disk in batches as they are read in. After the number of token batch files reaches its defined limit, each time a new batch is written out, the oldest batch is read in (and deleted from disk). The contents of the old batch are then used to decrement the global token counts.
 
-This keeps the token counts relatively up to date with the flow of Tweets.  
+You can use whatever batch size suits, but fifty files for three million tokens seems to work well. That means you're aging out the old tokens out in approximately one minute increments over a window of fifty logical minutes. 
 
-Note that frequency calculations would typically happen multiple times in the span of time represented by an entire token window.  They are controlled by separate parameters. Say you have a five million word window, i.e., 16 or 17 minutes, you might recompute the frequency filters every couple or three minutes.
+Note that frequency calculations would typically happen multiple times in the span of time represented by an entire token window.  Window size and frequency of recalculation are controlled by separate parameters. Say you have a five million word window, i.e., 16 or 17 minutes, you might recompute the frequency filters every couple or three minutes.
 
 ## The Small Window of Tweets
 
-The big token window is only of concern only to the off-line frequency calculating thread.  The main thread keeps short window of Tweets in memory for use in the clustering algorithm, which is in the main processing line.
+The big token window is only of concern only to the off-line frequency calculating thread.  The main thread keeps short window of Tweets (not just tokens) in memory for use in the clustering algorithm, which is in the main processing line.
 
 This is a conventional queue that keeps a configured number of Tweets, ageing out the old ones as new ones are added.  This would be configured to hold a few processing batches of Tweets. As a batch is typically in the range of one thousand to a few thousands, it would be a small multiple of that size.  
 

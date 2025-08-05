@@ -41,6 +41,7 @@ go build -o main src/main.go
 - Clustering of similar tweets
 - Real-time tweet processing from RabbitMQ
 - Deduplication and filtering
+- Configurable output suppression for economy of display
 
 **Configuration:**
 - See `config/config.yaml` for all settings
@@ -353,6 +354,7 @@ analysis:
   min_jaccard_similarity: 0.4 # Similarity threshold
   deduplicate_by_user: true  # Enable deduplication
   cluster_sort_descending: false # Sort order
+  suppress_individual_tweets: false # Suppress individual tweets in output
 ```
 
 #### Performance Settings

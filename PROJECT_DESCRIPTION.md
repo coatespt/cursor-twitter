@@ -8,13 +8,13 @@ This document covers
 
 # Project Goal
 This project has two goals. 
-Both concern the ability to understand what subjects people are talking about on X/Twitter in near real time at a granularity of seconds.
+Both goals are about understanding what new subjects people are talking about on X/Twitter in near real time at a granularity of seconds.
 
 ## The Narrow Goal: Getting New Subjects (News)From the X/Twitter firehose in Real Time
 
-The weaknesses of X/Twitter and similar micro-blogging platforms has always been the difficulty of finding out what is there. Seen the other way around, it is the difficulty bloggers have connecting with readers with whom the don't have a prior relationship. There's no TV-Guide.
+The weaknesses of X/Twitter and similar micro-blogging platforms has always been the difficulty of finding out what is there. Seen the other way around, it is the difficulty bloggers have connecting with readers with whom the don't have a prior relationship. There's no TV-Guide for Twitter.
 
-In practice, this problem is mostly solved by punting it to the users.  It's up to the blogger to markup posts with hashtags, and up to the receiver to discover people, hashtags, etc. to subscribe to. Ironically, this is usually done indirectly, by finding interesting people by other means, then seeking them out on X.  
+In practice, this problem is mostly solved by punting it to the users.  It's up to the blogger to mark up posts with hashtags, and up to the receiver to discover people, hashtags, etc. to subscribe to. Ironically, this discovery is usually done indirectly, by finding interesting people by other means, then seeking them out on X.  
  
 Even important news often takes on the order of hours to surface in conventional media, so real time identification within seconds is a major advantage if knowing things first matters. When you see a subject characterized by "train, chemical, crash, evacuation, and environment" suddenly pop up, you may want to short Dow Chemical.
  
@@ -22,16 +22,17 @@ Even important news often takes on the order of hours to surface in conventional
 
 Treating the history of X/Twitter as an historical resource or as a way to understand current events is problematic because of the scale of computing required. It's extremely difficult to do it at a fine grain without huge computational and technologist resources.
 
-To be able to see the subjects that arise and ramify minute by minute during events as ordinary and well-defined as the Super Bowl or a concert is eye opening. Every song or play gets a burst of talk. The possibilities for events as complex as evolving conspiracy theories, the BLM movement, the Arab Spring, or the invasion of Ukraine have real possibilites for historian, journalists, and understanding the public mind for public safety, etc. 
+To be able to see the subjects that arise and ramify minute by minute during events as ordinary and well-defined as the Super Bowl or a concert is eye opening. Every song or play gets a burst of talk. Events as complex as evolving conspiracy theories, the BLM movement, the Arab Spring, or the invasion of Ukraine have can be exposed for historians, journalists, and public safety needs, etc. 
 
-With the resources likely to be available to researchers, it would be difficult to take advantage of the data unless it were segmented in dimensions such as:
+With the resources that are likely to be available to academic researchers, it would be difficult to take advantage of the data unless it were segmented in dimensions such as:
 - Time slice
 - Analyzing only a random longitudinal fraction of the full stream
 - Possibly most importantly, by limiting the granularity of examination, i.e.,look at subjects that are big enough and persistent enough. 
 
 # What Is Different Here?
 
-The most important insight is that identifying all of the subjects in play at a given moment is useless. It is too much data--many thousands of subjects are too many to make sense of.  The key is to identify only new subjects. 
+The most important insight is that identifying all of the subjects in play at a given moment is useless. It is too much data--many thousands of simultaneous subjects are too many to make sense of.  The key is to identify only new subjects. 
+
 - You get the most relevant immediately
 - In the limit, you get them all
 - It's a flow a human can grasp and AI or semantic analysis can cope with at reasonable computational expense.
@@ -226,7 +227,7 @@ A graphical front end is in the offing.
 
 # Speed of Computation and Significant Events
 
-It is very fast. A laptop will process a stream of about 8000 to 9000 Tweets/second.
+Processing is very fast. A laptop can process a stream of about 8000 to 9000 Tweets/second.
  
 The two-weed Tweet sample was recorded from two weeks of a Decahose. However, the Tweets can be consumed at any speed. 
  
@@ -237,21 +238,67 @@ If you are starting and stopping frequently for development purposes, the system
 
 You can use the utilities mentioned below to find the date/time you want to start at a specific place in the two-week interval.
 
-### Persistence of Subjects
+# Miscellaneous Issues and Details
+This section describes various processing details.
+
+## Persistence of Subjects
 
 In addition to computing the new subjects, the system can give information about how long those new subjects have existed in terms of the number of batches. This is given in the form of a list of the previous N batches that also match the new subject.
 
 Persistence of subjects is a significant consumer of CPU, bigger than the cost as the clustering itself.  It can be turned on and off, but the effectiveness of turning it off is still to be determined. It's not clear that it affects throughput, which may be bottlenecked elsewhere.
 
+## The Big Token Window
 
-# Confirmation of the Z-score Principle
-The data technically violates the assumptions of Z because a Gaussian distribution is for continuous data, not integer counts. There is an argument to be made for Poission based scoring.
+Word distributions change thoughout the day and week. People don't Tweet the same things at breakfast on Monday that they do at 1:00 AM on Saturday.  Also, the world turns, and while New Yorkers are getting up in the morning, people in Bejing are out for the evening.
+
+Equally importantly, surges in usage continually adjust the current background frequencies.
+
+Note, these issues are best thought of in terms of the logical time in the Tweets, independently of the actual time to process. In a live field, these are the same, but with stored data, processing can be considerably faster than logical time.
+
+### Word Distribution
+
+See "Zipf Distribution" in any reference for details.
+
+Consider that 
+
+- "Dog" is about the 1000th most common word, yet only 1/10,000 of words will be dog.
+- "Mirror" is the 3000th most common word, and only 3 words out of 100,000 will be mirror.  
+- "Edge" is the 5000th most common word, and it appears only once in 100,000 words
+- "Shocking", "critical", "stripper", and "java" are all about rank 10,000 and appear somewhat less than once in a million words. 
+- The most common 250 words in the corpus occur as much as the least common 11 million.
+
+Because even fairly ordinary words are literally one-in-a-million or fewer, you need a lot of words (millions) to get even a reasonably accurate estimate of a word's background frequency. The decahose is 500 Tweets/second or about 5,000 words/second, which is about 3.3 minutes of data. So a window of five million words is about 16.6 logical minutes.
+
+So why not have a window of fifty or a hundred million?  Because there is a trade off between the quality of the frequency statistics and having a short enough window to both keep up with the time of day and to allow surges of frequency associated with subjects to age out reasonably quickly.  Three million tokens is about 300,000 Tweets, which is about ten files of five logical minutes each. Fifty minutes, of the decahose give or take. 
+
+This is an interesting point because with the decahose, the time it takes to get enough tokens to accumulate a good picture of word frequency is long enough that time of day comes into play and it multiplies the benchmark of what is "new" times ten. Playing the Tweets ten times as fast isn't the same as the full firehose because the decahose requires ten times as much logical time for the same number of tweets.
+
+Because the window has to be large, the tokens underlying the token counters are written to disk in batches as they are read in. After the number of token batch files reaches its defined limit, each time a new batch is written out, the oldest batch is read in (and deleted from disk). The contents of the old batch are then used to decrement the global token counts.
+
+You can use whatever batch size suits, but fifty files for three million tokens seems to work well. That means you're aging out the old tokens out in approximately one minute increments over a window of fifty logical minutes. 
+
+Note that frequency calculations would typically happen multiple times in the span of time represented by an entire token window.  Window size and frequency of recalculation are controlled by separate parameters. Say you have a five million word window, i.e., 16 or 17 minutes, you might recompute the frequency filters every couple or three minutes.
+
+## The Small Window of Tweets
+
+The big token window is only of concern only to the off-line frequency calculating thread.  The main thread keeps short window of Tweets (not just tokens) in memory for use in the clustering algorithm, which is in the main processing line.
+
+This is a conventional queue that keeps a configured number of Tweets, ageing out the old ones as new ones are added.  This would be configured to hold a few processing batches of Tweets. As a batch is typically in the range of one thousand to a few thousands, it would be a small multiple of that size.  
+
+Clustering happens with respect to the latest batch.  However, the persistence of clusters is tracked across previous batches. You can see in this way whether a subject just popped up, or has it been around a while.
+
+The size of a batch, the number of batches kept in memory, and the number of batches used to compute a clustering are all configurable.
+ 
+
+## Confirmation of the Z-score Principle
+The data technically violates the assumptions of Z because a Gaussian applies to a continuum of real number values, not integer counts. There is an argument to be made for Poission based scoring which is designed for discrete values.
 
 Also, we pre-suppose that only the underlying frequencies are approximately Gaussian. We are assuming that the busywords impose an explicitly non-Gaussian distribution on top of the main distribution of pseudo random values.
 
-Nevertheless, use of Z in this way is fairly common as we are only identifying anomalies and don't really need to know exactly how anomalous they are.
+Nevertheless, use of Z in this way is fairly common for anomalie detectio for anomaly detection, which is the case here. We are only identifying anomalies and don't really need to know exactly how anomalous they are.
 
-The following are excerpted from the logs. Note that the low Z scores are all quite small negative numbers, as you'd expect.  The high z scores are up in the double digits. This says it's spotting anomalies effetively.
+The following are excerpted from the logs. Note that the low Z scores are all quite small negative numbers most of which are between -1 and 0, as you'd expect.  
+The high z scores are up in the double digits. This says it's spotting anomalies effetively.
 
 "Z-score stats" class_index=20 min_z=-0.209818386948746 max_z=18.370296042703444
 
@@ -274,56 +321,31 @@ The following are excerpted from the logs. Note that the low Z scores are all qu
 "Z-score stats" class_index=12 min_z=-0.241437616624771 max_z=19.08450355887032
 
 
-# 3pk Collisions
-Most distinct tokens are, for practical purposes, unique on the time scale of a day. The majority, in fact, don't appear more than once in two weeks. Permanently storing the 3pk values for super-rare tokens incurs two very significant costs:
-- It wastes a ton of space
+## 3pk Collisions
+Most distinct tokens are, for practical purposes, unique on the time scale of a day. At least half of the tokens don't appear more than once in two weeks. Permanently storing the 3pk values for super-rare tokens incurs two very significant costs:
+- It wastes a ton of memory.
   - With a token window size of three million, and fifty token files on disk, each time we age out a cached file of tokens, about 20k tokens that are in the counter map go to zero.
   - The FCT thread removes these zero count tokens from the counter map to prevent bloat.
-  - However, the main thread keeps a 3pk <-> token map that formerly had no way to age out useless token mappings. 
+  - However, the main thread, which keeps a 3pk <-> token map does not know about the token counter map in the FCT and has no independent way to know which are meaningless. 
   - Those useless mappings accumulate a cost about 100MB of memory per hour to store permanently.  
 - The bloated 3pk<->token map also increase the probability of collisions. 
   - There are something like 135M distinct tokens in the two-week data set.
   - The 3pk mapping space is only one or two billion. If you kept them all, 3pK collisions would be constant.
 
-We solve this bloat problem by having the FCT put tokens on a queue when their counts in the FCT's counter map go down to zero. 
+We solve this bloat problem by having the FCT put tokens on a queue when their counts in the counter map go down to zero. 
 
-The main thread takes a chunk of thes values from the queue every few hundred Tweets and deletes the corresponding entries in the 3pk<->token mapping.  
+The main thread nibbles away at these entries on the queue, taking a bunch of them every few hundred Tweets, and deleting the corresponding entries in the 3pk<->token mapping.  
 
-This is harmless, because if the token ever shows up again, the main thread will automatically recreate it anyway.
-
+This is mostly harmless, because if the token ever shows up again, the main thread will automatically recreate it anyway. It is possible, but unlikely, that a mapping will be removed after a set of the corresponding 3pk has been handed off to the busyword processors. This would not happen in steady-state, but can happen after a restart from stored state. If the analysis thread doesn't get back a token for a 3pk, it simply discards it. (If it has any significance, it will show up in the next batch anyway.)
 
    
 # The analyze_tokens Program Output
 
-The analyze_tokens program reads CSV files and accumulates the number of distinct tokens that it has encountered.
+The **analyze_tokens** program reads CSV files and accumulates the number of distinct tokens that it has encountered.
 
-This is the result of running on about 1200 CSV files which is at least a couple of days of data.  Notice it rises quickly at first, and then settles down to a pretty stead rate of about one new token for every 3.15 Tweets, or roughly every 31.5 tokens.  That rate looks like it holds pretty steady, as this is two days of the Decahose.
+Running on about 1200 CSV files, which is at least a couple of days of data, shows that the percentage of new tokens rises quickly at first, and then settles down to a pretty stead rate of about one new token for every 3.15 Tweets, or roughly every 31.5 tokens, which is surprisingly high and unwavering.
 
 It is unknown if the full Firehose would behave differently. It could be that most of the diversity at any given moment is contained in a fraction of the Tweets.
 
-ASCII Graph: Distinct Tokens vs. Tweets Read
-44298119 |                                                           *
-         |                                                      ***** 
-         |                                                  *****     
-         |                                               ****         
-         |                                           *****            
-         |                                       *****                
-         |                                   *****                    
-         |                                ****                        
-         |                            *****                           
-         |                         ****                               
-22162570 |                      ****                                  
-         |                   ****                                     
-         |                ****                                        
-         |             ****                                           
-         |          ****                                              
-         |       ****                                                 
-         |     ***                                                    
-         |   ***                                                      
-         | ***                                                        
-   27021 |**                                                          
-         +------------------------------------------------------------
-         10000                     69810038                 139610077
-Y: 27021 to 44298119
 
  
