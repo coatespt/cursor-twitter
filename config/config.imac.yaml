@@ -231,6 +231,12 @@ analysis:
   # This helps prevent 3PK collisions by cleaning up inactive tokens
   cleanup_trigger_batch_size: 500    # Trigger cleanup every N tweets
   cleanup_max_items: 4000            # Process up to M items per cleanup cycle
+  # Sort clusters by size: true=descending (biggest first), false=ascending (biggest last)
+  # Default: false (ascending) so biggest clusters appear last (closest to console)
+  cluster_sort_descending: false
+  # Suppress individual tweets in output, keep only metadata and medoid tweet
+  # Default: false (show all tweets) for economy of display
+  suppress_individual_tweets: false
 
 
 # Set to true to enable language detection in the Python parser 

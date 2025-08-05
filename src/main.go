@@ -2969,18 +2969,20 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 		// Count unique tweets after deduplication
 		uniqueTweetCount = len(deduplicatedTweets)
 
-		// Convert deduplicated tweets to texts with timestamps
-		for i, tweetInterface := range deduplicatedTweets {
-			if i >= maxToShow {
-				break
-			}
-			if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
-				if text, ok := tweetMap["text"].(string); ok {
-					if createdAt, ok := tweetMap["created_at"].(string); ok {
-						tweetWithTime := fmt.Sprintf("[%s] %s", createdAt, text)
-						tweetTexts = append(tweetTexts, tweetWithTime)
-					} else {
-						tweetTexts = append(tweetTexts, text)
+		// Convert deduplicated tweets to texts with timestamps (only if not suppressed)
+		if !cfg.Analysis.SuppressIndividualTweets {
+			for i, tweetInterface := range deduplicatedTweets {
+				if i >= maxToShow {
+					break
+				}
+				if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
+					if text, ok := tweetMap["text"].(string); ok {
+						if createdAt, ok := tweetMap["created_at"].(string); ok {
+							tweetWithTime := fmt.Sprintf("[%s] %s", createdAt, text)
+							tweetTexts = append(tweetTexts, tweetWithTime)
+						} else {
+							tweetTexts = append(tweetTexts, text)
+						}
 					}
 				}
 			}
@@ -3022,13 +3024,15 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 		// Count unique tweets after deduplication
 		uniqueTweetCount = len(deduplicatedTweets)
 
-		// Convert deduplicated tweets to texts with timestamps
-		for i, tweet := range deduplicatedTweets {
-			if i >= maxToShow {
-				break
+		// Convert deduplicated tweets to texts with timestamps (only if not suppressed)
+		if !cfg.Analysis.SuppressIndividualTweets {
+			for i, tweet := range deduplicatedTweets {
+				if i >= maxToShow {
+					break
+				}
+				tweetWithTime := fmt.Sprintf("[%s] %s", tweet.CreatedAt, tweet.Text)
+				tweetTexts = append(tweetTexts, tweetWithTime)
 			}
-			tweetWithTime := fmt.Sprintf("[%s] %s", tweet.CreatedAt, tweet.Text)
-			tweetTexts = append(tweetTexts, tweetWithTime)
 		}
 
 	}
@@ -3043,8 +3047,8 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 	humanReadable["original_size"] = originalTweetCount
 	humanReadable["size_info"] = fmt.Sprintf("%d/%d", uniqueTweetCount, originalTweetCount)
 
-	// Only add individual tweets if not suppressed
-	if len(tweetTexts) > 0 && !cfg.Analysis.SuppressIndividualTweets {
+	// Add individual tweets if we have any (they're only built when not suppressed)
+	if len(tweetTexts) > 0 {
 		humanReadable["tweet_texts"] = tweetTexts
 	}
 

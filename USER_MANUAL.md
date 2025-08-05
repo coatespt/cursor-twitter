@@ -49,6 +49,8 @@ go build -o main src/main.go
 - Clustering: `min_cluster_size`, `min_jaccard_similarity`
 - Deduplication: `deduplicate_by_user`, `use_levenshtein_deduplication`
 
+**Caveats**
+The -load-state flag is handy in development as it reads in the state saved on disk to save waiting for millions of tokens. However, the statistics will be thrown off any you'll get poor results until the entire token window has been replaced, which may be a logical hour (a real time fifteen minutes on a slow machine.)
 ---
 
 ## Go Utilities

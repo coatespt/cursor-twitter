@@ -184,9 +184,9 @@ func (fct *FrequencyComputationThread) run() {
 
 			// Debug: Log rebuild flag status more frequently
 			if fct.loopCount%1000 == 0 {
-						slog.Debug("FCT: Rebuild flag check",
-			"loop_count", fct.loopCount,
-			"should_rebuild", shouldRebuild)
+				slog.Debug("FCT: Rebuild flag check",
+					"loop_count", fct.loopCount,
+					"should_rebuild", shouldRebuild)
 			}
 
 			// ALWAYS log when rebuild flag is true (this should be rare)
@@ -216,7 +216,7 @@ func (fct *FrequencyComputationThread) run() {
 
 				rebuildStartTime := time.Now()
 				slog.Info("FCT: Starting rebuild", "rebuild_count", currentRebuildCount, "start_time", rebuildStartTime.Format("15:04:05"))
-				slog.Info("*** FCT REBUILD STARTED ***", "start_time", rebuildStartTime.Format("15:04:05"))
+				fmt.Fprintf(os.Stderr, "*** FCT REBUILD STARTED at %s ***\n", rebuildStartTime.Format("15:04:05"))
 				// Pause token processing and do rebuild
 				fct.performRebuild()
 
@@ -388,10 +388,8 @@ func (fct *FrequencyComputationThread) performRebuild() {
 	duration := time.Since(startTime)
 	completionTime := time.Now()
 
-	slog.Info("*** FCT REBUILD COMPLETED ***",
-		"completion_time", completionTime.Format("15:04:05"),
-		"duration", duration,
-		"token_files_written", tokenFileCount)
+	fmt.Fprintf(os.Stderr, "*** FCT REBUILD COMPLETED at %s (duration: %v, token files written: %d) ***\n",
+		completionTime.Format("15:04:05"), duration, tokenFileCount)
 
 	slog.Info("Frequency class rebuild completed",
 		"duration", duration,
