@@ -67,226 +67,16 @@ Note the superbowl is also a great place to see real conversations starting up. 
 The timestamps in the original data are Unix time, which is Zulu, aka GMT, aka UTC.
 
 
-# Running the Program and Utilities
-
-In addition to the main program, there are several programs to parse the original JSON into CVS, run RabbitMQ, send the data, as well as various utilities for analysis, data conversion, etc. This section tells how to run them all.
-
-## Parsing JSON files to CSV
-
-### Build and Run the Golang JSON->CSV Parser (Obsolete)
-
-The Golang JSON->CSV parser is not currently in use. The following is for future reference only.
-
-cd /Users/petercoates/python-work/cursor-twitter
-go build -o parser/parser parser/parser.go
-./parser/parser -inputdir ../twits/msg_input/ -outputdir ../twits/test_output
-
-### The Python JSON->CSV Parser
-This is the JSON to CSV parser you should use.
-
-This assumes you have a directory full of GZIP'ed JSON and an empty target directory for the CSV.  The program will unpack the zips into /tmp so as not to risk corrupting the original data.
-
-Do the following. (You may need to adjust the directory names.)
-
-- cd to cursor-twitter.
- 
-- python3 parser/parser.py ../twits/msg_output_language ../twits/msg_output_3
-
-The parser can be run with an optional --num-workers flag the gives the number of processing threads to be applied to the parsing. The speedup is roughly proportional to this value up to the number of hardware cores on your machine (which on this antique iMac is four.)
-
-- python parser.py input_dir output_dir  
-
-## Go Utility to do Language Identification on CSV files
-
-The lang: field in the original Tweets is very unreliable. This utility post-processes the CSV files do language detection via NLP. (Twitter uses your environment settings.)
-
-This is not in the Python parser because Python language processing is agonizingly slow. Go is at least 200 time faster than doing it in Python.  
-
-It also seems to do a noticeably better job classifying than the Python library.
-
-### Build it
-- make build-language-detector
-
-or
-
-- go build -o language_detector language_detector.go
-
-### Run It
-Use -help for details. There are flags to turn progress off and to set the number of threads working. The default of 8 threads is fine on a four core machine (like mine.)
-
-With -progress,  the time to run the test set was 2m 40s,  and it reports 16,156 lines/second.
-
-Without -progress the time to run the test was x and it reports 17,538 lines/second.
-
-Note, you can stop and restart the program and it will ignore the input for which there are already files in the output. You may want to remove the newest 8 files in the taget directory because they may be incomplete. (8 files is nothing-there are 5000+ files in total.)
-
-- ./language_detector -input ../twits/test_language_detect -output ../twits/test_language_detect_out 
-
-## Tailing the Logs
-Nothing goes to standard out except the output. See the pipeline logs for all the diagnostic and performance output.
-
-You can do it manually, but the following program run from cursor-twitter will find the latest one and run tail -f on it.
-
-util_shell/tail-the-log.sh	
-
-## Test program for parsed data
-This program reads CSV files to ensure that we can create Tweets from them. Most users will not need this.
-
-- go run tests/csv_tweet_parse_test.go <path_to_your_csv_file>
-  
-## Building and Running The Main Program
-    
-The codebase is in ~/python-work/cursor-twitter. 
-
-Data that it writes in order to persist data structures, etc. is configured to be in ~/python-work/data, i.e., at the same level as the project root. You can change this in config/config.yaml.  Using relative paths is treacherous.
- 
-
-## Starting RabbitMQ
-
-RabbitMQ feeds Tweets in CSV form to the processor. The service normally running  as a daemon which in theory can be started as follows.
-
-brew services start rabbitmq  
-
-If this doesn't go well for you, you can just ask Cursor to start rabbit in Docker or manage it yourself with the following commands.
- 
-- docker start rabbitmq
-- docker stop rabbitmq
-- docker restart rabbitmq
-- docker ps | grep rabbit
-- docker logs rabbitmq
-
-There was drama aound getting this right. Rabbit was set up wrong so that it just silently dropped messages that weren't instantly picked up.  It is now configured right but it can be monitored on the web app.
-
-- http://localhost:15672/#/
-
-The username and passwords are guest,guest.
- 
-## Sending Tweets
-
-Running the actual software assumes you have a directory of CSV files of Tweets, in this case I'm using ../twits/test_language_detect_out. These have been language-processed so I can demo with just English. The choice in the main processor of all, v en v <anything else> is set in config.yaml.
-
-The sender program makes a note in the data/sender of what the last file of CSV it sent was, and picks up with that when restarted. If the file is deleted or emptied, it starts at the beginning of whatever directory you point it at. The file (feel free to delete) is:
-
-- data/sender/sender_status.txt
-
-There is code in the sender that pauses if the number of Tweets in MQ becomes excessive, but it seems to be redundant now, and the ACK mechanism seems to throttle on its own. The number of Tweets in MQ never seems to get out of two digits.
-
-This is all you really need to send CSV Tweets.
-
-- start RabbitMQ (see above)
-
-- cd to the cursor-twitter directory
-
-- python ./send_csv_to_mq.py ../twits/msg_output
- 
- The following are probably obsolete but they exist.
- --max-queue-depth 10000 
- --pause-duration 1.0
---max-queue-depth 5000 --pause-duration 2.0
- 
-##  Build and Run the Main Program
- 
-Note, this assumes you are in the project root. Sometimes cursor wants to run it from src which is not right. It is better to build yourself and run from the root directory. Don't let cursor run it at all.
-
-- cd /Users/petercoates/python-work/cursor-twitter
-
-- go build -o main src/main.go 
-
-- ./main  -config ./config/config.yaml -print-tweets=false 
-
-### Some Useful Flags
-- -profile  causes it to produce profiler output (see section on profiling). Profiling slows it down significantly but it doesn't matter because the results are relative. Instructions for using the resulting file are found elswhere in this document.
-
-- -load-state  Causes it to load the latest state from disk. Without this it takes some minutes to build up enought tweets to start computing busy-words.  Use this is you are starting and stopping for development and testing. Huge time saver!
-
-### Shutting down the main
-
-Control-C will send a signal. If the process of writing persisted data to disk is underway it will finish before it shuts down. Otherwise it shuts down immediately.
-
-## The Analysis Program
-
-This is a utility to get a picture of how the universe of words grows with the number of Tweets processed. You need to point it at a large directory of CSV files. It's relatively fast at about 70k Tweets per second.
-
-See elsewhere for results. Spoiler--new words are frequent and don't decline much in frequency over the full data set of more than two weeks.
-
-cd to cursor-twitter
-go build -o analyze_tokens analyze_tokens.go 
-./analyze_tokens -input ../twits/msg_output
-
-## Find the CSV File For a Given Date
-
-There are more than two weeks of decahose in 5000+ files. If you process Tweets starting at some given point in the multi-week interval available starting at January 1, 2012 and running to approximately January 15, 2012, you can find the file to start with by using this utility.
-
-You can put the file name in the data/sender/sender_status.txt.<whatever> and copy that file to sender_status.txt for repeatable sender start files.
-
-Note that it takes an argument, N, which is the number of CSV files prior to the one you want. This is because in most cases, you will have to fire it up from scratch in order to have it primed when it gets to the date you seek.  The number of files is a function of how many tokens you specify in config. I've been using 2,000,000, which is about a quarter of a million tweets, divided by 30k tweets in a file should be N=eight or nine files.
-
-
-Build it:
-
-make build-find-csv
-
-Run it:
-./find_csv_file -dir /path/to/csv/files -datetime "2012-02-14 19:35:55" -n 3
-
-The following will return a file where the first "batch_time" is "2012-02-11 16:49:05 UTC".
-
- ./find_csv_file -dir /home/petercoates/gnip-csv-lang/ -datetime "2012-02-11 23:00:00" -n 15
-
- starting with file:
-
- ../../gnip-csv-lang/gnip.csv_1328996644096_1328996944096.csv
- 
-
-A handy way to check it:
-The following will print the first few lines of the file.
-
- ./find_csv_file -dir ../twits/msg_output_3  -datetime "2012-02-14 19:35:55" -n 5 | xargs -I {} head ../twits/msg_output_3/{}
-
-
-## Print Out the Time Intervals For the CSV files
-
-The time interval covered by a given CSV file varies a little, but except in a few spots, like the beginning, it's about five minutes. This program will tell you the times for all the files.
-
-./csv_file_mapping -dir /data/csv > file_mapping.csv
-
-./csv_file_mapping -dir /data/csv | head -10
-
-./csv_file_mapping -dir /data/csv | grep "2012-02-14"
-
-
-## Frequency Analyzer
-
-This utility gives rank, token counts, relative frequency, and cumulative frequency for all tokens in the CSV's found in the given directory. This utility will differentiate by language. Be sure you ran the language utility, or the results for any given language will be nonsense.
-
-Note that language analysis is decent, but not flawless, so words from Tweets in any specific language will not be exclusively of that language. In addition, of course, many are nonsense words, names, screen names, etc., which aren't necessarily part of any particular language.
-
-The output is CSV of the form {rank, token, count, frequency, cumulative frequency}
-
-The output by default goes to global_frequency.csv but you can set it to whatever file name you want.
-
-This program is quite fast--it will do all 5,300 files in just a few minutes.
-
-### Build It
-make build-token-frequency
-
-### Examples
-./token_frequency_analyzer -input /data/csv
-./token_frequency_analyzer -input /data/csv -lang en
-./token_frequency_analyzer -input /data/csv -lang en -output english_frequency.csv
-
-
-### Distinct Tokens for English (en)
-This is interesting because is shows how extremely Z  
+# Distinct Tokens for English (en)
+This is interesting because is shows how extremely Zipfy the data is.  
 
 - 11,522,129 distinct tokens appear in "en" Tweets.  
 - The top 220 tokens (which are almost all words) account for half of all usage.
-- The top 3,572 words account for 80% of all usage.
-- The top 13,690 words account for 90% of all usage.
-- The top 615,473 words account for 99% of all usage.
-- The other 95%, 10,906,656, account for only 1% of all usage.
+- The top 3,572 tokens account for 80% of all usage.
+- The top 13,690 tokens account for 90% of all usage.
+- The top 615,473 tokens account for 99% of all usage.
+- The other 95%, 10,906,656, tokens account for only 1% of all usage.
   
-
 It's mostly the relatively rare words we care about because they carry the most meaning when they surge in usage.
  
 ## Tests
@@ -312,39 +102,38 @@ cd to cursor-twitter
 ./run_tests
 
 
-
 # Notes On Things That Have Been Checked/Fixed/Explored
 
 ## Processing Rate
 A large set of enhancements have greatly improved throughput.
 
-Formerly, it was getting 1.1k Tweets/second on the iMac and a little more than 2.1 on the 76 laptop. Now it is more like 2300 on the iMac and 8000 on the System 76, which is also a four-core machine.  That is 1.6 firehoses.
+Formerly, it was getting 1.1k Tweets/second on the iMac and a little more than 2.1 on the 76 laptop. Now it is more like 2300 on the iMac and 8000+ on the System 76, which is also a four-core machine.  That is 1.6 firehoses.
 
 The feeder is running on the same box feeding CSV via RabbitMQ.
 
-This might be considerably faster if either:
+Throughput might increase further if either:
 - The feeder were writing to STDOUT and the main reading fro STDIN
 - The main were reading the files directly
 
-The latter is very consistent with using this for historical data.
+The latter approache is very consistent with using this for historical data.
 
-It is also not clear whether the feeder running on another machine with Rabbit writing over the LAN would net slower of faster.
+It is also not clear whether the feeder running on another machine with Rabbit writing over the LAN would net slower of faster. You move CPU consumption to another machine, but you add a network hop. Who knows?
 
 The speedups were a combination of many things that are worth remembering:
-- Removing contention caused by unnecessary concurrency protections
-- Tightening up encapsulation. Everything is now independent, connected by queues.
-- Better memory management, especially getting rid of old 3pK mappings for zero count tokens
+- Removing contention caused by unnecessary concurrency protections was a big one.
+- Tightening up encapsulation. Everything is now independent, connected by queues. Hardly anything ever has to wait for a resource.
+- Better memory management, especially getting rid of unused 3pK mappings for zero count tokens
 - Deduplication of clusters, i.e. scrapping nearly identical Tweets. (A modified verison of Levenshtein distance that works on the word level rather than the character level.)
 - Greatly reduced logging and use of a framework that controls how much gets written
 
 ## Confirmation of the Z-score Principle
-The data technically violates the assumptions of Z because a Gaussian distribution is for continuous data, not integer counts. There is an argument to be made for Poission based scoring.
+The data violates the assumptions of Z because a Gaussian distribution is for continuous data, not integer counts. There is an argument to be made for Poission based scoring.
 
-Also, we pre-suppose that only the underlying frequencies are approximately Gaussian. We are assuming that the busywords impose an explicitly non-Gaussian distribution on top of the main distribution of pseudo random values.
+Possibly more significantly, while we pre-suppose that only the underlying frequencies are approximately Gaussian, the busywords impose an explicitly non-Gaussian distribution on top of the underlying distribution of pseudo random values.
 
-Nevertheless, use of Z in this way is fairly common as we are only identifying anomalies and don't really need to know exactly how anomalous they are.
+Nevertheless, use/abuse of Z in this way is fairly common for anomaly detection. We are only identifying anomalies and don't really need to know exactly how anomalous they are. "Very anomalous" is accurate enough.
 
-The following are excerpted from the logs. Note that the low Z scores are all quite small negative numbers, as you'd expect.  The high z scores are up in the double digits. This says it's spotting anomalies effetively.
+The following are excerpted from the logs. Note that the low Z scores are all quite small negative numbers, as you'd expect with a Z distribution.  The high Z scores are up in the double digit positive numbers. This says it's spotting anomalies effetively.
 
 "Z-score stats" class_index=20 min_z=-0.209818386948746 max_z=18.370296042703444
 
@@ -367,30 +156,26 @@ The following are excerpted from the logs. Note that the low Z scores are all qu
 "Z-score stats" class_index=12 min_z=-0.241437616624771 max_z=19.08450355887032
 
 ## 3pk Collisions
-Most distinct tokens are, for practical purposes, unique on the time scale of a day. The majority, in fact, don't appear more than once in two weeks. Permanently storing the 3pk values for super-rare tokens incurs two very significant costs:
+Most distinct tokens are, for practical purposes, between unique and non-existent on the time scale of hours. The majority, in fact, don't appear more than once in two weeks. There is little value in storing 3pk mappings for these when they can easily be recomputed. Blindly storing them incurs significant costs. 
 - It wastes a ton of space
-  - With a token window size of three million, and fifty token files on disk, each time we age out a cached file of tokens, about 20k tokens that are in the counter map go to zero.
+  - With a token window size of three million, and fifty token files on disk, each time we age out a cached file of tokens, about 20k tokens that are in the counter map go to zero--about 40%.
   - The FCT thread removes these zero count tokens from the counter map to prevent bloat.
-  - However, the main thread keeps a 3pk <-> token map that formerly had no way to age out useless token mappings. 
-  - Those useless mappings accumulate a cost about 100MB of memory per hour to store permanently.  
-- The bloated 3pk<->token map also increase the probability of collisions. 
+  - Those useless mappings accumulate a steadily growning cost about 100MB of memory per hour to store permanently.  
+- More importantly, a bloated 3pk<->token map increases the probability of collisions. 
   - There are something like 135M distinct tokens in the two-week data set.
-  - The 3pk mapping space is only one or two billion. If you kept them all, 3pK collisions would be constant.
+  - The 3pk mapping space is in the range of one or two billion, eventually leading to better than a one in eight chance of a collision even in our limited data set.  
 
 We solve this bloat problem by having the FCT put tokens on a queue when their counts in the FCT's counter map go down to zero. 
 
 The main thread takes a chunk of thes values from the queue every few hundred Tweets and deletes the corresponding entries in the 3pk<->token mapping.  
 
-This is harmless, because if the token ever shows up again, the main thread will automatically recreate it anyway.
+This is harmless, because if the token ever shows up again, the main thread will automatically recreate it anyway before it is used.
 
-Interestingly, doing this seemed to produce a significant bump in speed. From around 1100/sec to 1300/sec on the iMac. Not clear why. It would make sense if it slowed down after hundreds of millions of Tweets, by why quickly?
- 
- 
 ## Seemingly Excessive Token Rejection
 
-We were getting huge percentages of rejection of tokens because of too-short token length and/or tokens being on the ingore list. More than 30% and 40% respectively. The list of rejected tokens is in config/token_filters.txt.
+We are getting huge percentages of rejection of tokens because of too-short token length and/or tokens being on the ingore list. More than 30% and 40% respectively. The list of rejected tokens is in config/token_filters.txt.
  
-Those numbers were not supurious. Turning that functionality off gave the expected result and it is consistent with the Ziph distribution. It means both are very effective and doing their job. You definitely want min length = 3.  The two things strip out a huge amount of processing at the very beginning of the pipeline.
+Those numbers were not supurious. Turning that functionality off has the expected effect. This means both are very effective and doing their job. You definitely want min length = 3. More might be better, except that it would rule out important TLA's.  The two practices strip out a huge amount of processing at the very beginning of the pipeline.
 
 ## Effect if Computing Cluster Persistence
 
@@ -402,11 +187,11 @@ This aspect of the problem has NOT been reviewed
 
 ## Is token splitting on periods, commas, and dashes happening?
 
-No, it was not happening.  The token cleanup in Go now does this. Note that we can optionally split or not split on apostrophes. (See config.yaml) The default is to not split so that O'Brian and M'kele M'beme, and f'oc'sle can continue to be tokens.
+No, it was not happening, but that is fixed.  The token cleanup in Go now does this. Note that we can optionally split or not split on apostrophes. (See config.yaml) The default is to not split so that O'Brian and M'kele M'beme, and f'oc'sle can continue to be tokens.
 
 ## Overhaul of ASCII Output and Reduction of Logs
 
-Logging has been overhauled with logging almost all going to the designated log file and almost none to the screen except some startup info going to stderr.
+Logging has been overhauled with almost all of it now going to the designated log file and almost none to the screen except some startup info that gets written to stderr.
 
 The program output is now all in JSON format sent to stdout. It can be configured to be more complete, for machines, or more readable, for humans. 
 
@@ -429,11 +214,15 @@ Needless to say, it can be left empty.
 
 # TTD and Direction
 
-## Move the Utilities Out of Root and Into util
+## Write a GUI Interface For Canned Results 
 
-## Possible logic error
+## Produce a flag that supresses all the Tweets other than the medioid for compact output.
+
+It's not as exciting as live, but it would be quite useful for exploring.
+
+## A Possible Logic Error
 We get notification of burst of 3pk's not mapping to tokens. This should be almost impossible (it says so right in the warning message.) 'Sup with that?
-May be an artifact of startup.
+This be an artifact of startup reading token files that are out of date with respect to the restart.
  
 ## Possible New Input Mode(s)
 The main is now fed through RabbitMQ. It would be interestin to have a history mode specifically 
@@ -443,7 +232,6 @@ for mass consumption as fast as possible.
 - Add a mode for reading from standard in
 
 Alternatively, have a main program mode that reads files of CSV itself.
-
  
 ## Ongoing  Items
 - Comments key areas need to be commented to keep out don't touch, etc.
@@ -503,7 +291,7 @@ Because most words are extremely rare, and words beyond the rank of a few thousa
 
 Therefore, you need a lot of words (millions) to get even a reasonably accurate estimate of a word's background frequency. The decahose is 500 Tweets/second or about 5,000 words/second, which is about 3.3 minutes of data. So a window of five million words is about 16.6 minutes.
 
-Five million is a reasonable window size because it's easily fine enough to keep up with the time of day, and not so coarse that it takes a long time to age surges in frequency out.
+Three million is a reasonable window size because it's easily fine enough to keep up with the time of day, and not so coarse that it takes a long time to age surges in frequency out.
 
 You have to age tokens out if you want a stable size window, and that gets to be a lot to keep in memory and a lot to do token by token. 
 
@@ -594,32 +382,27 @@ Y: 27021 to 44298119
 
 The analyis program is pretty fast, at 52,683 Tweets/sec    
 
-
-- 599 million Tweets equals approximately six billion tokens.  
+- 599 million Tweets equals approximately six billion tokens give or take.  
  
 - Volume of decahose = 500/sec
 
 - Volume of firehose = 5000/sec
 
-- 500/sec = 30k Tweets/min = 450,000 Tweets/15min  = 1.8m Tweets/hour in nominal Tweet time
+- 500/sec = 30k Tweets/min = 450,000 Tweets/15min  = 1.8m Tweets/hour in nominal Tweet time, or 3m 45s in real time on the fast laptop.
 
-- There are an average of 10 words/Tweet = 4,400,000 words/15 min or 18m words/hour
+- Average number of words per Tweet is approximately 10.
 
 ## Our Processing Speed
 - The sender can send about 3000/second with ACKs. Which you need, or it will simply drop msgs.
 
-- We process about 1200/second, or 2.4 Decahoses.
+- We process about 2300/second on the iMac, app  4.6 decahoses.
+- We process about 8500/second on the System76, or about 16 decahoses.
 
 - The Tweets get ACKed, so RabbitMQ manages to never let the queue get very long--it seems to never get up to 50.
   
-- Google says a modern Mac could probably do about 10x as fast as this antique iMac. If true, that's a couple of firehoses.  This is important, because one of the purposes of this is to make it possible to handle historical data. 
-  - I'm skeptical that better hardware would get a 10x bump. 
-  - The processor on this old machine is actually really fast (4 GHZ), despite being 12 years old. 
-  - Any speedups would be because of faster SSD storage, more cores, and improved instruction set. Most likely, the number of cores would be the overwhelming factor. 
-  - So a 16 core machine would probably just about do the firehose. 
-    - Possibly more if you moved the feeder to a different box.
+- Neither machine is old. The iMac is about 13 years old, and the System 76 is about 5 years old. Both have four hardware cores.
 
-- Note that for historical data it will scale in direct proportion to the number of machines so you can do bulk processing essentially as fast as you are willing to pay for.
+- Note that for historical data it will scale in direct proportion to the number of machines because you can assign large time slices to each machine. This means you can do bulk processing essentially as fast as you are willing to pay for.
 
-- We have about 350 hours of decahose. At 2.5 decahoses, we could process the entire data set on this machine in less than a week.
+- We have about 350 hours of decahose. The fast machine can do it all in less than 24 hours. 
  
