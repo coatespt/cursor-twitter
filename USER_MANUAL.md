@@ -26,6 +26,8 @@ This manual describes how to use all the programs and utilities in the Twitter s
 
 The core application that processes Twitter data in real-time.
 
+Note that there are extensive options in config/config.yaml that are covered there, but not here. 
+
 **Build:**
 ```bash
 go build -o main src/main.go
@@ -51,6 +53,8 @@ go build -o main src/main.go
 
 **Caveats**
 The -load-state flag is handy in development as it reads in the state saved on disk to save waiting for millions of tokens. However, the statistics will be thrown off any you'll get poor results until the entire token window has been replaced, which may be a logical hour (a real time fifteen minutes on a slow machine.)
+
+When you are filtering for language, e.g. set lang: en in the config.yaml, the log line, for example, "Pipeline stats" tweets=1690148 tokens=6247611 distinct=65190 inbound_queue_size=45 processing_rate_tweets_per_sec=1109.4297100838241 prints the count of Tweets in the specified language.  With "en", this is less than half the number of Tweets read.  So in the case above, you'd be ingesting nearly 3000 Tweets/second.
 ---
 
 ## Go Utilities
