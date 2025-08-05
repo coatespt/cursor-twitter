@@ -176,7 +176,7 @@ analysis:
   #   language explicitly. Setting this field is very CPU heavy, so doing it in real time
   #   requires significant work in the feeder. (It's 10x more than everything else put
   #   together!)
-  language_filter: "all"
+  language_filter: "en"
   # K-Means is probably not going to be used anymore.
   kmeans_use_all_words: false  # If true, k-means uses all words in tweets; if false, only busy words
   # Persistence window configuration for tracking clusters across multiple batches

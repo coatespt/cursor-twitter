@@ -3,6 +3,24 @@
 # counts or the busy word processing. They don't (or should not) get filtered
 # from the output
 
+i'm
+won't
+don't
+can't 
+didn't
+what's
+you're
+they're
+whats
+cant
+dont
+wont
+ima
+
+
+
+going
+
 fuck
 shit
 bitch
