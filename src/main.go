@@ -283,6 +283,11 @@ type Config struct {
 		EnableMetaClustering           bool             `yaml:"enable_meta_clustering"`            // Enable clustering of clusters into meta-clusters
 		MetaClusterSimilarityThreshold float64          `yaml:"meta_cluster_similarity_threshold"` // Similarity threshold for merging clusters (0.3-0.6)
 		MetaClusterMinSize             int              `yaml:"meta_cluster_min_size"`             // Minimum total tweets for a meta-cluster
+		UseMedoidSimilarity            bool             `yaml:"use_medoid_similarity"`             // Enable medoid similarity in meta-clustering
+		UseBusyWordSimilarity          bool             `yaml:"use_busy_word_similarity"`          // Enable busy word similarity in meta-clustering
+		UseUnionApproach               bool             `yaml:"use_union_approach"`                // Use union of medoid and busy word meta-clustering
+		MedoidSimilarityThreshold      float64          `yaml:"medoid_similarity_threshold"`       // Separate threshold for medoid similarity
+		BusyWordSimilarityThreshold    float64          `yaml:"busy_word_similarity_threshold"`    // Separate threshold for busy word similarity
 	} `yaml:"analysis"`
 }
 
@@ -3261,35 +3266,54 @@ type IndividualCluster struct {
 
 // clusterSimilarity calculates similarity between two clusters based on their medoids and busy words
 func clusterSimilarity(cluster1, cluster2 map[string]interface{}, cfg *Config) float64 {
-	// Get medoids
-	medoid1, ok1 := cluster1["medoid_tweet_text"].(string)
-	medoid2, ok2 := cluster2["medoid_tweet_text"].(string)
-
-	if !ok1 || !ok2 {
+	// Check if any similarity measures are enabled
+	if !cfg.Analysis.UseMedoidSimilarity && !cfg.Analysis.UseBusyWordSimilarity {
 		return 0.0
 	}
 
-	// Get busy words
-	busyWords1, ok1 := cluster1["busy_words"].([]string)
-	busyWords2, ok2 := cluster2["busy_words"].([]string)
+	var medoidSimilarity, busyWordSimilarity float64
+	var medoidWeight, busyWordWeight float64
 
-	if !ok1 || !ok2 {
-		return 0.0
+	// Calculate medoid similarity if enabled
+	if cfg.Analysis.UseMedoidSimilarity {
+		medoid1, ok1 := cluster1["medoid_tweet_text"].(string)
+		medoid2, ok2 := cluster2["medoid_tweet_text"].(string)
+
+		if !ok1 || !ok2 {
+			return 0.0
+		}
+
+		medoidSimilarity = 1.0 - normalizedWordDistance(medoid1, medoid2)
 	}
 
-	// Calculate medoid similarity using word distance
-	medoidSimilarity := 1.0 - normalizedWordDistance(medoid1, medoid2)
+	// Calculate busy word similarity if enabled
+	if cfg.Analysis.UseBusyWordSimilarity {
+		busyWords1, ok1 := cluster1["busy_words"].([]string)
+		busyWords2, ok2 := cluster2["busy_words"].([]string)
 
-	// Calculate busy word similarity using Jaccard
-	busyWordSimilarity := jaccard(busyWords1, busyWords2)
+		if !ok1 || !ok2 {
+			return 0.0
+		}
 
-	// Combine similarities (weighted average)
-	// You could make these weights configurable
-	medoidWeight := 0.6
-	busyWordWeight := 0.4
+		busyWordSimilarity = jaccard(busyWords1, busyWords2)
+	}
+
+	// Determine weights based on which measures are enabled
+	if cfg.Analysis.UseMedoidSimilarity && cfg.Analysis.UseBusyWordSimilarity {
+		// Both enabled: use original 60%/40% split
+		medoidWeight = 0.6
+		busyWordWeight = 0.4
+	} else if cfg.Analysis.UseMedoidSimilarity {
+		// Only medoid enabled: 100% weight
+		medoidWeight = 1.0
+		busyWordWeight = 0.0
+	} else {
+		// Only busy word enabled: 100% weight
+		medoidWeight = 0.0
+		busyWordWeight = 1.0
+	}
 
 	combinedSimilarity := (medoidSimilarity * medoidWeight) + (busyWordSimilarity * busyWordWeight)
-
 	return combinedSimilarity
 }
 
@@ -3304,6 +3328,12 @@ func performMetaClustering(clusters []map[string]interface{}, cfg *Config) []int
 		return result
 	}
 
+	// Use union approach if enabled
+	if cfg.Analysis.UseUnionApproach {
+		return performUnionMetaClustering(clusters, cfg)
+	}
+
+	// Use traditional weighted approach
 	threshold := cfg.Analysis.MetaClusterSimilarityThreshold
 
 	// Track which clusters have been assigned to meta-clusters
@@ -3370,6 +3400,139 @@ func performMetaClustering(clusters []map[string]interface{}, cfg *Config) []int
 	result = append(result, individualClusters...)
 
 	return result
+}
+
+// performUnionMetaClustering performs meta-clustering using union of medoid and busy word similarities
+func performUnionMetaClustering(clusters []map[string]interface{}, cfg *Config) []interface{} {
+	// Create adjacency matrices for both similarity measures
+	medoidAdjacency := make([][]bool, len(clusters))
+	busyWordAdjacency := make([][]bool, len(clusters))
+	
+	for i := range clusters {
+		medoidAdjacency[i] = make([]bool, len(clusters))
+		busyWordAdjacency[i] = make([]bool, len(clusters))
+	}
+
+	// Calculate medoid similarities
+	if cfg.Analysis.UseMedoidSimilarity {
+		for i := 0; i < len(clusters); i++ {
+			for j := i; j < len(clusters); j++ {
+				medoidSim := calculateMedoidSimilarity(clusters[i], clusters[j])
+				medoidAdjacency[i][j] = medoidSim >= cfg.Analysis.MedoidSimilarityThreshold
+				medoidAdjacency[j][i] = medoidAdjacency[i][j] // Symmetric
+			}
+		}
+	}
+
+	// Calculate busy word similarities
+	if cfg.Analysis.UseBusyWordSimilarity {
+		for i := 0; i < len(clusters); i++ {
+			for j := i; j < len(clusters); j++ {
+				busyWordSim := calculateBusyWordSimilarity(clusters[i], clusters[j])
+				busyWordAdjacency[i][j] = busyWordSim >= cfg.Analysis.BusyWordSimilarityThreshold
+				busyWordAdjacency[j][i] = busyWordAdjacency[i][j] // Symmetric
+			}
+		}
+	}
+
+	// Create union adjacency matrix (OR operation)
+	unionAdjacency := make([][]bool, len(clusters))
+	for i := range clusters {
+		unionAdjacency[i] = make([]bool, len(clusters))
+		for j := range clusters {
+			unionAdjacency[i][j] = medoidAdjacency[i][j] || busyWordAdjacency[i][j]
+		}
+	}
+
+	// Find connected components in the union graph
+	assigned := make([]bool, len(clusters))
+	var metaClusters []*MetaCluster
+	var individualClusters []interface{}
+
+	for i := 0; i < len(clusters); i++ {
+		if assigned[i] {
+			continue
+		}
+
+		// Start a new meta-cluster with this cluster
+		totalTweets := 0
+		var subClusters []map[string]interface{}
+
+		// Find all clusters connected to this one (including itself)
+		queue := []int{i}
+		assigned[i] = true
+
+		for len(queue) > 0 {
+			current := queue[0]
+			queue = queue[1:]
+
+			subClusters = append(subClusters, clusters[current])
+			if size, ok := clusters[current]["size"].(int); ok {
+				totalTweets += size
+			}
+
+			// Find all unassigned clusters connected to current
+			for j := 0; j < len(clusters); j++ {
+				if !assigned[j] && unionAdjacency[current][j] {
+					assigned[j] = true
+					queue = append(queue, j)
+				}
+			}
+		}
+
+		// If we have multiple clusters, create a meta-cluster
+		if len(subClusters) > 1 {
+			metaCluster := createMetaCluster(subClusters, totalTweets)
+			metaClusters = append(metaClusters, metaCluster)
+		} else if len(subClusters) == 1 {
+			// Single cluster becomes individual cluster
+			individualClusters = append(individualClusters, convertToIndividualCluster(subClusters[0]))
+		}
+	}
+
+	// Add any remaining unassigned clusters as individual clusters
+	for i := 0; i < len(clusters); i++ {
+		if !assigned[i] {
+			individualClusters = append(individualClusters, convertToIndividualCluster(clusters[i]))
+		}
+	}
+
+	// Combine meta-clusters and individual clusters
+	result := make([]interface{}, 0, len(metaClusters)+len(individualClusters))
+
+	// Add meta-clusters first
+	for _, mc := range metaClusters {
+		result = append(result, mc)
+	}
+
+	// Add individual clusters
+	result = append(result, individualClusters...)
+
+	return result
+}
+
+// calculateMedoidSimilarity calculates similarity between two clusters based on medoid tweets only
+func calculateMedoidSimilarity(cluster1, cluster2 map[string]interface{}) float64 {
+	medoid1, ok1 := cluster1["medoid_tweet_text"].(string)
+	medoid2, ok2 := cluster2["medoid_tweet_text"].(string)
+
+	if !ok1 || !ok2 {
+		return 0.0
+	}
+
+	return 1.0 - normalizedWordDistance(medoid1, medoid2)
+}
+
+// calculateBusyWordSimilarity calculates similarity between two clusters based on busy words only
+func calculateBusyWordSimilarity(cluster1, cluster2 map[string]interface{}) float64 {
+	busyWords1, ok1 := cluster1["busy_words"].([]string)
+	busyWords2, ok2 := cluster2["busy_words"].([]string)
+
+	if !ok1 || !ok2 {
+		return 0.0
+	}
+
+	return jaccard(busyWords1, busyWords2)
 }
 
 // createMetaCluster creates a meta-cluster from a group of similar clusters

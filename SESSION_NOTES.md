@@ -477,6 +477,15 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 
 # TTD and Direction
 
+
+## Meta-Clusters show up very rarely 
+With meta_cluster_similarity_threshold: 0.6 I only saw one meta-cluster in logical days of Tweets. That meta-cluster was two clusters and the Tweets seemed to be nearly identical. Trying at 0.76, but that's beyond the recommended so something might be wrong.
+
+One possibility is that we are clustering on the medioids not the actual tweets.
+ 
+
+
+
 ## Dynamic adjustment of the Z minima
 Sometimes you see a gross inflation of the number of busy words. It is not clear why.  A facility to dynamically adjust the Z values to keep them at some optimim number might be useful.
 
