@@ -37,6 +37,11 @@ If any changes seem to involve multiple threads, be sure to get my agreement bef
 
 # TTD and Direction
 
+## Add a Second Per-Second Rate to Pipeline Stats
+
+
+="Pipeline stats" tweets=233411 tokens=935122 distinct=181930 inbound_queue_size=39 processing_rate_tweets_per_sec=1395.200791311382
+
 ## Clusters of Clusters (Moderate)
 We could use graph clustering on the cluster mediods to attempt to create clusters of clusters which might be a better display.
 
@@ -122,6 +127,13 @@ The dataset:
 Her death was discovered at 3:30 PM PST February 11, 2012 and she was pronounced dead at 3:55 PM PST
 
 So that would be 11:30/11:55 GMT aka Zulu i.e. 23:30/23:55 GMT
+ ./find_csv_file -dir ../twits/test_language_detect_out/ -datetime "2012-02-11 11:00:00" -n 3
+
+copy the file data/sender/sender/sender_status_whitney.txt to data/sender/sender_status.txt
+
+It will look like this, with your own path to it.
+
+../twits/test_language_detect_out/gnip.csv_1328956985339_1328957285339.cs
 
 ### Super Bowl
 Note the superbowl is also a great place to see real conversations starting up. It occurs on Feb 5 2012.   "3:16 Game" AFC Wild Card Playoff, where the Denver Broncos defeated the Pittsburgh Steelers. 

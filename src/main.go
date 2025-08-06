@@ -265,21 +265,24 @@ type Config struct {
 		// Minimum number of shared busy words required for clusters to be considered related (for persistence tracking)
 		MinSharedBusyWordsForPersistence int `yaml:"min_shared_busywords_for_persistence"` // Relationship strength threshold
 		// Method for determining cluster relationships across batches: "busy_words" or "full_text"
-		PersistenceClusteringMethod string           `yaml:"persistence_clustering_method"` // Cross-batch relationship detection method
-		DropExcessiveQuestions      bool             `yaml:"drop_excessive_questions"`      // Drop tweets with excessive question marks
-		MaxHumanTweetsDisplayed     int              `yaml:"max_human_tweets_displayed"`    // Maximum number of tweets to display in human-readable format
-		FilterRepetitivePatterns    bool             `yaml:"filter_repetitive_patterns"`    // Filter out clusters with repetitive meme-like patterns
-		BannedPhrasesFile           string           `yaml:"banned_phrases_file"`           // Path to file containing banned phrases
-		RepetitivePatternThreshold  float64          `yaml:"repetitive_pattern_threshold"`  // Threshold for filtering repetitive clusters
-		CompiledBannedPatterns      []*regexp.Regexp // Compiled regex patterns (not in yaml)
-		DeduplicateByUser           bool             `yaml:"deduplicate_by_user"`           // Deduplicate tweets by user within clusters
-		UseLevenshteinDeduplication bool             `yaml:"use_levenshtein_deduplication"` // Use distance-based deduplication
-		DistanceMethod              string           `yaml:"distance_method"`               // "character" or "word" distance method
-		NearDuplicateThreshold      float64          `yaml:"near_duplicate_threshold"`      // Normalized distance threshold
-		CleanupTriggerBatchSize     int              `yaml:"cleanup_trigger_batch_size"`    // Trigger cleanup every N tweets
-		CleanupMaxItems             int              `yaml:"cleanup_max_items"`             // Process up to M items per cleanup cycle
-		ClusterSortDescending       bool             `yaml:"cluster_sort_descending"`       // Sort clusters by size: true=descending (biggest first), false=ascending (biggest last)
-		SuppressIndividualTweets    bool             `yaml:"suppress_individual_tweets"`    // Suppress individual tweets in output, keep only metadata and medoid
+		PersistenceClusteringMethod    string           `yaml:"persistence_clustering_method"` // Cross-batch relationship detection method
+		DropExcessiveQuestions         bool             `yaml:"drop_excessive_questions"`      // Drop tweets with excessive question marks
+		MaxHumanTweetsDisplayed        int              `yaml:"max_human_tweets_displayed"`    // Maximum number of tweets to display in human-readable format
+		FilterRepetitivePatterns       bool             `yaml:"filter_repetitive_patterns"`    // Filter out clusters with repetitive meme-like patterns
+		BannedPhrasesFile              string           `yaml:"banned_phrases_file"`           // Path to file containing banned phrases
+		RepetitivePatternThreshold     float64          `yaml:"repetitive_pattern_threshold"`  // Threshold for filtering repetitive clusters
+		CompiledBannedPatterns         []*regexp.Regexp // Compiled regex patterns (not in yaml)
+		DeduplicateByUser              bool             `yaml:"deduplicate_by_user"`               // Deduplicate tweets by user within clusters
+		UseLevenshteinDeduplication    bool             `yaml:"use_levenshtein_deduplication"`     // Use distance-based deduplication
+		DistanceMethod                 string           `yaml:"distance_method"`                   // "character" or "word" distance method
+		NearDuplicateThreshold         float64          `yaml:"near_duplicate_threshold"`          // Normalized distance threshold
+		CleanupTriggerBatchSize        int              `yaml:"cleanup_trigger_batch_size"`        // Trigger cleanup every N tweets
+		CleanupMaxItems                int              `yaml:"cleanup_max_items"`                 // Process up to M items per cleanup cycle
+		ClusterSortDescending          bool             `yaml:"cluster_sort_descending"`           // Sort clusters by size: true=descending (biggest first), false=ascending (biggest last)
+		SuppressIndividualTweets       bool             `yaml:"suppress_individual_tweets"`        // Suppress individual tweets in output, keep only metadata and medoid
+		EnableMetaClustering           bool             `yaml:"enable_meta_clustering"`            // Enable clustering of clusters into meta-clusters
+		MetaClusterSimilarityThreshold float64          `yaml:"meta_cluster_similarity_threshold"` // Similarity threshold for merging clusters (0.3-0.6)
+		MetaClusterMinSize             int              `yaml:"meta_cluster_min_size"`             // Minimum total tweets for a meta-cluster
 	} `yaml:"analysis"`
 }
 
@@ -1182,6 +1185,11 @@ func main() {
 	fmt.Fprintf(os.Stderr, "Language filter: %s\n", cfg.Analysis.LanguageFilter)
 	fmt.Fprintf(os.Stderr, "Cluster sort descending: %v\n", cfg.Analysis.ClusterSortDescending)
 	fmt.Fprintf(os.Stderr, "Suppress individual tweets: %v\n", cfg.Analysis.SuppressIndividualTweets)
+	fmt.Fprintf(os.Stderr, "Enable meta-clustering: %v\n", cfg.Analysis.EnableMetaClustering)
+	if cfg.Analysis.EnableMetaClustering {
+		fmt.Fprintf(os.Stderr, "Meta-cluster similarity threshold: %.3f\n", cfg.Analysis.MetaClusterSimilarityThreshold)
+		fmt.Fprintf(os.Stderr, "Meta-cluster min size: %d\n", cfg.Analysis.MetaClusterMinSize)
+	}
 	fmt.Fprintf(os.Stderr, "\n--- Filter Settings ---\n")
 	fmt.Fprintf(os.Stderr, "Filter enabled: %v\n", cfg.Filter.Enabled)
 	fmt.Fprintf(os.Stderr, "RabbitMQ: %s:%d/%s\n", cfg.MQHost, cfg.MQPort, cfg.MQQueue)
@@ -2762,7 +2770,7 @@ type Batch struct {
 type OutputType string
 
 const (
-	OUTPUT_CLUSTER OutputType = "cluster"
+	OUTPUT_CLUSTER OutputType = "batch"
 	OUTPUT_STATS   OutputType = "stats"
 	OUTPUT_ERROR   OutputType = "error"
 	OUTPUT_INFO    OutputType = "info"
@@ -2849,17 +2857,52 @@ func convertBatchToHumanReadable(batchMap map[string]interface{}, cfg *Config) i
 				}
 			}
 		}
+		// Convert all clusters to human-readable format first (for tweet text extraction)
+		var humanReadableFilteredClusters []map[string]interface{}
 		for _, cluster := range filteredClusters {
 			humanReadableCluster := convertIndividualClusterToHumanReadable(cluster, cfg)
 			if humanReadableCluster != nil {
-				humanReadableClusters = append(humanReadableClusters, humanReadableCluster)
+				if clusterMap, ok := humanReadableCluster.(map[string]interface{}); ok {
+					humanReadableFilteredClusters = append(humanReadableFilteredClusters, clusterMap)
+				}
 			}
 		}
 
-		// Sort by the new calculated size (after deduplication)
+		// Apply meta-clustering if enabled
+		if cfg.Analysis.EnableMetaClustering {
+			humanReadableClusters = performMetaClustering(humanReadableFilteredClusters, cfg)
+		} else {
+			// Use the already-converted clusters
+			for _, cluster := range humanReadableFilteredClusters {
+				humanReadableClusters = append(humanReadableClusters, cluster)
+			}
+		}
+
+		// Sort clusters by size (works for both individual and meta clusters)
 		sort.Slice(humanReadableClusters, func(i, j int) bool {
-			sizeI, _ := humanReadableClusters[i].(map[string]interface{})["size"].(int)
-			sizeJ, _ := humanReadableClusters[j].(map[string]interface{})["size"].(int)
+			var sizeI, sizeJ int
+
+			// Handle both individual clusters and meta-clusters
+			if metaCluster, ok := humanReadableClusters[i].(*MetaCluster); ok {
+				sizeI = metaCluster.TotalTweets
+			} else if individualCluster, ok := humanReadableClusters[i].(*IndividualCluster); ok {
+				sizeI = individualCluster.Size
+			} else if clusterMap, ok := humanReadableClusters[i].(map[string]interface{}); ok {
+				if size, ok := clusterMap["size"].(int); ok {
+					sizeI = size
+				}
+			}
+
+			if metaCluster, ok := humanReadableClusters[j].(*MetaCluster); ok {
+				sizeJ = metaCluster.TotalTweets
+			} else if individualCluster, ok := humanReadableClusters[j].(*IndividualCluster); ok {
+				sizeJ = individualCluster.Size
+			} else if clusterMap, ok := humanReadableClusters[j].(map[string]interface{}); ok {
+				if size, ok := clusterMap["size"].(int); ok {
+					sizeJ = size
+				}
+			}
+
 			if cfg.Analysis.ClusterSortDescending {
 				return sizeI > sizeJ // Descending order (biggest first)
 			} else {
@@ -3056,12 +3099,24 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 	if mostTypicalTweet, ok := clusterMap["most_typical_tweet"].(*tweets.Tweet); ok && mostTypicalTweet != nil {
 		medoidWithTime := fmt.Sprintf("[%s] %s", mostTypicalTweet.CreatedAt, mostTypicalTweet.Text)
 		humanReadable["medoid_tweet_text"] = medoidWithTime
+		// Preserve the original medoid for meta-clustering
+		humanReadable["medoid"] = mostTypicalTweet.Text
 
 		// Debug: Log the medoid tweet details
 		slog.Debug("Medoid tweet details",
 			"unix_time", mostTypicalTweet.Unix,
 			"created_at", mostTypicalTweet.CreatedAt,
 			"text_preview", mostTypicalTweet.Text[:min(50, len(mostTypicalTweet.Text))])
+	} else {
+		// Fallback: try to get medoid from other sources
+		if medoidText, ok := clusterMap["medoid"].(string); ok && medoidText != "" {
+			humanReadable["medoid_tweet_text"] = medoidText
+			humanReadable["medoid"] = medoidText
+		} else if len(tweetTexts) > 0 {
+			// Use first tweet as medoid if available
+			humanReadable["medoid_tweet_text"] = tweetTexts[0]
+			humanReadable["medoid"] = tweetTexts[0]
+		}
 	}
 
 	// Add persistence information if available
@@ -3181,4 +3236,284 @@ type BatchOutput struct {
 	TotalClusters        int         `json:"total_clusters"`
 	ClustersAboveMinSize int         `json:"clusters_above_min_size"`
 	Clusters             interface{} `json:"clusters"`
+}
+
+// MetaCluster represents a group of similar clusters
+type MetaCluster struct {
+	Type          string                   `json:"type"`
+	MetaClusterID string                   `json:"meta_cluster_id"`
+	Theme         string                   `json:"theme"`
+	TotalTweets   int                      `json:"total_tweets"`
+	Medoid        string                   `json:"medoid"`
+	BusyWords     []string                 `json:"busy_words"`
+	SubClusters   []map[string]interface{} `json:"sub_clusters"`
+}
+
+// IndividualCluster represents a standalone cluster
+type IndividualCluster struct {
+	Type       string   `json:"type"`
+	ClusterID  int      `json:"cluster_id"`
+	Size       int      `json:"size"`
+	Medoid     string   `json:"medoid"`
+	BusyWords  []string `json:"busy_words"`
+	TweetTexts []string `json:"tweet_texts,omitempty"`
+}
+
+// clusterSimilarity calculates similarity between two clusters based on their medoids and busy words
+func clusterSimilarity(cluster1, cluster2 map[string]interface{}, cfg *Config) float64 {
+	// Get medoids
+	medoid1, ok1 := cluster1["medoid_tweet_text"].(string)
+	medoid2, ok2 := cluster2["medoid_tweet_text"].(string)
+
+	if !ok1 || !ok2 {
+		return 0.0
+	}
+
+	// Get busy words
+	busyWords1, ok1 := cluster1["busy_words"].([]string)
+	busyWords2, ok2 := cluster2["busy_words"].([]string)
+
+	if !ok1 || !ok2 {
+		return 0.0
+	}
+
+	// Calculate medoid similarity using word distance
+	medoidSimilarity := 1.0 - normalizedWordDistance(medoid1, medoid2)
+
+	// Calculate busy word similarity using Jaccard
+	busyWordSimilarity := jaccard(busyWords1, busyWords2)
+
+	// Combine similarities (weighted average)
+	// You could make these weights configurable
+	medoidWeight := 0.6
+	busyWordWeight := 0.4
+
+	combinedSimilarity := (medoidSimilarity * medoidWeight) + (busyWordSimilarity * busyWordWeight)
+
+	return combinedSimilarity
+}
+
+// performMetaClustering groups similar clusters into meta-clusters
+func performMetaClustering(clusters []map[string]interface{}, cfg *Config) []interface{} {
+	if !cfg.Analysis.EnableMetaClustering || len(clusters) < 2 {
+		// Return individual clusters if meta-clustering is disabled or not enough clusters
+		result := make([]interface{}, len(clusters))
+		for i, cluster := range clusters {
+			result[i] = convertToIndividualCluster(cluster)
+		}
+		return result
+	}
+
+	threshold := cfg.Analysis.MetaClusterSimilarityThreshold
+
+	// Track which clusters have been assigned to meta-clusters
+	assigned := make([]bool, len(clusters))
+	var metaClusters []*MetaCluster
+	var individualClusters []interface{}
+
+	// Try to group clusters into meta-clusters
+	for i := 0; i < len(clusters); i++ {
+		if assigned[i] {
+			continue
+		}
+
+		// Start a new meta-cluster with this cluster
+		totalTweets := 0
+		var subClusters []map[string]interface{}
+
+		// Find all clusters similar to this one
+		for j := i; j < len(clusters); j++ {
+			if assigned[j] {
+				continue
+			}
+
+			// Check if clusters i and j are similar
+			similarity := clusterSimilarity(clusters[i], clusters[j], cfg)
+			if similarity >= threshold {
+				assigned[j] = true
+				subClusters = append(subClusters, clusters[j])
+
+				// Get size of this sub-cluster
+				if size, ok := clusters[j]["size"].(int); ok {
+					totalTweets += size
+				}
+			}
+		}
+
+		// If we have multiple clusters, create a meta-cluster (regardless of total tweets)
+		if len(subClusters) > 1 {
+			metaCluster := createMetaCluster(subClusters, totalTweets)
+			metaClusters = append(metaClusters, metaCluster)
+		} else if len(subClusters) == 1 {
+			// Single cluster becomes individual cluster
+			individualClusters = append(individualClusters, convertToIndividualCluster(subClusters[0]))
+		}
+		// If subClusters is empty, do nothing (this can happen if no clusters meet similarity criteria)
+	}
+
+	// Add any remaining unassigned clusters as individual clusters
+	for i := 0; i < len(clusters); i++ {
+		if !assigned[i] {
+			individualClusters = append(individualClusters, convertToIndividualCluster(clusters[i]))
+		}
+	}
+
+	// Combine meta-clusters and individual clusters
+	result := make([]interface{}, 0, len(metaClusters)+len(individualClusters))
+
+	// Add meta-clusters first
+	for _, mc := range metaClusters {
+		result = append(result, mc)
+	}
+
+	// Add individual clusters
+	result = append(result, individualClusters...)
+
+	return result
+}
+
+// createMetaCluster creates a meta-cluster from a group of similar clusters
+func createMetaCluster(subClusters []map[string]interface{}, totalTweets int) *MetaCluster {
+	if len(subClusters) == 0 {
+		return nil
+	}
+
+	// Use the largest cluster's medoid as the meta-cluster medoid
+	var largestCluster map[string]interface{}
+	maxSize := 0
+
+	for _, cluster := range subClusters {
+		if size, ok := cluster["size"].(int); ok && size > maxSize {
+			maxSize = size
+			largestCluster = cluster
+		}
+	}
+
+	// Get medoid from largest cluster
+	medoid := ""
+	if largestCluster != nil {
+		if medoidText, ok := largestCluster["medoid_tweet_text"].(string); ok {
+			medoid = medoidText
+		}
+	}
+
+	// Combine busy words from all sub-clusters
+	allBusyWords := make(map[string]bool)
+	for _, cluster := range subClusters {
+		if busyWords, ok := cluster["busy_words"].([]string); ok {
+			for _, word := range busyWords {
+				allBusyWords[word] = true
+			}
+		}
+	}
+
+	// Convert to slice and sort for consistency
+	busyWords := make([]string, 0, len(allBusyWords))
+	for word := range allBusyWords {
+		busyWords = append(busyWords, word)
+	}
+	sort.Strings(busyWords)
+
+	// Generate theme from medoid (simple approach - could be enhanced)
+	theme := generateThemeFromMedoid(medoid)
+
+	// Create meta-cluster ID
+	metaClusterID := fmt.Sprintf("meta_%s", generateIDFromTheme(theme))
+
+	return &MetaCluster{
+		Type:          "meta_cluster",
+		MetaClusterID: metaClusterID,
+		Theme:         theme,
+		TotalTweets:   totalTweets,
+		Medoid:        medoid,
+		BusyWords:     busyWords,
+		SubClusters:   subClusters,
+	}
+}
+
+// convertToIndividualCluster converts a cluster map to IndividualCluster struct
+func convertToIndividualCluster(cluster map[string]interface{}) *IndividualCluster {
+	clusterID := 0
+	if id, ok := cluster["cluster_id"].(int); ok {
+		clusterID = id
+	}
+
+	size := 0
+	if s, ok := cluster["size"].(int); ok {
+		size = s
+	}
+
+	medoid := ""
+	if medoidText, ok := cluster["medoid_tweet_text"].(string); ok {
+		medoid = medoidText
+	} else if medoidText, ok := cluster["medoid"].(string); ok {
+		medoid = medoidText
+	}
+
+	busyWords := []string{}
+	if words, ok := cluster["busy_words"].([]string); ok {
+		busyWords = words
+	}
+
+	tweetTexts := []string{}
+	if texts, ok := cluster["tweet_texts"].([]string); ok {
+		tweetTexts = texts
+	}
+
+	return &IndividualCluster{
+		Type:       "individual_cluster",
+		ClusterID:  clusterID,
+		Size:       size,
+		Medoid:     medoid,
+		BusyWords:  busyWords,
+		TweetTexts: tweetTexts,
+	}
+}
+
+// generateThemeFromMedoid creates a simple theme from the medoid text
+func generateThemeFromMedoid(medoid string) string {
+	if medoid == "" {
+		return "unknown_theme"
+	}
+
+	// Simple approach: extract key words and create a theme
+	// This could be enhanced with NLP or more sophisticated analysis
+	words := strings.Fields(strings.ToLower(medoid))
+
+	// Filter out common words
+	commonWords := map[string]bool{
+		"the": true, "a": true, "an": true, "and": true, "or": true, "but": true,
+		"in": true, "on": true, "at": true, "to": true, "for": true, "of": true,
+		"with": true, "by": true, "is": true, "are": true, "was": true, "were": true,
+		"i": true, "you": true, "he": true, "she": true, "it": true, "we": true, "they": true,
+		"this": true, "that": true, "these": true, "those": true,
+	}
+
+	var keyWords []string
+	for _, word := range words {
+		if len(word) > 2 && !commonWords[word] {
+			keyWords = append(keyWords, word)
+		}
+	}
+
+	if len(keyWords) == 0 {
+		return "general_discussion"
+	}
+
+	// Take first few key words for theme
+	if len(keyWords) > 3 {
+		keyWords = keyWords[:3]
+	}
+
+	return strings.Join(keyWords, "_")
+}
+
+// generateIDFromTheme creates a simple ID from a theme
+func generateIDFromTheme(theme string) string {
+	// Simple hash-like function
+	hash := 0
+	for _, char := range theme {
+		hash = (hash*31 + int(char)) % 10000
+	}
+	return fmt.Sprintf("%s_%04d", theme, hash)
 }

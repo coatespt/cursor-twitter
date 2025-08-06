@@ -5,8 +5,8 @@ all: build
 
 # Build the executable
 build:
-	@echo "Building process executable..."
-	go build -o process src/process.go
+	@echo "Building twitter-pipeline executable..."
+	go build -o twitter-pipeline src/main.go
 	@echo "Build complete!"
 
 # Build language detector
@@ -33,10 +33,22 @@ build-token-frequency:
 	go build -o token_frequency_analyzer util_go/token_frequency_analyzer.go
 	@echo "Token frequency analyzer build complete!"
 
+# Build token analyzer
+build-analyze-tokens:
+	@echo "Building token analyzer..."
+	go build -o analyze_tokens util_go/analyze_tokens.go
+	@echo "Token analyzer build complete!"
+
+# Build token examiner
+build-examine-tokens:
+	@echo "Building token examiner..."
+	go build -o examine_tokens util_go/examine_tokens.go
+	@echo "Token examiner build complete!"
+
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f process language_detector find_csv_file csv_file_mapping token_frequency_analyzer
+	rm -f twitter-pipeline language_detector find_csv_file csv_file_mapping token_frequency_analyzer analyze_tokens examine_tokens
 	@echo "Clean complete!"
 
 # Run tests (if any)
@@ -47,8 +59,8 @@ test:
 
 # Run the program with sample data
 run:
-	@echo "Running process with sample data..."
-	./process ../twits/msg_input ../twits/msg_output --auto-clean
+	@echo "Running twitter-pipeline with sample data..."
+	./twitter-pipeline
 
 # Show help
 help:
@@ -58,6 +70,8 @@ help:
 	@echo "  build-find-csv        - Build the CSV file finder"
 	@echo "  build-csv-mapping     - Build the CSV file mapping"
 	@echo "  build-token-frequency - Build the token frequency analyzer"
+	@echo "  build-analyze-tokens  - Build the token analyzer"
+	@echo "  build-examine-tokens  - Build the token examiner"
 	@echo "  clean        - Remove build artifacts"
 	@echo "  test         - Run tests"
 	@echo "  test-all     - Run all tests (same as test)"

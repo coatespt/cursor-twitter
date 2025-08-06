@@ -233,10 +233,21 @@ analysis:
   cleanup_max_items: 4000            # Process up to M items per cleanup cycle
   # Sort clusters by size: true=descending (biggest first), false=ascending (biggest last)
   # Default: false (ascending) so biggest clusters appear last (closest to console)
-  cluster_sort_descending: false
+  cluster_sort_descending: true
   # Suppress individual tweets in output, keep only metadata and medoid tweet
   # Default: false (show all tweets) for economy of display
   suppress_individual_tweets: false
+  # Enable clustering of clusters into meta-clusters
+  # Groups similar clusters into higher-level themes
+  enable_meta_clustering: true
+  # Similarity threshold for merging clusters into meta-clusters (0.3-0.6)
+  # Lower values = more strict (fewer meta-clusters, more individual clusters)
+  # Higher values = less strict (more meta-clusters, fewer individual clusters)
+  meta_cluster_similarity_threshold: 0.3
+  # Minimum number of clusters required to form a meta-cluster
+  # Meta-clusters require at least 2 similar clusters to be created
+  # (This parameter is no longer used - meta-clusters are created whenever 2+ similar clusters are found)
+  meta_cluster_min_size: 2
 
 
 # Set to true to enable language detection in the Python parser 

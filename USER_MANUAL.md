@@ -9,14 +9,19 @@ This manual describes how to use all the programs and utilities in the Twitter s
 - **Test Utilities** (`util_test/`): Testing and debugging tools
 - **Shell Scripts** (`util_shell/`): Automation and convenience scripts
 
+When running the project, copy an existing config/config.yaml file and ajust it to suit, naming it something like config/config.my-computer.yaml.  This way you won't step on other configs.  If you are changing the config code, make sure you ask Cursor to propagate you changes to the other config files so they don't diverge.
+
 ## Table of Contents
 
 1. [Main Application](#main-application)
 2. [Go Utilities](#go-utilities)
-3. [Test Utilities](#test-utilities)
-4. [Shell Scripts](#shell-scripts)
-5. [Configuration](#configuration)
-6. [Build System](#build-system)
+3. [Sender Scripts](#sender-scripts)
+4. [Parser Scripts](#parser-scripts)
+5. [Test Utilities](#test-utilities)
+6. [Shell Scripts](#shell-scripts)
+7. [Additional Scripts](#additional-scripts)
+8. [Configuration](#configuration)
+9. [Build System](#build-system)
 
 ---
 
@@ -52,10 +57,10 @@ go build -o main src/main.go
 - Deduplication: `deduplicate_by_user`, `use_levenshtein_deduplication`
 
 **Caveats**
+
 The -load-state flag is handy in development as it reads in the state saved on disk to save waiting for millions of tokens. However, the statistics will be thrown off any you'll get poor results until the entire token window has been replaced, which may be a logical hour (a real time fifteen minutes on a slow machine.)
 
 When you are filtering for language, e.g. set lang: en in the config.yaml, the log line, for example, "Pipeline stats" tweets=1690148 tokens=6247611 distinct=65190 inbound_queue_size=45 processing_rate_tweets_per_sec=1109.4297100838241 prints the count of Tweets in the specified language.  With "en", this is less than half the number of Tweets read.  So in the case above, you'd be ingesting nearly 3000 Tweets/second.
----
 
 ## Go Utilities
 
@@ -209,6 +214,144 @@ go build -o examine_tokens util_go/examine_tokens.go
 - Token-by-token analysis
 - Pattern recognition
 - Debugging tool for token processing
+
+---
+
+## Sender Scripts
+
+### CSV to RabbitMQ Sender (`sender/send_csv_to_mq.py`)
+
+Sends CSV files as messages to RabbitMQ for processing by the main pipeline.
+
+**Usage:**
+```bash
+python ./sender/send_csv_to_mq.py <directory> [options]
+```
+
+**Required Parameters:**
+- `directory`: Path to directory containing CSV files to send
+
+**Optional Parameters:**
+- `--config <path>`: Path to config file (default: `../config/config.yaml`)
+- `--max-queue-depth <number>`: Maximum queue depth before pausing (overrides config)
+- `--pause-duration <seconds>`: Duration to pause when queue is full (overrides config)
+
+**Examples:**
+```bash
+# Send CSV files with default config
+python ./sender/send_csv_to_mq.py ../twits/test_language_detect_out/
+
+# Send CSV files with custom config path
+python ./sender/send_csv_to_mq.py ../twits/test_language_detect_out/ --config config/config.yaml
+
+# Send with custom queue depth limits
+python ./sender/send_csv_to_mq.py ../twits/test_language_detect_out/ --max-queue-depth 5000 --pause-duration 2.0
+```
+
+**Features:**
+- Sends CSV rows as individual messages to RabbitMQ
+- Automatic flow control to prevent queue overflow
+- Status tracking to resume from where it left off
+- Configurable queue depth limits and pause durations
+- Processes files in sorted order
+
+**Configuration:**
+The sender reads settings from the config file:
+```yaml
+sender:
+  status_file: "/path/to/sender_status.txt"  # Track last processed file
+  max_queue_depth: 10000                     # Pause when queue gets this full
+  pause_duration: 1.0                        # Seconds to pause when queue is full
+```
+
+**Status Tracking:**
+- Creates a status file to track the last processed CSV file
+- Enables resuming from where it left off if interrupted
+- Useful for processing large datasets that may take hours
+
+### Test Queue (`sender/test_queue.py`)
+
+Tests RabbitMQ queue functionality and message handling.
+
+**Usage:**
+```bash
+python ./sender/test_queue.py
+```
+
+**Features:**
+- Tests RabbitMQ connection and queue operations
+- Verifies message publishing and consumption
+- Useful for debugging queue issues
+
+### Test Status Tracking (`sender/test_status_tracking.py`)
+
+Tests the status tracking functionality of the sender.
+
+**Usage:**
+```bash
+python ./sender/test_status_tracking.py
+```
+
+**Features:**
+- Tests atomic file operations for status tracking
+- Verifies sender can resume from interrupted runs
+- Validates status file creation and reading
+
+### Send Test Tweets (`sender/send_test_tweets.py`)
+
+Sends test tweet data to RabbitMQ for testing purposes.
+
+**Usage:**
+```bash
+python ./sender/send_test_tweets.py [options]
+```
+
+**Features:**
+- Generates and sends test tweet messages
+- Useful for testing the pipeline without real data
+- Configurable message count and content
+
+---
+
+## Parser Scripts
+
+### JSON Parser (`parser/parser.py`)
+
+Parses JSON tweet data and converts to CSV format for processing.
+
+**Usage:**
+```bash
+python ./parser/parser.py [options]
+```
+
+**Features:**
+- Converts JSON tweet data to CSV format
+- Handles various JSON structures and formats
+- Outputs data suitable for the main pipeline
+- Configurable parsing options
+
+**Dependencies:**
+```bash
+pip install -r parser/requirements.txt
+```
+
+---
+
+## Additional Scripts
+
+### Test Startup Scenarios (`test_startup_scenarios.sh`)
+
+Tests various startup scenarios for the pipeline.
+
+**Usage:**
+```bash
+./test_startup_scenarios.sh
+```
+
+**Features:**
+- Tests different configuration scenarios
+- Validates startup behavior with various settings
+- Useful for ensuring robust startup behavior
 
 ---
 
