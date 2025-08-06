@@ -17,7 +17,7 @@ mq_queue: tweet_in
 #    development, bad for real results.)  
 # The size affects both accuracy (more gives fewer spurious busywords) and the fluidity
 #    with which surges in word use are aged out. (more keeps surges around longer.)
-window: 3000000
+window: 4000000
 
 # We roll tokens out of the token window (above) file-by-file. This is the number
 #   of token files to keep window (see above) tokens in on disk before using the 
@@ -45,9 +45,7 @@ rebuild_every_files: 20
 # This number affects the sensitivity to usage anomalies. Too big, and they get harder
 #   to see, too small and you see things that aren't there.
 #
-#batch: 13000
-batch: 25000     
-
+batch: 25000
 # Number of batches to keep in the sliding tweet window. This window is used for
 #    clustering recent tweets by buys word, and finding the persistence of clusters.
 # It's just what we keep, not what we necessarily use, so bigger just means more memory
@@ -176,7 +174,7 @@ analysis:
   #   language explicitly. Setting this field is very CPU heavy, so doing it in real time
   #   requires significant work in the feeder. (It's 10x more than everything else put
   #   together!)
-  language_filter: "all"
+  language_filter: "en"
   # K-Means is probably not going to be used anymore.
   kmeans_use_all_words: false  # If true, k-means uses all words in tweets; if false, only busy words
   # Persistence window configuration for tracking clusters across multiple batches
@@ -239,12 +237,11 @@ analysis:
   suppress_individual_tweets: false
   # Enable clustering of clusters into meta-clusters
   # Groups similar clusters into higher-level themes
-  enable_meta_clustering: false
+  enable_meta_clustering: true
   # Similarity threshold for merging clusters into meta-clusters (0.3-0.6)
   # Lower values = more strict (fewer meta-clusters, more individual clusters)
   # Higher values = less strict (more meta-clusters, fewer individual clusters)
-  meta_cluster_similarity_threshold: 0.4
-  # Minimum number of clusters required to form a meta-cluster
+  meta_cluster_similarity_threshold: 0.6 # Minimum number of clusters required to form a meta-cluster
   # Meta-clusters require at least 2 similar clusters to be created
   # (This parameter is no longer used - meta-clusters are created whenever 2+ similar clusters are found)
   meta_cluster_min_size: 2

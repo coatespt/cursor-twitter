@@ -217,6 +217,29 @@ go build -o examine_tokens util_go/examine_tokens.go
 
 ---
 
+## Starting RabbitMQ
+
+There are numerous ways to start RabbitMQ. You can run it as a daemon that will always be available when you start your computer.
+
+You can also ask Cursor to start rabbit in Docker 
+
+It is easy to start and manage it yourself with the following commands.
+ 
+- docker start rabbitmq
+- docker stop rabbitmq
+- docker restart rabbitmq
+- docker ps | grep rabbit
+- docker logs rabbitmq
+
+It can easily be monitored on their Web app. It tells you how much data it is moving and is very useful for diagnosing problems.
+
+- http://localhost:15672/#/
+
+The username and passwords are guest,guest.
+
+Note that the sending and acking rates are accurate. If you are using a language filter as specified in config.yaml, you will see a smaller number under "Pipeline statistics" in the log file. This is because Pipeline statitics isn't counting  the ones that are filtered out because they are not mareked as being of your desired language.
+ 
+
 ## Sender Scripts
 
 ### CSV to RabbitMQ Sender (`sender/send_csv_to_mq.py`)
