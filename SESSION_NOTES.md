@@ -367,6 +367,12 @@ cd to cursor-twitter
 
 # Notes On Things That Have Been Checked/Fixed/Explored
 
+After running for 18 hours, we see 3170 meta clusters and 23976 individual cluster, which is about seven individual clusters for each meta cluster. 
+
+The quality of the clusters is not yet clear. Some of them seem ok and some of the them and some seem to be unrelated.  We need a program for systematically seeing config parameters work and what do not.
+
+
+
 ## Processing Rate
 A large set of enhancements have greatly improved throughput.
 
