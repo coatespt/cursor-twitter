@@ -483,14 +483,22 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 
 # TTD and Direction
 
+## Clustering Improvement
+Would clustering be improved by weighting the frequency classes?
 
-## Meta-Clusters show up very rarely 
-With meta_cluster_similarity_threshold: 0.6 I only saw one meta-cluster in logical days of Tweets. That meta-cluster was two clusters and the Tweets seemed to be nearly identical. Trying at 0.76, but that's beyond the recommended so something might be wrong.
+- The rarer the word class, the more it is worth?
+- Or possibly the opposite.
 
-One possibility is that we are clustering on the medioids not the actual tweets.
- 
+It doesn't seem like it would be that hard to do.
+- Make the frequency filters accessible to the analytic thread
+- Assign a weight to each busyword based on its F class
+- Weighted edges are amost certainly part of the graph algorithm. We probably use them now, but just defaulted to 1.
 
-
+## Meta-Clusters Don't seem nearly as good as the primary clusters.
+See clustering improvement above.
+- We now have a choice between clustering on the busy words or clustering on all tokens. 
+- Investigate exactly how this is done. 
+- Does "all teh words" mean just the medioids or does it mean all the Tweets?
 
 ## Dynamic adjustment of the Z minima
 Sometimes you see a gross inflation of the number of busy words. It is not clear why.  A facility to dynamically adjust the Z values to keep them at some optimim number might be useful.
