@@ -1,6 +1,9 @@
 # Session Notes
 
-This document covers
+The document is about nitty gritty practicalities in development.
+
+Specifically, it contains:
+
 - Loud warnings to Cursor not to mess with any code without asking
 - Notes on how it works
 - Notes on things learned, enhancements, improvements, bugs fixed, etc.
@@ -8,7 +11,7 @@ This document covers
 - Some miscellaneous details on functionality 
 - Some details on data volume and issues
 
-The document is about nitty gritty practicalities in development.
+Other documentation:
 
 - See PROJECT_DESCRIPTION.md for an overview and more abstract concerns.
 - See USER_MANUAL.md for how to run the software
@@ -53,10 +56,13 @@ This section explains the core heuristic for finding the busywords at a minimal 
 
 ## Word Frequency Computations
 
-Global relative frequency calculations occur, but they are relatively infrequent and no in the in the main processing path.  
-The are done to create a set of filters that are used to partition the flow of words into F frequency classes, with the most frequently used words in the first class and the least frequent words in the last class.  These occur on the order of minutes apart and are invisible to the main processing pipeline.
+Global relative frequency calculations occur, but they are relatively infrequent and not in the in the main processing path.  
 
-Each class represents the same amount of word usage (the filters are just hashed sets.) F is a configuration item. A valued between 7 and 28 is reasonable.
+This is done to create a set of filters that are used to partition the flow of words into F frequency classes, with the most frequently used words in the first class and the least frequent words in the last class.  
+The recalculations are on the order of minutes apart and are invisible to the main processing pipeline.
+
+Each class represents the same amount of word usage (the filters are just hashed sets.) F is a configuration item. A value between 7 and 28 is reasonable. 
+
 
 This frequency partitioning filters are computed over a sliding window of Tweets. The size is configurable, but it is typically a few million. This is necessary to lower the variance in frequency. 
 
@@ -64,7 +70,7 @@ Every so often, again configurable but typically every few minutes, as set of fi
 
 Note that the size of the window and the frequency of the re-computation of the filters are two different things. The frequency filters might be recomputed many times over the duration of the window of Tweets. 
 
-Note also that the frequency of the cycles of computing busywords and clustering are independent of both. The big window of tokens might cover 500k Tweets, but the filters might be recomputed every 100k Tweets, while the busyword/clustering might be computed every 15k Tweets. All values configurable, of course.
+Note also that the periods of the cycles of computing busywords and clustering are independent of both. The big window of tokens might cover 500k Tweets, but the filters might be recomputed every 100k Tweets, while the busyword/clustering might be computed every 15k Tweets. All values configurable, of course.
  
 New words come along all the time, even after weeks of the firehose and a novel word won't match to any frequency class the first time it is seen. This is not a problem, however. The window is large, so any incoming word that doesn't match to a frequency class is by definition among the rarest class. When the next update to the frequency class filters is occurs, the novel word will no longer be an unknown.
 
@@ -96,17 +102,20 @@ One key design element here is a high degree of encapsulation. Shared data struc
 A 3pk is just an ordered triple of hashes modulo C for some token or word.  The hashes are each parameterized with a different value.  This value of C is a configurable global parameter, but it is ordinarily somewhere around the cube root of one or two billion, which is the size of the key space. More on this later.  
 
 As mentioned above, a global mapping of 3pk's to tokens, and tokens to 3pk's is maintained. If a 3pk corresponds to an existing token, it will always exist in this mapping.
-..
-If the 3pk hash range is 1000, that gives  3pk's a logical space of a billion different pseudo-random triples. There are only at most few million distinct words in the global computation at any one time, so there is a possibility of a collision for any given token. However, as we will see later, collisions are neither frequent nor very harmful.  
 
-The range can be increased to reduce this probablility farther, but there are computational costs to a larger range, so it's a trade-off. How to compute the optimal range size is an open question.
+A 3pk hash range of 1000 gives the 3pk's a logical space of a billion different pseudo-random triples. 
+There are only at most few million distinct words in the global computation at any one time, so there is always a possibility of a collision for any given token. 
+However, as we will see later, collisions are neither frequent nor very harmful.  
+
+The range can be increased to reduce this probablility farther, but there are computational costs to a larger range, so it's a trade-off. 
+How to compute the optimal range size is an open question.
 
 ## The Busyword Processor Threads
  
 Each of the F busyword processors works the same way. 
 
 The purpose of the frequency partitioning is to ensure that the background frequency of the tokens received by a busyword processor are appoximately equal.
-The equality is less approximate for higher frequency classes, so a set of F configurable values allow compensatory adjustments. More on this elsewhere.
+The equality is less approximate for higher frequency classes, so a set of F configurable values allows compensatory adjustments. More on this elsewhere.
 
 The hashes from each 3pk are used to index into three corresponding arrays of counters of size C. (The array size is the same as the 3pk range.) One counter in each of the three arrays gets bumped for each incoming 3pk.
 
@@ -118,7 +127,10 @@ Therefore, some of the counters will have exceptionally high counts.
 For instance, if you have 10,000 Tweets in a batch, with an average of 10 tokens in each Tweet text, that's 100,000 tokens spread over, say, 24 busyword processors. 
 This means each of the F processors would get about 4,166 tokens, and the counter values would have a mean of 4.166 when the signal 3pk is detected. (We use {-1, -1, -1}) at which point the processor suspends reading the queue and processes the batch.
 
-In other words, we have imposed a non-Gaussian distribution on top of the underlying background distribution. In summary:
+For low-frequency words, it doesn't take a great number of usages to show up against such a background distribution. 
+If a frequency class is for one-or-two-in-a-million words, half a dozen usages in a batch would raise the three counters its 3pk lands on to more than double the expected value.
+
+In other words the anomalously busy words impose a non-Gaussian distribution on top of the underlying background distribution. In summary:
 
 - A Z-score is computed for each counter as if the distribution were Gaussian.  
 - Technically, our counters are not Gaussian
@@ -134,9 +146,13 @@ In other words, we have imposed a non-Gaussian distribution on top of the underl
 
 ### Where the magic happens:
 
-- The sets of indexes of counters with freakishly high Z scores are collected for each of the three counter arrays. Note that we chose Z to keep cardinality of the set quite small relative to the number of counters. 
+- The sets of indexes of counters with freakishly high Z scores are collected for each of the three counter arrays. 
+Note that we chose Z to keep cardinality of the set quite small relative to the number of counters. 
 
-- The Cartesian product of the three index sets is computed. This gives you a large set of three-part keys, some of which should correspond to actual busy words, and the others (the vast majority) are just spurious junk. The lambs are separated from the goats by checking for whether each 3pk's corresponds to a value that exists in the global mapping. Anything not in the mapping is necessarily a goat.
+- The Cartesian product of the three index sets is computed. 
+This gives you a large set of three-part keys, some of which should correspond to actual busy words, and the others (the vast majority) are just spurious junk. 
+The lambs are separated from the goats by checking for whether each 3pk's corresponds to a value that exists in the global mapping. 
+Any token that is not in the mapping is necessarily a goat.
 
 - The 3pk's that exist give you the busy words for the current window. Note that this is a somewhat leaky filter. 
 	- Some randomly generated 3pk's will usually correspond to real tokens just by random chance because with a range of 1000, there are only a billion possible keys. 
