@@ -99,71 +99,66 @@ One key design element here is a high degree of encapsulation. Shared data struc
  
  
 ## The 3pK's
-A 3pk is just an ordered triple of hashes modulo C for some token or word.  The hashes are each parameterized with a different value.  This value of C is a configurable global parameter, but it is ordinarily somewhere around the cube root of one or two billion, which is the size of the key space. More on this later.  
+A 3pk is just an ordered triple of hashes modulo C for some token or word.  
+The hashes are each parameterized with a different value, which yields three almost always different values for each token. C is a configurable global parameter, but it is usually set to somewhere around 1000 to 1500, which gives a key space in the range of one or two billion. More on this later.
 
-As mentioned above, a global mapping of 3pk's to tokens, and tokens to 3pk's is maintained. If a 3pk corresponds to an existing token, it will always exist in this mapping.
+As mentioned above, a global two-way mapping of 3pk's to tokens is maintained. 
+If a 3pk corresponds to an existing token, it will always exist in this mapping.
 
-A 3pk hash range of 1000 gives the 3pk's a logical space of a billion different pseudo-random triples. 
-There are only at most few million distinct words in the global computation at any one time, so there is always a possibility of a collision for any given token. 
+The finite key-space means that there is always a possibility of a collision for any given token. 
 However, as we will see later, collisions are neither frequent nor very harmful.  
 
-The range can be increased to reduce this probablility farther, but there are computational costs to a larger range, so it's a trade-off. 
+The range can be increased to reduce this probablility farther, but there are 
+computational costs to a larger range, so the choice of C is a trade-off. 
 How to compute the optimal range size is an open question.
 
 ## The Busyword Processor Threads
  
-Each of the F busyword processors works the same way. 
+Each of the F busyword processors works the same way, as follows. 
 
-The purpose of the frequency partitioning is to ensure that the background frequency of the tokens received by a busyword processor are appoximately equal.
-The equality is less approximate for higher frequency classes, so a set of F configurable values allows compensatory adjustments. More on this elsewhere.
+The purpose of the frequency partitioning is to ensure that the background frequencies of the tokens received by a busyword processor are appoximately equal. 
 
-The hashes from each 3pk are used to index into three corresponding arrays of counters of size C. (The array size is the same as the 3pk range.) One counter in each of the three arrays gets bumped for each incoming 3pk.
+The range of frequencies in a given class is higher for the higher frequency classes than for lower frequency classes, so a set of configuration values allow for compensatory adjustments. More on this elsewhere.
+
+The three hashes in a 3pk are used to index into three corresponding arrays of counters of size C. (The array size is the same as the 3pk range.) One counter in each of the three arrays gets bumped for each incoming 3pk.
 
 ### The Z Scores
-Because the 3pk values are pseudo random, if every word had the same probability (which the frequency classes attempt to ensure) the counts would have a Gaussian distribution, i.e., the familiar bell curve.  
+Because the 3pk values are pseudo random, if every word had the same probability (which the frequency classes attempt to approximate) the C counter values would have an approximately Gaussian distribution, i.e., the familiar bell curve.  
 
-However, we are assuming that some of the words assigned to a given frequecy class are anomalously busy (after all, that is the point of the exercise.) 
-Therefore, some of the counters will have exceptionally high counts.  
-For instance, if you have 10,000 Tweets in a batch, with an average of 10 tokens in each Tweet text, that's 100,000 tokens spread over, say, 24 busyword processors. 
-This means each of the F processors would get about 4,166 tokens, and the counter values would have a mean of 4.166 when the signal 3pk is detected. (We use {-1, -1, -1}) at which point the processor suspends reading the queue and processes the batch.
+However, we are assuming that some of the words assigned to a given frequecy class are anomalously busy (after all, that is the point of the exercise.) Therefore, some of the counters will have exceptionally high counts. For instance, if you have 10,000 Tweets in a batch, with an average of 10 tokens in each Tweet text, that's 100,000 tokens spread over, say, 24 busyword processors. This means each of the F processors would get about 4,166 tokens, and the counter values would have a mean of 4.166 when the signal 3pk is detected. (We use {-1, -1, -1}).
 
-For low-frequency words, it doesn't take a great number of usages to show up against such a background distribution. 
-If a frequency class is for one-or-two-in-a-million words, half a dozen usages in a batch would raise the three counters its 3pk lands on to more than double the expected value.
+For low-frequency words, it doesn't take a great number of usages to show up against such a background distribution. If a frequency class is for one-or-two-in-a-million words, half a dozen usages in a batch would usually raise the three counters its 3pk lands on far above the expected value.
 
-In other words the anomalously busy words impose a non-Gaussian distribution on top of the underlying background distribution. In summary:
+One way to look at this is that the anomalously busy words impose a non-Gaussian distribution on top of the underlying background distribution. 
 
-- A Z-score is computed for each counter as if the distribution were Gaussian.  
-- Technically, our counters are not Gaussian
+Technically, our counters are not Gaussian
 	- Firstly because the values are discrete, not continuous
 	- Secondly, because while the frequency class is constructed so that all the words have the same frequency, the busywords are by definition non-conforming. 
-  - However, Z scores are fairly robust and this is an acceptable technique for isolating anomalies.  
- - The average Z is 0, by definition (Z can be positive or negative), and the higher the Z, the less likely that a large value is just random variation. 
-- This is useful for detecting anomalies because
+  - However, Z scores are fairly robust and this is regarded as an acceptable technique for isolating anomalies.  
+
+ The average Z is 0, by definition (Z can be positive or negative), and the higher the Z, the less likely that a large value is just random variation. This is useful for detecting anomalies because
 	- A Z score beyond 4.0 would occur less that once per cycle if all words in the frequency class were arriving at their normal background rate. 
-    A Z of 5.0 or greater would almost never occur.
-	 - By choosing our Z cut-off, we can adjust how freakishly un-random a count has to be for us to treat it as "busy."
-- The busy words we are looking for typically bump these Z scores for the corresponding counters up to double digit numbers, a range far beyond what would ever be seen in the background bell curve.
+  - A Z of 5.0 or greater would almost never occur.
+
+ By choosing our Z cut-off, we can adjust how freakishly un-random a count has to be for us to treat it as "busy." The busy words we are looking for often bump the Z scores for the corresponding counters as high as double digit numbers, a range far beyond what would ever be seen in the background bell curve.
 
 ### Where the magic happens:
 
-- The sets of indexes of counters with freakishly high Z scores are collected for each of the three counter arrays. 
-Note that we chose Z to keep cardinality of the set quite small relative to the number of counters. 
+The sets of indexes of counters with freakishly high Z scores are collected for each of the three counter arrays. Note that we chose Z to keep cardinality of the set quite small relative to the number of counters. 
 
-- The Cartesian product of the three index sets is computed. 
-This gives you a large set of three-part keys, some of which should correspond to actual busy words, and the others (the vast majority) are just spurious junk. 
-The lambs are separated from the goats by checking for whether each 3pk's corresponds to a value that exists in the global mapping. 
-Any token that is not in the mapping is necessarily a goat.
+The Cartesian product of the three index sets is computed. This means that a triple is computed for every combinations of anomalous values in all three sets. 
 
-- The 3pk's that exist give you the busy words for the current window. Note that this is a somewhat leaky filter. 
-	- Some randomly generated 3pk's will usually correspond to real tokens just by random chance because with a range of 1000, there are only a billion possible keys. 
+This gives you a large set of three-part keys, some of which should correspond to actual busy words, while the others (the vast majority) are just spurious junk. 
+
+The lambs are separated from the goats by selecting only the 3pk's that exist in the global mapping. Any token that is not in the mapping is necessarily a goat, because it's a token we've never seen.
+
+The 3pk's that exist correspond to the busy words for the current window. Note that this is a somewhat leaky filter. 
+	- Some randomly generated 3pk's will correspond to real tokens just by random chance because with a range of 1000, there are only a billion possible keys. 
 	- Collisons happen. Occasionally, more than one token could map to a 3pk.
 
-The leakiness isn't as bad as one might suppose. 
-The probability of a key collision for a given token is the the cardinality of the 3pk map divided by the cardinality of the key space, which is no more one in several thousand. 
+The leakiness isn't as bad as one might suppose. The probability of a key collision for a given token is the the cardinality of the 3pk map divided by the cardinality of the key space, which is no more one in several thousand. As this is at most low hundreds of thousands divided by low billions. Something in the 1 in 10,000 range. 
 
-The number of distinct tokens used in a day is in the millions, but over the briefer token window, it is much smaller. 
-A mechanism culls the tokens that have counts that have gone to zero from the token counter, and puts them on a queue for the main pipeline to use in culling them from the 3pk mappings. 
-This reduces the probability of a given token colliding with an existing 3pk mapping to one in many thousands.
+While the number of distinct tokens used in a day is in the millions, the number of distinct tokens seen over the briefer token window, is much smaller. For multiple reasons, you don't want to store unnecessary mappings. Therefore, an offline mechanism culls the tokens that have counts that have gone to zero from the token counter, and also puts them on a queue for the main pipeline to use in culling them from the 3pk mappings. This greatly reduces both the required memory and the probability of token collisions. 
 
 ## Processing the Batch of Busywords.
 
@@ -173,18 +168,17 @@ When the analysis thread gets all F batches of busywords, it does the clustering
 
 - It filters a configured range of the set of recent Tweets for Tweets that contain at least M busywords. M is configurable and might typically be from two to five.
 
-- With proper configuration, this set of Tweets is quite small compared to the total number of Tweets upon which the batch of busywords was computed. This makes sense because most Tweet subjects at any one moment are not new.
+- With proper configuration, this set of Tweets is quite small compared to the total number of Tweets upon which the batch of busywords was computed. This makes sense because most Tweet subjects at any given moment are not new.
 
-- A graph clustering algorithm finds groups of Tweets among the reduces set that have the most joint similarity in the sets of busywords they contain. (Whether busywords or all words are used is configurable.)
+- A graph clustering algorithm finds groups of Tweets among the reduced set that have the most joint similarity in the sets of busywords they contain. (Whether clustering is based on busywords or all words in the Tweet is configurable.)
 
-- Clusters can overlap. For instance, one group might be characterized by five busywords, and another by four, but they happen to share one busyword. However, despite that overlap, they the two groups are identifiably different.  
+- Clusters often overlap. For instance, one group might be characterized by five busywords, and another by four, but they happen to share two busywords. However, despite that overlap, they the two groups are identifiably different.  
 
 ## The Output
 The output is clusters of Tweets around a particular subject. 
 These represented in JSON and presented with some metadata for the cluster and for the individual Tweets.  
 
 A second level of clustering can be applied to cluster clusters.
-
 
 # Speed of Computation and Significant Events
 
