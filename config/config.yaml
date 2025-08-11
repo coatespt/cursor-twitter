@@ -254,6 +254,10 @@ analysis:
   # Separate thresholds for each similarity measure
   medoid_similarity_threshold: 0.4   # Higher threshold for quality medoid clustering
   busy_word_similarity_threshold: 0.2 # Lower threshold for broader busy word coverage
+  # Multiplier for batch size to trigger busyword queue warnings
+  # If any busyword processor queue exceeds (batch_size * bw_queue_max), a warning is logged
+  # Recommended: 0.3-0.5 for conservative monitoring, 1.0+ for less sensitive
+  bw_queue_max: 0.5
 
 # Set to true to enable language detection in the Python parser 
 # WARNING: slows parsing to a crawl!!! like 275/second.  We now use a Golang

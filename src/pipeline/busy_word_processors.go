@@ -66,8 +66,6 @@ func (q *ThreePartKeyQueue) Dequeue() []tweets.ThreePartKey {
 
 // Len returns the number of items in the queue
 func (q *ThreePartKeyQueue) Len() int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
 	return len(q.items)
 }
 
@@ -419,10 +417,10 @@ func (fcp *FrequencyClassProcessor) printBatchSummary(classResults map[int][]str
 		totalBusyWords += len(words)
 		if len(words) > 0 {
 			// Log class count and busy words in concise format
-			slog.Info(fmt.Sprintf("batch=%d class=%d busy:: %s", 
+			slog.Info(fmt.Sprintf("batch=%d class=%d busy:: %s",
 				fcp.batchNumber, classIndex, strings.Join(words, ", ")))
 		} else {
-			slog.Info(fmt.Sprintf("batch=%d class=%d busy_words=%d", 
+			slog.Info(fmt.Sprintf("batch=%d class=%d busy_words=%d",
 				fcp.batchNumber, classIndex, len(words)))
 		}
 	}

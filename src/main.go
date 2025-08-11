@@ -288,6 +288,7 @@ type Config struct {
 		UseUnionApproach               bool             `yaml:"use_union_approach"`                // Use union of medoid and busy word meta-clustering
 		MedoidSimilarityThreshold      float64          `yaml:"medoid_similarity_threshold"`       // Separate threshold for medoid similarity
 		BusyWordSimilarityThreshold    float64          `yaml:"busy_word_similarity_threshold"`    // Separate threshold for busy word similarity
+		BWQueueMax                     float64          `yaml:"bw_queue_max"`                      // Multiplier for batch size to trigger busyword queue warnings
 	} `yaml:"analysis"`
 }
 
@@ -1413,7 +1414,11 @@ func main() {
 							"num_filters", pipeline.GetGlobalFiltersCount())
 					}
 
-					// Enqueue to appropriate frequency class
+					// Enqueue to appropriate frequency class (skip if class is in skip list)
+					if !freqClassProcessor.IsClassActive(freqClass) {
+						// Skip this frequency class - don't enqueue tokens
+						continue
+					}
 					freqClassProcessor.EnqueueToFrequencyClass(freqClass, threePK)
 				} else {
 					// No filters available yet - this is normal during startup
@@ -1488,6 +1493,34 @@ func main() {
 					return fmt.Sprintf("3PK cleanup performance: tweet_count=%d queue_size_before=%d queue_size_after=%d items_processed=%d max_items_per_cycle=%d cleanup_trigger_batch_size=%d",
 						TotalTweetsRead, queueSizeBefore, queueSizeAfter, removedCount, cleanupMaxItems, cfg.Analysis.CleanupTriggerBatchSize)
 				})
+			}
+
+			// Monitor busyword processor queues for potential system instability
+			if cfg.Analysis.BWQueueMax > 0 && pipeline.HasGlobalFilters() {
+				threshold := int(float64(cfg.BatchSize) * cfg.Analysis.BWQueueMax)
+				queueStats := freqClassProcessor.GetQueueStats()
+
+				for classIndex := 0; classIndex < freqClasses; classIndex++ {
+					queueKey := fmt.Sprintf("freq_class_%d_queue_size", classIndex)
+					queueSize := queueStats[queueKey]
+
+					if queueSize > threshold {
+						warningMsg := fmt.Sprintf("BW Processor queue %d has %d items (threshold: %d, batch_size: %d, bw_queue_max: %.2f)",
+							classIndex, queueSize, threshold, cfg.BatchSize, cfg.Analysis.BWQueueMax)
+
+						// Log to file
+						slog.Warn("Busyword processor queue backlog detected",
+							"frequency_class", classIndex,
+							"queue_size", queueSize,
+							"threshold", threshold,
+							"batch_size", cfg.BatchSize,
+							"bw_queue_max", cfg.Analysis.BWQueueMax,
+							"tweet_count", TotalTweetsRead)
+
+						// Echo to stderr
+						fmt.Fprintf(os.Stderr, "*** %s ***\n", warningMsg)
+					}
+				}
 			}
 		}
 
@@ -3407,7 +3440,7 @@ func performUnionMetaClustering(clusters []map[string]interface{}, cfg *Config) 
 	// Create adjacency matrices for both similarity measures
 	medoidAdjacency := make([][]bool, len(clusters))
 	busyWordAdjacency := make([][]bool, len(clusters))
-	
+
 	for i := range clusters {
 		medoidAdjacency[i] = make([]bool, len(clusters))
 		busyWordAdjacency[i] = make([]bool, len(clusters))

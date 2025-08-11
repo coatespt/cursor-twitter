@@ -91,12 +91,12 @@ filter:
 # Persistence configuration
 persistence:
   # Directory for storing state files (counts, filters) for fast restarts
-  state_dir: "/Users/petercoates/data/state"
+  state_dir: "/Users/petercoates/python-data/data/state"
 
 # Sender status tracking
 sender:
   # File to track the last processed CSV file for sending. 
-  status_file: "/Users/petercoates/data/sender/sender_status.txt"
+  status_file: "/Users/petercoates/python-data/data/sender/sender_status.txt"
 
   # Maximum number of messages in RabbitMQ queue before pausing sender
   # TODO: PROBABLY OBSOLETE! RabbitMQ seems to be throttling on its own because of 
@@ -225,6 +225,10 @@ analysis:
   # Separate thresholds for each similarity measure
   medoid_similarity_threshold: 0.35   # Higher threshold for quality medoid clustering
   busy_word_similarity_threshold: 0.4 # Lower threshold for broader busy word coverage
+  # Multiplier for batch size to trigger busyword queue warnings
+  # If any busyword processor queue exceeds (batch_size * bw_queue_max), a warning is logged
+  # Recommended: 0.3-0.5 for conservative monitoring, 1.0+ for less sensitive
+  bw_queue_max: 0.01
   # Sort clusters by size: true=descending (biggest first), false=ascending (biggest last)
   # Default: false (ascending) so biggest clusters appear last (closest to console)
   cluster_sort_descending: true

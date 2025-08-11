@@ -267,6 +267,29 @@ cd to cursor-twitter
 
 # Notes On Things That Have Been Checked/Fixed/Explored
 
+## Detecting Backup on the Busy Word Processor Queues
+The main pipeline puts tokens on F queues for the F busyword processors.  These should be fast,
+but if they ever began to run more slowly than the main thread, the queues would grow without
+bound and eventually result in an OOM error.
+
+Accordingly, we periodically check the queue lengths and log warnings if they ever exceed 
+batch *  bw_queue_max in length. A quite small value of 0.1 for bw_queue_max was used without
+log messages showing up. A higher value would probably be appropriate for general use.
+
+Note that the analytics thread running slowly could also cause these errors to occur because
+the barrier mechanism stops the analytics thread from running until all of the busyword processors
+have rendered their values, and stops the busyword threads from continuing until the 
+analytics thread has collected their values.
+
+There is no way to distinguish the cases currently.
+
+Need to confirm whether the barrier mechanism that ensures that the analytics thread is working with the output from all of the busyword processors, also ensures that the busyword processors can't continue without the analytics thread completing.
+
+I don't think it does!  So therefore, the analytics thread can fall behind to any degree without tripping an alarm.
+
+However, this does not seem to happen and the time to run through the data seems to be consistent with the Tweets/second rate. 
+
+
 ## How To Tune Meta-Clusters
 
 After running for 18 hours, we see 3170 meta clusters and 23976 individual cluster, which is about seven individual clusters for each meta cluster. 
@@ -444,15 +467,10 @@ It is not clear how big an impact this would have on performance. All the BW pro
 Risk. If multiplying the work in the busyword processors made them in aggregate slower than the combined main pipeline and the clustering, it would cause the queues to grow without bound and crash the program. You'd need to detect the problem and throttle the reads if this is a problem. Actually, this should probably be done anyway! Who knows if some combination of config parameters could cause this to happen.
 
 ## Possible Blow-up From Overload
-Relating the the previous item, if the frequency processors or the analysics processors were overwhelmed, the queues that feed them would bloat without bound, causing failure from OOM.
+The busyword processor queues are now monitored for length an throw out warnings
+if they grow beyond bw_queue_max * batch in length.
 
-This implementation is not bullet proof in that respect. 
-
-Need to investigate the possibility of periodically checking queue lengths and throttling Tweet consumption or taking other measures if the analytic part is getting overwhelmed.
-
-- This is easy for historical data--just consume more slowly.
-
-- For real-time feeds you might need to discard an sliding percentage of the input. 
+It is not clear whether backup from the analytics processor would be caught here. The bw processors put their data on queues with a barrier to ensure that the analytics queues works with all F busyword sets. However, it must be verified that the bw processors can't continue even when the analytics processor can't keep up!  Damn, pete, you might have to actually read that code!
    
 
 ## Major: Clustering Across Batches
