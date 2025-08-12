@@ -289,16 +289,19 @@ type Config struct {
 		MedoidSimilarityThreshold      float64          `yaml:"medoid_similarity_threshold"`       // Separate threshold for medoid similarity
 		BusyWordSimilarityThreshold    float64          `yaml:"busy_word_similarity_threshold"`    // Separate threshold for busy word similarity
 		BWQueueMax                     float64          `yaml:"bw_queue_max"`                      // Multiplier for batch size to trigger busyword queue warnings
+		AnalyticsBatchLagThreshold     int              `yaml:"analytics_batch_lag_threshold"`     // Maximum lag between global and analytics batch counts
 	} `yaml:"analysis"`
 }
 
 // Global stats counters
 var (
-	TotalTweetsRead    int
-	TotalTokensCounted int
-	lastStatsTime      time.Time
-	lastTweetCount     int
-	freqClasses        int // Number of frequency classes from config
+	TotalTweetsRead     int
+	TotalTokensCounted  int
+	globalBatchCount    int // Track batches sent for processing (incremented when signal 3PK sent)
+	lastStatsTime       time.Time
+	lastTweetCount      int
+	freqClasses         int // Number of frequency classes from config
+	analyticsBatchCount int // Track which batch the analytics thread has completed
 
 )
 
@@ -502,6 +505,9 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 		currentBatch := make(map[int][]string) // class -> busy words
 		currentBatchNumber := -1
 
+		// Initialize analytics batch count to current global batch count to avoid artificial lag
+		analyticsBatchCount = globalBatchCount + 2 // Start 2 batches ahead to account for normal pipeline lag
+
 		for result := range resultChannel {
 			resultCount++
 
@@ -514,9 +520,10 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 					runClusteringForBatch(currentBatch, recentTweets, currentBatchNumber, cfg)
 				}
 
-				// Start new batch
+				// Start new batch - increment analytics counter when starting to process
 				currentBatch = make(map[int][]string)
 				currentBatchNumber = result.BatchNumber
+				analyticsBatchCount++
 			}
 
 			// Convert 3PKs to actual words
@@ -561,6 +568,25 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets.Tweet, batchNumber int, cfg *Config) {
 	// Print busy word summary
 	printBatchSummary(classResults, batchNumber, cfg)
+
+	// Monitor analytics thread batch lag (only when a batch is completed)
+	if cfg.Analysis.AnalyticsBatchLagThreshold > 0 {
+		lag := globalBatchCount - batchNumber
+
+		if lag > cfg.Analysis.AnalyticsBatchLagThreshold {
+			warningMsg := fmt.Sprintf("Analytics thread lag detected: global_batch=%d completed_batch=%d lag=%d threshold=%d",
+				globalBatchCount, batchNumber, lag, cfg.Analysis.AnalyticsBatchLagThreshold)
+
+			// Log to file using LogWarn for consistency
+			LogWarn(func() string {
+				return fmt.Sprintf("Analytics thread lag detected: global_batch=%d completed_batch=%d lag=%d threshold=%d tweet_count=%d",
+					globalBatchCount, batchNumber, lag, cfg.Analysis.AnalyticsBatchLagThreshold, TotalTweetsRead)
+			})
+
+			// Echo to stderr
+			fmt.Fprintf(os.Stderr, "*** %s ***\n", warningMsg)
+		}
+	}
 
 	// Collect all busy words from specified classes
 	allBusyWords := make(map[string]bool)
@@ -894,37 +920,8 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 
 // printBatchSummary prints a summary of all busy words found in a batch
 func printBatchSummary(classResults map[int][]string, batchNumber int, cfg *Config) {
-	totalBusyWords := 0
-	classesWithWords := 0
-
-	LogInfo(func() string { return fmt.Sprintf("BATCH %d ANALYSIS SUMMARY", batchNumber) })
-
-	// Get sorted class indices to ensure consistent ordering
-	classIndices := make([]int, 0, len(classResults))
-	for classIndex := range classResults {
-		classIndices = append(classIndices, classIndex)
-	}
-	sort.Ints(classIndices)
-
-	// Log classes in sorted order
-	for _, classIndex := range classIndices {
-		words := classResults[classIndex]
-		totalBusyWords += len(words)
-		if len(words) > 0 {
-			classesWithWords++
-			LogInfo(func() string {
-				return fmt.Sprintf("Class %d: %d busy words - %s", classIndex, len(words), strings.Join(words, ", "))
-			})
-		} else {
-			LogInfo(func() string {
-				return fmt.Sprintf("Class %d: %d busy words", classIndex, len(words))
-			})
-		}
-	}
-
-	LogInfo(func() string {
-		return fmt.Sprintf("TOTAL: %d busy words across %d classes", totalBusyWords, classesWithWords)
-	})
+	// Note: Busy word summary is now logged in the structured format in runClusteringForBatch
+	// This function is kept for compatibility but no longer outputs duplicate information
 }
 
 // getCurrentWorkingDir returns the current working directory for debugging
@@ -1451,6 +1448,9 @@ func main() {
 					}
 				}
 
+				// Increment global batch count when signal 3PK is sent (this represents actual batches sent for processing)
+				globalBatchCount++
+
 				if cfg.Verbose {
 					slog.Debug("Main: Sent termination signals to busy word processors",
 						"tweet_count", TotalTweetsRead,
@@ -1522,6 +1522,7 @@ func main() {
 					}
 				}
 			}
+
 		}
 
 		// Acknowledge successful message processing

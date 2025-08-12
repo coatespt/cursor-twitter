@@ -91,12 +91,12 @@ filter:
 # Persistence configuration
 persistence:
   # Directory for storing state files (counts, filters) for fast restarts
-  state_dir: "/Users/petercoates/python-data/data/state"
+  state_dir: "/Users/petercoates/python-work/data/state"
 
 # Sender status tracking
 sender:
   # File to track the last processed CSV file for sending. 
-  status_file: "/Users/petercoates/python-data/data/sender/sender_status.txt"
+  status_file: "/Users/petercoates/python-work/data/sender/sender_status.txt"
 
   # Maximum number of messages in RabbitMQ queue before pausing sender
   # TODO: PROBABLY OBSOLETE! RabbitMQ seems to be throttling on its own because of 
@@ -229,6 +229,9 @@ analysis:
   # If any busyword processor queue exceeds (batch_size * bw_queue_max), a warning is logged
   # Recommended: 0.3-0.5 for conservative monitoring, 1.0+ for less sensitive
   bw_queue_max: 0.01
+  # Maximum lag between global and analytics batch counts before warning
+  # Analytics thread should be 1-2 batches behind global count normally
+  analytics_batch_lag_threshold: 2
   # Sort clusters by size: true=descending (biggest first), false=ascending (biggest last)
   # Default: false (ascending) so biggest clusters appear last (closest to console)
   cluster_sort_descending: true

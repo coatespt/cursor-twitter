@@ -268,27 +268,13 @@ cd to cursor-twitter
 # Notes On Things That Have Been Checked/Fixed/Explored
 
 ## Detecting Backup on the Busy Word Processor Queues
-The main pipeline puts tokens on F queues for the F busyword processors.  These should be fast,
-but if they ever began to run more slowly than the main thread, the queues would grow without
-bound and eventually result in an OOM error.
+The main pipeline puts tokens on each of F queues for the F busyword processors.  These should be fast, but if they ever began to run more slowly than the main thread, the queues would grow without bound and eventually result in an OOM error.
 
-Accordingly, we periodically check the queue lengths and log warnings if they ever exceed 
-batch *  bw_queue_max in length. A quite small value of 0.1 for bw_queue_max was used without
-log messages showing up. A higher value would probably be appropriate for general use.
+Accordingly, we periodically check the queue lengths and log warnings if their length ever exceed the batch side multiplied by the  bw_queue_max. A quite small value of 0.1 for bw_queue_max was used without log messages showing up. A higher value would probably be appropriate for general use.
 
-Note that the analytics thread running slowly could also cause these errors to occur because
-the barrier mechanism stops the analytics thread from running until all of the busyword processors
-have rendered their values, and stops the busyword threads from continuing until the 
-analytics thread has collected their values.
+An analogous check is made for the analytics queue. This is checked by comparing the global batch count as maintained by the main thread with the number of batches processed by the analytics thread.
 
-There is no way to distinguish the cases currently.
-
-Need to confirm whether the barrier mechanism that ensures that the analytics thread is working with the output from all of the busyword processors, also ensures that the busyword processors can't continue without the analytics thread completing.
-
-I don't think it does!  So therefore, the analytics thread can fall behind to any degree without tripping an alarm.
-
-However, this does not seem to happen and the time to run through the data seems to be consistent with the Tweets/second rate. 
-
+Neither type of slowdown has actually been seen, but both situations cause log lines to be printed both to the log files and to STDERR.
 
 ## How To Tune Meta-Clusters
 
@@ -298,38 +284,39 @@ Meta-clustering is doesn't seem to be as good at primary clustering.
 Some of them seem ok and some of the seem to be unrelated.  
 We need a program for systematically seeing config parameters work and what do not.
 
-Ther are a number of parameters that affect meta clustering. See the config files for details.
+Ther are a number of parameters that affect meta clustering. See the config files for details. At the very least, the effect of the parameters on meta-cluster quality needs to be explored.
 
 ## Processing Rate
 A large set of enhancements have greatly improved throughput.
 
 The feeder is running on the same box feeding CSV via RabbitMQ.
 
-It is not clear what limits processing. It may be RabbitMQ, which shares the compute platform with the main app. 
+It is not clear what limits processing. It may be RabbitMQ, which shares the compute platform with the main app. It is also possible that the limit is imposed by the ability of the main thread to take items off of RabbitMQ. The sender program could also be a bottleneck, as could the main-thread processing that takes place after a Tweet is removed from RabbitMQ. 
 
-This might be considerably faster for historical data if RabbitMQ were eliminated entirely:
+Throughput might be higher for historical data if RabbitMQ were eliminated entirely:
 - The feeder were writing to STDOUT and the main reading fro STDIN
 - The main were reading the files directly
 
 It is also not clear whether the feeder running on another machine with Rabbit writing over the LAN would net slower of faster.
 
 ## Speedups
+Optimizations have tremendously increased throughput.
 
-The speedups were a combination of many things that are worth remembering:
+Many small changes increased:
 - Removing contention caused by unnecessary concurrency protections
 - Tightening up encapsulation. Everything is now independent, connected by queues that provide elasticity.
-- Better memory management, especially getting rid of old 3pK mappings for zero count tokens
-- Deduplication of clusters, i.e. scrapping nearly identical Tweets. (A modified verison of Levenshtein distance that works on the word level rather than the character level.)
+- Better memory management, especially getting rid of 3pK mappings for zero-count tokens
+- Deduplication of clusters, i.e. scrapping nearly identical Tweets. (We use an algorithm based on Levenshtein distance that works on the word level rather than the character level. Edits apply to entire words, not to characters.)
 - Greatly reduced logging and use of a framework that controls how much gets written
 
 ## Confirmation of the Z-score Principle
-The data technically violates the assumptions of Z because a Gaussian distribution is for continuous data, not integer counts. (There is an argument to be made for Poission based scoring.)
+The data technically violates the assumptions of Z because a Gaussian assumes continuous data, not integer counts. (There is an argument to be made for Poission based scoring.)
 
-Also, we pre-suppose that only the underlying frequencies are approximately Gaussian. We are assuming that the busywords impose an explicitly non-Gaussian distribution on top of the main distribution of pseudo random values.
+Also, we pre-suppose that only the underlying frequencies are approximately Gaussian. We explicitly assume that the busywords impose an explicitly non-Gaussian distribution on top of this underlying normal distribution of pseudo random values.
 
 Nevertheless, use of Z in this way is fairly common as we are only identifying anomalies and don't really need to know exactly how anomalous they are.
 
-The following are excerpted from the logs. Note that the low-end Z scores are all quite small negative numbers, as you'd expect.  
+The following are excerpted from the logs. Note that the low-end Z scores are all small negative numbers, as you'd expect.  
 The high z scores are up in the double digits. 
 The asymmetry indicates that it is spotting anomalies effectively.
 
@@ -355,9 +342,9 @@ The asymmetry indicates that it is spotting anomalies effectively.
 
 
 ## 3pk Collisions
-Most distinct tokens are, for practical purposes, unique on the time scale of a day. The majority, in fact, don't appear more than once in two weeks. Permanently storing the 3pk values for super-rare tokens incurs two very significant costs:
-- It wastes a ton of space
-- It reduces quality because of high collision rates
+The majority of tokens are unique on the time scale of a day and many more occur only once or twice. The majority, in fact, don't appear more than once in two weeks. Permanently storing the 3pk values for super-rare tokens incurs two very significant costs:
+- It wastes a ton of memory 
+- It reduces quality because of high token collision rates
 
 We solve this bloat problem by having the FCT put tokens on a queue when their counts in the FCT's counter map go down to zero. 
 
@@ -407,29 +394,39 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 
 # TTD and Direction
 
-## Clustering Improvement
+## Clustering Improvement By Weighting Frequency Classes
 Would clustering be improved by weighting the frequency classes?
 
 - The rarer the word class, the more it is worth?
 - Or possibly the opposite.
 
-It doesn't seem like it would be that hard to do.
+Not too hard to do if it seems worth it.
+
 - Make the frequency filters accessible to the analytic thread
 - Assign a weight to each busyword based on its F class
 - Weighted edges are amost certainly part of the graph algorithm. We probably use them now, but just defaulted to 1.
 
-## Meta-Clusters Don't seem nearly as good as the primary clusters.
+Danger is, it's another configuration matter to try to figure out how to tune.
+There are a lot of them!
+
+## Meta-Cluster Quality Not Great
 See clustering improvement above.
 - We now have a choice between clustering on the busy words or clustering on all tokens. 
 - Investigate exactly how this is done. 
 - Does "all teh words" mean just the medioids or does it mean all the Tweets?
 
-## Dynamic adjustment of the Z minima
+## Dynamic Adjustment of Z Minima 
 Sometimes you see a gross inflation of the number of busy words. It is not clear why.  A facility to dynamically adjust the Z values to keep them at some optimim number might be useful.
 
-Such a facility might take the list of Z scores from config as a starting point and bump them up and down to seek a level that results in an average of B busywords for each frequency pipeline.
+- Take the Z minima from config as a starting point 
+- Bump them up and down to seek a level that results in an average of B busywords for each frequency pipeline.
 
-Note this would require a decent sized window of batches because there seems to be considerable variance across batches. There seenms to be at least as much variance across batches as there is across frequency classes.
+### Considerations and Risks
+- There is considerable variance across batches 
+- There is considerable variance among batches
+- We don't actually know which frequency classes characterize clusters the best
+
+We save the busy words sets, so we could do some statistical analysis of them.  We might need to add to that to correlate them with the clusters.
 
 ## Possible logic error
 We sometimes get notification in the logs of burst of 3pk's not mapping to tokens. 
@@ -439,26 +436,49 @@ Suspect this is a phenomenon of startup from token counts on disks.
 This needs to be confirmed.
  
 ## New Input Mode(s)
-The main is now fed through RabbitMQ. It would be interestin to have a history mode specifically 
-for mass consumption as fast as possible.
+The main is now fed through RabbitMQ. 
+This is a realistic model of consuming the live firehose.
 
-- Supplement the feeder with a program that just cats the lines in the CSV to standard out. Does it need to be speed limited or will it somehow self-throttle?
-- Add a mode for reading from standard in
+It would be interesting to have a "history" mode specifically for mass consumption as fast as possible.
+The following are possibilities
 
-Alternatively, have a main program mode that reads files of CSV itself.
+- Create a mode that reads from STDIN.
+  - Cat the lines in the CSV to standard out. D
+  - Does it need to be speed limited or will it somehow self-throttle?
+- Add a mode for actively the CSV 
+  - Throttling may not be an issue 
+  - If it is, it's easy enought to start inserting on-second sleeps in the main pipeline when either the busyword processors or the analytics thread get overwhelmed.
 
  
 ## Ongoing  Items
+
 - Comments Key areas need to be commented to keep out don't touch, etc.
 
 - Testing has been neglected. Make tests around everything.
 
-- More fully populating the token_filters.txt file. Check the busywords in the logs and see what else jumps out.  This may be nearly done.
- 
+## The Token Filter File
 
-## Major: Improving Busy Word Detection Quality with Computing Redundantly
+This is currently populated by whimsy. Basically, I look at the logged busywords per frequency class output and put the obvious crap in the toke_filters.txt file
+
+This filters out a ton of words--something like 60% of usages right at the entry to the pipeline.
+
+A more mathematically sound way to do this might include entropy.
+
+But you don't necessarily want to blindly eliminate the super common words. 
+Some very common words matter. If "Trump" is normally in F-class 3, and suddenly jumps to F-class 1, it might actually mean something.
+
+See my Evernote notes on entropy for this.  It's a long file, but most of it doesn't apply. Basically, all you need to do is compute the Shannon entropy on the word counts and exclude those with insufficient entropy.
+
+The right approach seems to be the one clipped at the bottome. Slotted entropy based on the token files used to age tokens out of the counts.
+
+The FCT thread could compute entropy every time it makes the filters. We'd have to time this. It might take a minute!  But does it matter?
+
+
+## Major: Improving Busy Word Detection Quality by Computing Redundantly
 
 This would be a significant effort.  Interesting idea, but it's not 100% clear that it's worth doing. We need some investigation.
+
+The most important thing would be to run the profiler and see how much time is actually spent on busyword processing. It might not be much.
 
 Consider that dual sets of pipelines, or even three sets, each with different hash functions, could do a much more accurate job of filtering out the true busy words for a given set of parameters.  
  
@@ -470,7 +490,11 @@ Risk. If multiplying the work in the busyword processors made them in aggregate 
 The busyword processor queues are now monitored for length an throw out warnings
 if they grow beyond bw_queue_max * batch in length.
 
-It is not clear whether backup from the analytics processor would be caught here. The bw processors put their data on queues with a barrier to ensure that the analytics queues works with all F busyword sets. However, it must be verified that the bw processors can't continue even when the analytics processor can't keep up!  Damn, pete, you might have to actually read that code!
+It is not clear whether backup from the analytics processor would be caught here. The bw processors put their data on queues with a barrier to ensure that the analytics queues works with all F busyword sets. However, it must be verified that the bw processors can't continue even when the analytics processor can't keep up!  
+
+Not clear how to ensure programmatically that the analytics thread is keeping up.
+
+It could count batches and compare them to the number of batches by the front end. It would normally be at least one behind, but if the global batch number exceeded the analytics batch number by some fixed amount, e.g. 3, it would warn and print out both batch counts..
    
 
 ## Major: Clustering Across Batches
@@ -626,3 +650,139 @@ The System76 laptop does about 8k Tweets/second. The iMac does about 3k.
 - Note that for historical data it will scale in direct proportion to the number of machines so you can do bulk processing essentially as fast as you are willing to pay for.
 
 - We have about 350 hours of decahose, which the 76 can process in about a day. 
+
+# Profiling on an Extended Run
+The following are the results from running for several hours with profiling. Any expenditures for startup should be negligible here.
+
+```
+(base) Peters-iMac:cursor-twitter petercoates$ go tool pprof -top cpu.prof
+File: main
+Type: cpu
+Time: 2025-08-12 11:19:17 EDT
+Duration: 5.11hrs, Total samples = 9325.52s (50.68%)
+Showing nodes accounting for 8105.68s, 86.92% of 9325.52s total
+Dropped 1066 nodes (cum <= 46.63s)
+      flat  flat%   sum%        cum   cum%
+  2429.33s 26.05% 26.05%   2441.58s 26.18%  syscall.syscall
+  1944.39s 20.85% 46.90%   1944.84s 20.86%  runtime.kevent
+   992.84s 10.65% 57.55%    992.94s 10.65%  runtime.pthread_cond_wait
+   613.05s  6.57% 64.12%    613.19s  6.58%  runtime.pthread_cond_signal
+   362.42s  3.89% 68.01%    362.52s  3.89%  runtime.usleep
+   348.22s  3.73% 71.74%    348.22s  3.73%  aeshashbody
+   144.71s  1.55% 73.29%    161.57s  1.73%  runtime.findObject
+   105.53s  1.13% 74.42%    366.27s  3.93%  runtime.scanobject
+   104.08s  1.12% 75.54%    594.21s  6.37%  main.jaccard
+    87.74s  0.94% 76.48%    621.06s  6.66%  runtime.mapassign_faststr
+    86.21s  0.92% 77.41%   2005.05s 21.50%  runtime.netpoll
+    77.49s  0.83% 78.24%     77.49s  0.83%  internal/runtime/maps.ctrlGroup.matchH2 (inline)
+    74.89s   0.8% 79.04%     99.78s  1.07%  internal/runtime/maps.(*Iter).Next
+    69.59s  0.75% 79.79%    663.95s  7.12%  main.findMostTypicalTweets
+    63.07s  0.68% 80.46%     63.07s  0.68%  runtime.memmove
+    59.07s  0.63% 81.10%    123.61s  1.33%  internal/runtime/maps.(*Map).getWithoutKeySmallFastStr
+    55.75s   0.6% 81.69%    484.68s  5.20%  cursor-twitter/src/pipeline.(*OptimizedTweetClusterer).calculateJaccardSimilarity (inline)
+    52.94s  0.57% 82.26%     52.94s  0.57%  runtime.memclrNoHeapPointers
+    41.28s  0.44% 82.70%     86.71s  0.93%  internal/runtime/maps.(*Map).putSlotSmallFastStr
+    32.55s  0.35% 83.05%       163s  1.75%  runtime.mapaccess2_faststr
+    23.58s  0.25% 83.31%     60.79s  0.65%  runtime.selectgo
+    23.02s  0.25% 83.55%     65.18s   0.7%  regexp.(*Regexp).tryBacktrack
+    19.04s   0.2% 83.76%    101.51s  1.09%  runtime.mapaccess1_faststr
+    18.71s   0.2% 83.96%   3584.63s 38.44%  runtime.park_m
+    16.88s  0.18% 84.14%    137.71s  1.48%  runtime.mallocgcSmallScanNoHeader
+    16.78s  0.18% 84.32%    255.80s  2.74%  runtime.mallocgc
+    12.48s  0.13% 84.45%     68.86s  0.74%  runtime.greyobject
+    12.27s  0.13% 84.58%    383.48s  4.11%  runtime.stealWork
+    11.79s  0.13% 84.71%     46.66s   0.5%  cursor-twitter/src/pipeline.(*BusyWordProcessor).run
+    11.10s  0.12% 84.83%     98.04s  1.05%  regexp.(*Regexp).backtrack
+    10.63s  0.11% 84.94%    149.27s  1.60%  main.simpleTokenize
+    10.44s  0.11% 85.06%     86.82s  0.93%  runtime.mapIterNext
+     9.49s   0.1% 85.16%   3187.51s 34.18%  runtime.findRunnable
+     9.05s 0.097% 85.25%    494.49s  5.30%  cursor-twitter/src/pipeline.(*OptimizedTweetClusterer).buildSparseGraph
+     8.70s 0.093% 85.35%    133.62s  1.43%  internal/runtime/maps.(*Map).growToTable
+     8.19s 0.088% 85.44%     66.17s  0.71%  runtime.mallocgcSmallNoscan
+     8.09s 0.087% 85.52%     76.06s  0.82%  regexp.(*Regexp).allMatches
+     6.99s 0.075% 85.60%     65.95s  0.71%  runtime.growslice
+     6.68s 0.072% 85.67%     76.86s  0.82%  runtime.newobject
+     6.28s 0.067% 85.74%    293.02s  3.14%  bufio.(*Reader).Read
+     6.10s 0.065% 85.80%     85.89s  0.92%  runtime.makeslice
+     5.36s 0.057% 85.86%   3537.82s 37.94%  runtime.schedule
+     5.35s 0.057% 85.92%     46.99s   0.5%  encoding/csv.(*Reader).readRecord
+     5.33s 0.057% 85.97%    298.35s  3.20%  io.ReadAtLeast
+     5.24s 0.056% 86.03%    703.04s  7.54%  runtime.gcDrain
+     4.44s 0.048% 86.08%   1227.50s 13.16%  main.runClusteringForBatch
+     4.40s 0.047% 86.12%     62.63s  0.67%  runtime.(*timers).check
+     3.57s 0.038% 86.16%     62.12s  0.67%  runtime.mapIterStart
+     3.47s 0.037% 86.20%    339.47s  3.64%  runtime.runqgrab
+     3.34s 0.036% 86.24%   2204.95s 23.64%  main.main
+     3.19s 0.034% 86.27%     47.67s  0.51%  runtime.makemap
+     3.17s 0.034% 86.30%   2160.94s 23.17%  internal/poll.(*FD).Write
+     2.78s  0.03% 86.33%   1093.13s 11.72%  runtime.systemstack
+     2.58s 0.028% 86.36%    361.55s  3.88%  main.parseCSVToTweet
+     2.30s 0.025% 86.39%    304.10s  3.26%  runtime.ready
+     2.12s 0.023% 86.41%     58.82s  0.63%  runtime.(*mcache).refill
+     1.97s 0.021% 86.43%      3587s 38.46%  runtime.mcall
+     1.95s 0.021% 86.45%     49.78s  0.53%  github.com/streadway/amqp.(*reader).parseMethodFrame
+     1.87s  0.02% 86.47%   1717.11s 18.41%  github.com/streadway/amqp.(*Channel).sendOpen
+     1.82s  0.02% 86.49%     49.60s  0.53%  internal/runtime/maps.(*table).reset
+     1.82s  0.02% 86.51%     53.09s  0.57%  runtime.(*mheap).allocSpan
+     1.81s 0.019% 86.53%        88s  0.94%  regexp.(*Regexp).Split
+     1.69s 0.018% 86.55%     46.89s   0.5%  github.com/streadway/amqp.(*Connection).dispatchN
+     1.68s 0.018% 86.57%    373.32s  4.00%  github.com/streadway/amqp.(*reader).ReadFrame
+     1.65s 0.018% 86.58%   1721.87s 18.46%  github.com/streadway/amqp.(*Channel).Ack
+     1.63s 0.017% 86.60%     64.36s  0.69%  runtime.(*mcache).nextFree
+     1.58s 0.017% 86.62%     71.10s  0.76%  internal/runtime/maps.newTable
+     1.53s 0.016% 86.63%   1654.69s 17.74%  bufio.(*Writer).Flush
+     1.42s 0.015% 86.65%     99.46s  1.07%  regexp.(*Regexp).doExecute
+     1.38s 0.015% 86.66%   1007.83s 10.81%  runtime.semasleep
+     1.37s 0.015% 86.68%   1690.95s 18.13%  github.com/streadway/amqp.(*writer).WriteFrame
+     1.37s 0.015% 86.69%    340.84s  3.65%  runtime.runqsteal
+     1.33s 0.014% 86.71%   2153.26s 23.09%  syscall.write
+     1.31s 0.014% 86.72%    635.61s  6.82%  runtime.wakep
+     1.21s 0.013% 86.73%     79.37s  0.85%  cursor-twitter/src/pipeline.GenerateThreePartKey
+     1.12s 0.012% 86.75%    640.41s  6.87%  runtime.semawakeup
+     1.09s 0.012% 86.76%     48.46s  0.52%  github.com/streadway/amqp.(*Connection).demux
+     1.03s 0.011% 86.77%    437.68s  4.69%  github.com/streadway/amqp.(*Connection).reader
+     1.02s 0.011% 86.78%   1651.37s 17.71%  net.(*netFD).Write
+     0.97s  0.01% 86.79%    614.14s  6.59%  cursor-twitter/src/pipeline.(*FrequencyComputationThread).run
+     0.89s 0.0095% 86.80%   1710.27s 18.34%  github.com/streadway/amqp.(*Connection).send
+     0.74s 0.0079% 86.81%   1007.07s 10.80%  runtime.notesleep
+     0.66s 0.0071% 86.82%    577.45s  6.19%  cursor-twitter/src/pipeline.(*FrequencyComputationThread).processTokens
+     0.66s 0.0071% 86.82%    639.42s  6.86%  runtime.notewakeup
+     0.64s 0.0069% 86.83%    625.26s  6.70%  runtime.startm
+     0.62s 0.0066% 86.84%   1011.56s 10.85%  runtime.stopm
+     0.60s 0.0064% 86.84%    289.94s  3.11%  internal/poll.(*FD).Read
+     0.56s 0.006% 86.85%   1651.98s 17.71%  net.(*conn).Write
+     0.54s 0.0058% 86.85%   1722.41s 18.47%  github.com/streadway/amqp.Delivery.Ack (inline)
+     0.52s 0.0056% 86.86%   1717.63s 18.42%  github.com/streadway/amqp.(*Channel).send
+     0.52s 0.0056% 86.87%     76.58s  0.82%  regexp.(*Regexp).FindAllStringIndex
+     0.45s 0.0048% 86.87%    461.08s  4.94%  runtime.gcBgMarkWorker
+     0.44s 0.0047% 86.87%    333.49s  3.58%  runtime.resetspinning
+     0.40s 0.0043% 86.88%     47.39s  0.51%  encoding/csv.(*Reader).Read
+     0.35s 0.0038% 86.88%   1216.60s 13.05%  main.runGraphClustering
+     0.33s 0.0035% 86.89%    544.98s  5.84%  cursor-twitter/src/pipeline.(*FrequencyComputationThread).writeTokenFile
+     0.33s 0.0035% 86.89%   2153.59s 23.09%  syscall.Write (inline)
+     0.32s 0.0034% 86.89%    282.32s  3.03%  net.(*netFD).Read
+     0.32s 0.0034% 86.90%    287.39s  3.08%  syscall.read
+     0.30s 0.0032% 86.90%   1007.37s 10.80%  runtime.mPark (inline)
+     0.27s 0.0029% 86.90%    298.62s  3.20%  io.ReadFull (inline)
+     0.27s 0.0029% 86.91%    282.60s  3.03%  net.(*conn).Read
+     0.26s 0.0028% 86.91%     50.66s  0.54%  runtime.(*mheap).alloc.func1
+     0.20s 0.0021% 86.91%    283.15s  3.04%  runtime.send.goready.func1
+     0.16s 0.0017% 86.91%   2441.39s 26.18%  internal/poll.ignoringEINTRIO (inline)
+     0.15s 0.0016% 86.91%    507.09s  5.44%  fmt.Fprintln
+     0.15s 0.0016% 86.92%    511.05s  5.48%  os.(*File).Write
+     0.12s 0.0013% 86.92%    287.51s  3.08%  syscall.Read (inline)
+     0.09s 0.00097% 86.92%    307.61s  3.30%  main.convertIndividualClusterToHumanReadable
+     0.04s 0.00043% 86.92%    307.17s  3.29%  main.removeNearDuplicates
+     0.03s 0.00032% 86.92%    510.88s  5.48%  os.(*File).write (inline)
+     0.03s 0.00032% 86.92%    315.88s  3.39%  runtime.pollWork
+     0.02s 0.00021% 86.92%    352.38s  3.78%  main.convertBatchToHumanReadable
+         0     0% 86.92%     46.66s   0.5%  cursor-twitter/src/pipeline.(*FrequencyClassProcessor).Start.func1
+         0     0% 86.92%    501.27s  5.38%  cursor-twitter/src/pipeline.(*OptimizedTweetClusterer).ClusterTweets
+         0     0% 86.92%    352.95s  3.78%  main.OutputClusterWithConfig
+         0     0% 86.92%    352.38s  3.78%  main.convertToHumanReadable
+         0     0% 86.92%   1227.61s 13.16%  main.startAnalysisThread.func1
+         0     0% 86.92%    703.80s  7.55%  runtime.gcBgMarkWorker.func2
+         0     0% 86.92%    246.25s  2.64%  runtime.gcDrainMarkWorkerDedicated (inline)
+         0     0% 86.92%    456.79s  4.90%  runtime.gcDrainMarkWorkerIdle (inline)
+         0     0% 86.92%   2204.95s 23.64%  runtime.main
+```

@@ -258,6 +258,9 @@ analysis:
   # If any busyword processor queue exceeds (batch_size * bw_queue_max), a warning is logged
   # Recommended: 0.3-0.5 for conservative monitoring, 1.0+ for less sensitive
   bw_queue_max: 0.5
+  # Maximum lag between global and analytics batch counts before warning
+  # Analytics thread should be 1-2 batches behind global count normally
+  analytics_batch_lag_threshold: 3
 
 # Set to true to enable language detection in the Python parser 
 # WARNING: slows parsing to a crawl!!! like 275/second.  We now use a Golang
