@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"math"
@@ -196,6 +197,7 @@ func InitializeLogger(verbose bool, level LogLevel, logDir string) {
 type Config struct {
 	Mode          string `yaml:"mode"`
 	InputDir      string `yaml:"input"`
+	FileSrcDir    string `yaml:"file_src_dir"` // Source directory for file input mode
 	MQHost        string `yaml:"mq_host"`
 	MQPort        int    `yaml:"mq_port"`
 	MQQueue       string `yaml:"mq_queue"`
@@ -640,14 +642,25 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 
 	// Sanity checks before proceeding with clustering
 	if len(tweetsWithBusyWords) == 0 {
+		LogWarn(func() string {
+			return fmt.Sprintf("Clustering skipped: no tweets with busy words (batch=%d, total_tweets=%d, busy_words=%d)",
+				batchNumber, len(recentTweets), len(allBusyWords))
+		})
 		return
 	}
 
 	if len(tweetsWithBusyWords) < 2 {
+		LogWarn(func() string {
+			return fmt.Sprintf("Clustering skipped: not enough tweets with busy words (batch=%d, tweets_with_busy_words=%d, min_required=2)",
+				batchNumber, len(tweetsWithBusyWords))
+		})
 		return
 	}
 
 	if len(allBusyWords) == 0 {
+		LogWarn(func() string {
+			return fmt.Sprintf("Clustering skipped: no busy words found (batch=%d)", batchNumber)
+		})
 		return
 	}
 
@@ -656,6 +669,11 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 	if cfg.Analysis.ClusteringMethod != "" {
 		clusteringMethod = cfg.Analysis.ClusteringMethod
 	}
+
+	LogInfo(func() string {
+		return fmt.Sprintf("Starting clustering (batch=%d, method=%s, tweets=%d, busy_words=%d)",
+			batchNumber, clusteringMethod, len(tweetsWithBusyWords), len(allBusyWords))
+	})
 
 	switch clusteringMethod {
 	case "kmeans":
@@ -789,6 +807,10 @@ func runKMeansClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[s
 		"clusters":                batchClusters,
 	}
 
+	LogInfo(func() string {
+		return fmt.Sprintf("K-means clustering completed (batch=%d, total_clusters=%d, clusters_above_min_size=%d, total_tweets=%d)", 
+			batchNumber, totalClusters, clustersAboveMinSize, len(tweetsWithBusyWords))
+	})
 	OutputClusterWithConfig(batchData, cfg)
 }
 
@@ -915,6 +937,10 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 		"clusters":                batchClusters,
 	}
 
+	LogInfo(func() string {
+		return fmt.Sprintf("Graph clustering completed (batch=%d, total_clusters=%d, clusters_above_min_size=%d, total_tweets=%d)", 
+			batchNumber, totalClusters, clustersAboveMinSize, len(tweetsWithBusyWords))
+	})
 	OutputClusterWithConfig(batchData, cfg)
 }
 
@@ -1314,18 +1340,40 @@ func main() {
 	clusterOutputFilePath = filepath.Join(cfg.LogDir, clusterFileName)
 	LogInfo(func() string { return fmt.Sprintf("Cluster output will be saved to: %s", clusterOutputFilePath) })
 
-	fmt.Fprintf(os.Stderr, "✓ Pipeline ready! Consuming tweets from RabbitMQ...\n")
+	fmt.Fprintf(os.Stderr, "✓ Pipeline ready!\n")
 	fmt.Fprintf(os.Stderr, "✓ Clustering output will be printed to stdout\n")
 	fmt.Fprintf(os.Stderr, "✓ Logs saved to: %s\n", cfg.LogDir)
 	fmt.Fprintf(os.Stderr, "=== STARTUP COMPLETE ===\n\n")
 
 	// Also log the completion messages to the log file
-	LogInfo(func() string { return "✓ Pipeline ready! Consuming tweets from RabbitMQ..." })
+	LogInfo(func() string { return "✓ Pipeline ready!" })
 	LogInfo(func() string { return "✓ Clustering output will be printed to stdout" })
 	LogInfo(func() string { return fmt.Sprintf("✓ Logs saved to: %s", cfg.LogDir) })
 	LogInfo(func() string { return "=== STARTUP COMPLETE ===" })
 
 	setupSignalHandling()
+
+	// Process based on input mode
+	fmt.Fprintf(os.Stderr, "DEBUG: Config mode = '%s'\n", cfg.Mode)
+	LogInfo(func() string { return fmt.Sprintf("DEBUG: Config mode = '%s'", cfg.Mode) })
+
+	switch cfg.Mode {
+	case "mqj":
+		fmt.Fprintf(os.Stderr, "DEBUG: Starting RabbitMQ mode\n")
+		processFromRabbitMQ(cfg, *printTweets)
+	case "files":
+		fmt.Fprintf(os.Stderr, "DEBUG: Starting file reading mode\n")
+		processFromFiles(cfg, *printTweets)
+	default:
+		slog.Error("Invalid mode specified", "mode", cfg.Mode, "valid_modes", []string{"mqj", "files"})
+		os.Exit(1)
+	}
+}
+
+// processFromRabbitMQ handles RabbitMQ input mode
+func processFromRabbitMQ(cfg *Config, printTweets bool) {
+	fmt.Fprintf(os.Stderr, "Consuming tweets from RabbitMQ...\n")
+	LogInfo(func() string { return "Consuming tweets from RabbitMQ..." })
 
 	conn, ch, q, err := setupRabbitMQ(cfg)
 	if err != nil {
@@ -1362,7 +1410,7 @@ func main() {
 			msg.Ack(false)
 			continue
 		}
-		if *printTweets {
+		if printTweets {
 			// Log to file instead of stdout
 			LogDebug(func() string { return fmt.Sprintf("Parsed Tweet: %+v", tweet) })
 		}
@@ -1522,12 +1570,253 @@ func main() {
 					}
 				}
 			}
-
 		}
 
 		// Acknowledge successful message processing
 		msg.Ack(false) // false = single acknowledgment
 	}
+}
+
+// processFromFiles handles file input mode
+func processFromFiles(cfg *Config, printTweets bool) {
+	fmt.Fprintf(os.Stderr, "Reading tweets from files in: %s\n", cfg.FileSrcDir)
+	LogInfo(func() string { return fmt.Sprintf("Reading tweets from files in: %s", cfg.FileSrcDir) })
+
+	// Get list of CSV files in the directory
+	files, err := filepath.Glob(filepath.Join(cfg.FileSrcDir, "*.csv"))
+	if err != nil {
+		slog.Error("Failed to read directory", "error", err, "directory", cfg.FileSrcDir)
+		os.Exit(1)
+	}
+
+	if len(files) == 0 {
+		slog.Error("No CSV files found in directory", "directory", cfg.FileSrcDir)
+		os.Exit(1)
+	}
+
+	// Sort files for consistent processing order
+	sort.Strings(files)
+
+	for _, filePath := range files {
+		processCSVFile(filePath, cfg, printTweets)
+	}
+}
+
+// processCSVFile processes a single CSV file
+func processCSVFile(filePath string, cfg *Config, printTweets bool) {
+	LogInfo(func() string { return fmt.Sprintf("Processing file: %s", filePath) })
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		slog.Error("Failed to open file", "error", err, "file", filePath)
+		return
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+
+	// Skip header if present
+	_, err = reader.Read()
+	if err != nil {
+		slog.Error("Failed to read header", "error", err, "file", filePath)
+		return
+	}
+
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			slog.Warn("Failed to read CSV record", "error", err, "file", filePath)
+			continue
+		}
+
+		// Convert record to CSV row format (comma-separated string)
+		row := strings.Join(record, ",")
+
+		// Apply language filter if configured
+		if cfg.Analysis.LanguageFilter != "" && cfg.Analysis.LanguageFilter != "all" {
+			langSuffix := "," + strings.ToLower(cfg.Analysis.LanguageFilter)
+			if !strings.HasSuffix(strings.ToLower(strings.TrimSpace(row)), langSuffix) {
+				continue
+			}
+		}
+
+		// Parse tweet using existing function
+		tweet, err := parseCSVToTweet(row, cfg)
+		if err != nil {
+			slog.Warn("Failed to parse tweet", "error", err, "file", filePath, "row", row)
+			continue
+		}
+		if tweet == nil {
+			// Tweet was filtered out (e.g., by language)
+			continue
+		}
+
+		if printTweets {
+			LogDebug(func() string { return fmt.Sprintf("Parsed Tweet: %+v", tweet) })
+		}
+
+		// Add tweet to global queue for clustering
+		globalTweetQueue.Enqueue(tweet)
+
+		// ========================================================================
+		// CRITICAL TOKEN PROCESSING LOGIC - DO NOT MODIFY WITHOUT EXPLICIT APPROVAL
+		// ========================================================================
+		// This section handles token processing and 3PK mapping population.
+		//
+		// IMPORTANT DESIGN PRINCIPLES:
+		// 1. ALWAYS put tokens on inbound queue (regardless of filter availability)
+		// 2. ALWAYS populate 3PK mappings (regardless of filter availability)
+		// 3. Only route tokens to frequency classes if filters exist
+		// 4. If no filters, just continue reading tweets (no waiting)
+		// 5. Main thread never waits or coordinates with FCT
+		//
+		// This logic has been broken multiple times by adding filter availability
+		// checks before token processing. DO NOT add waiting or coordination here.
+		// ========================================================================
+
+		// Always add new tweet tokens to the inbound queue for FCT to build frequency filters
+		if len(tweet.Tokens) > 0 {
+			inboundTokenQueue.Enqueue(tweet.Tokens)
+
+			// Always populate 3PK mappings for all tokens (regardless of filter availability)
+			for _, token := range tweet.Tokens {
+				// Get token info (3PK and frequency class) in a single operation
+				threePK, freqClass, exists := pipeline.GetTokenInfo(token)
+				if !exists {
+					// New token: create 3PK, insert into mapping
+					threePK = pipeline.GenerateThreePartKey(token) // This inserts into the mapping
+					if pipeline.HasGlobalFilters() {
+						freqClass = pipeline.GetGlobalFiltersCount() - 1 // Least frequent class (highest number)
+					}
+				}
+
+				// Route tokens to frequency classes only if filters are available
+				if pipeline.HasGlobalFilters() {
+					// Debug: Log when filters are available (verbose only)
+					if cfg.Verbose && TotalTweetsRead%10000 == 0 {
+						slog.Debug("Filters are available for token routing",
+							"tweet_count", TotalTweetsRead,
+							"num_filters", pipeline.GetGlobalFiltersCount())
+					}
+
+					// Enqueue to appropriate frequency class (skip if class is in skip list)
+					if !freqClassProcessor.IsClassActive(freqClass) {
+						// Skip this frequency class - don't enqueue tokens
+						continue
+					}
+					freqClassProcessor.EnqueueToFrequencyClass(freqClass, threePK)
+				} else {
+					// No filters available yet - this is normal during startup
+					// The FCT will build filters as tokens arrive via the inboundTokenQueue
+					// Log occasionally (verbose only) to show progress
+					if cfg.Verbose && TotalTweetsRead%500000 == 0 {
+						slog.Info("No frequency class filters available yet - FCT building from scratch",
+							"tweet_count", TotalTweetsRead)
+					}
+				}
+			}
+		}
+
+		// ========================================================================
+		// END CRITICAL TOKEN PROCESSING LOGIC
+		// ========================================================================
+
+		// Send termination signals to busy word processors every batch number of tweets
+		// Only send if frequency class filters are available
+		if TotalTweetsRead%cfg.BatchSize == 0 && TotalTweetsRead > 0 {
+			if pipeline.HasGlobalFilters() {
+				terminationSignal := tweets.ThreePartKey{Part1: -1, Part2: -1, Part3: -1}
+
+				// Send termination signal to active frequency class processors only
+				activeCount := 0
+				for i := 0; i < freqClasses; i++ {
+					if freqClassProcessor.IsClassActive(i) {
+						freqClassProcessor.EnqueueToFrequencyClass(i, terminationSignal)
+						activeCount++
+					}
+				}
+
+				// Increment global batch count when signal 3PK is sent (this represents actual batches sent for processing)
+				globalBatchCount++
+
+				if cfg.Verbose {
+					slog.Debug("Main: Sent termination signals to busy word processors",
+						"tweet_count", TotalTweetsRead,
+						"batch_size", cfg.BatchSize,
+						"total_freq_classes", freqClasses,
+						"active_freq_classes", activeCount)
+				}
+			} else {
+				// No filters available yet - this is normal during startup
+				// Skip batch termination until filters are built
+				if cfg.Verbose && TotalTweetsRead%10000 == 0 {
+					LogDebug(func() string {
+						return fmt.Sprintf("Skipping batch termination - no frequency class filters available yet: tweet_count=%d batch_size=%d",
+							TotalTweetsRead, cfg.BatchSize)
+					})
+				}
+			}
+		}
+
+		// Process cleanup queue every N tweets to remove zero-count tokens
+		// This mitigates 3pk collisions by cleaning up tokens that are no longer active
+		if cfg.Analysis.CleanupTriggerBatchSize > 0 && TotalTweetsRead%cfg.Analysis.CleanupTriggerBatchSize == 0 && TotalTweetsRead > 0 {
+			cleanupMaxItems := cfg.Analysis.CleanupMaxItems
+			if cleanupMaxItems <= 0 {
+				cleanupMaxItems = 2000 // Default if not configured
+			}
+
+			// Get queue size before processing
+			queueSizeBefore := pipeline.GetCleanupQueueSize()
+
+			removedCount := pipeline.ProcessCleanupQueue(cleanupMaxItems)
+
+			// Get queue size after processing
+			queueSizeAfter := pipeline.GetCleanupQueueSize()
+
+			// Log cleanup performance (debug level - only shows in verbose mode)
+			// Only log when items were actually processed (queue wasn't empty)
+			if removedCount > 0 {
+				LogDebug(func() string {
+					return fmt.Sprintf("3PK cleanup performance: tweet_count=%d queue_size_before=%d queue_size_after=%d items_processed=%d max_items_per_cycle=%d cleanup_trigger_batch_size=%d",
+						TotalTweetsRead, queueSizeBefore, queueSizeAfter, removedCount, cleanupMaxItems, cfg.Analysis.CleanupTriggerBatchSize)
+				})
+			}
+
+			// Monitor busyword processor queues for potential system instability
+			if cfg.Analysis.BWQueueMax > 0 && pipeline.HasGlobalFilters() {
+				threshold := int(float64(cfg.BatchSize) * cfg.Analysis.BWQueueMax)
+				queueStats := freqClassProcessor.GetQueueStats()
+
+				for classIndex := 0; classIndex < freqClasses; classIndex++ {
+					queueKey := fmt.Sprintf("freq_class_%d_queue_size", classIndex)
+					queueSize := queueStats[queueKey]
+
+					if queueSize > threshold {
+						warningMsg := fmt.Sprintf("BW Processor queue %d has %d items (threshold: %d, batch_size: %d, bw_queue_max: %.2f)",
+							classIndex, queueSize, threshold, cfg.BatchSize, cfg.Analysis.BWQueueMax)
+
+						// Log to file
+						slog.Warn("Busyword processor queue backlog detected",
+							"frequency_class", classIndex,
+							"queue_size", queueSize,
+							"threshold", threshold,
+							"batch_size", cfg.BatchSize,
+							"bw_queue_max", cfg.Analysis.BWQueueMax,
+							"tweet_count", TotalTweetsRead)
+
+						// Echo to stderr
+						fmt.Fprintf(os.Stderr, "*** %s ***\n", warningMsg)
+					}
+				}
+			}
+		}
+	}
+
+	LogInfo(func() string { return fmt.Sprintf("Completed processing file: %s", filePath) })
 }
 
 // createBatchFromClusters creates a batch from clustering results and adds it to the batch window

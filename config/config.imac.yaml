@@ -1,10 +1,14 @@
 # Sample configuration for the Twitter subject detection pipeline
 
-# So far the only input mode is RabbitMQ
-mode: mqj
+# Input mode: "mqj" for RabbitMQ, "files" for direct file reading
+# mode: mqj
+mode: files
+# RabbitMQ settings (used when mode: mqj)
 mq_host: localhost
 mq_port: 5672
 mq_queue: tweet_in
+# File input settings (used when mode: files)
+file_src_dir:  /Users/petercoates/python-work/twits/test_language_detect_out/
 
 # The number of tokens (not tweets) in a rolling window. This needs to be big
 # enough to give realistic background word frequency stats but small enough to
