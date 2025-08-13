@@ -267,6 +267,15 @@ cd to cursor-twitter
 
 # Notes On Things That Have Been Checked/Fixed/Explored
 
+## Batch Size Confusion
+We had an error where Cursor had the clustering routine working on a multiple of the batch size.  
+
+globalTweetQueue.GetRecentTweets(cfg.Analysis.ClusteringWindowBatches * cfg.BatchSize)
+
+This was wrong, and we fixed it, but it's actually not a bad idea. Why should the busywords at the moment only be tested against the batch? Perhaps clusters go back farther than this? Worth investigating.
+
+Note, it will cause an error were the time spanned in a cluster is excessive. WHich was what we were fixing when we noticed this.
+
 ## Detecting Backup on the Busy Word Processor Queues
 The main pipeline puts tokens on each of F queues for the F busyword processors.  These should be fast, but if they ever began to run more slowly than the main thread, the queues would grow without bound and eventually result in an OOM error.
 
@@ -308,6 +317,40 @@ Many small changes increased:
 - Better memory management, especially getting rid of 3pK mappings for zero-count tokens
 - Deduplication of clusters, i.e. scrapping nearly identical Tweets. (We use an algorithm based on Levenshtein distance that works on the word level rather than the character level. Edits apply to entire words, not to characters.)
 - Greatly reduced logging and use of a framework that controls how much gets written
+
+### Lessons from Profiling
+The profiler reveals that the FCT and the initial processing of inbound Tweets are the big CPU/Time consumers when reading from files.
+
+- In the main thread, processCSVFile is 42% of the cycles. Within that, parseCSVToTweet, simpleTokenize are the big ones.
+
+- The FCT thread is about 20% of the total, with processTokens being the big item.
+
+- The BusyWordProcessors use less than 1%.
+
+- The graph clustering for batch and for meta clusters use about 4.3% and 3.6% respectively.
+
+In other words, when running from pre-processed CSV, processing is dominated by the offline FCT thread.
+
+Next biggest is getting the CSV files off the disk, parsing them into Tweet objects, and cleaning up the tokens, which are about 20% of the total.
+
+Much of the 20%  could be moved out of the main pipeline in an industrial scale application. 
+
+The graph calculations are about 8% in total. 
+
+The core identification of busy words are less than 1% of CPU.
+
+### Still More Efficiency
+
+Going from JSON to CSV would competely dominate processing by a large factor for real-time processing.  Even on a laptop, we can do 8 firehoses once it's converted to CSV.
+ 
+For historical processing all of the JSON -> CSV, the language ID, and the token normalization and cleanup could be moved to other processorsm and nade essentially as fast as you want to pay for CPU's to bulk process it.
+
+Moving the token cleanup to the backend ingestion would significantly speed up the main pipeline activities of identification of busywords, subjects, clusters, and meta-clusters.
+
+The main work in the core pipeline would be bottlenecked by reading and unpacking the CSV.
+
+
+
 
 ## Confirmation of the Z-score Principle
 The data technically violates the assumptions of Z because a Gaussian assumes continuous data, not integer counts. (There is an argument to be made for Poission based scoring.)
@@ -563,18 +606,25 @@ You can see in this way whether a subject just popped up, or has it been around 
 
 # Running the Profiler
 
-The profiler is very useful for finding where the CPU goes and whether you are suffering from contention due to concurrency. You can run the program for a while with the following command line to get profile data.  Run it for a good while so that the output is not dominated by startup processing, which is more or less irrelevant to steady state performance.
- 
+The profiler is very useful for finding where the CPU goes and whether you are suffering from contention due to concurrency.
+
+The graphical display of profiler output won't work on the iMac because it's too old to load the graphviz libraries and other necessary stuff.
+
+The graphical display works fine on the System 76 Linux box.
+
+ You can run the program for a while with the following command line to get profile data. 
+
  ./main -config ./config/config.yaml -print-tweets=false -profile
 
- Let it run for a while. 
- Depending on what you are investigating, it may take some time, as the processing pipeline has to wait a few minutes for frequency filters to become available.
+ Let it run for a while.  
+
+ This gets crude output on either platform.
 
   go tool pprof -text cpu.prof
 
-  or 
+  The following gets graphical output on the Linux box.
 
-    go tool pprof -http=:8080 cpu.prof
+  go tool pprof -http=:8080 cpu.prof
 
 
   You can get a quick summary with
@@ -650,139 +700,3 @@ The System76 laptop does about 8k Tweets/second. The iMac does about 3k.
 - Note that for historical data it will scale in direct proportion to the number of machines so you can do bulk processing essentially as fast as you are willing to pay for.
 
 - We have about 350 hours of decahose, which the 76 can process in about a day. 
-
-# Profiling on an Extended Run
-The following are the results from running for several hours with profiling. Any expenditures for startup should be negligible here.
-
-```
-(base) Peters-iMac:cursor-twitter petercoates$ go tool pprof -top cpu.prof
-File: main
-Type: cpu
-Time: 2025-08-12 11:19:17 EDT
-Duration: 5.11hrs, Total samples = 9325.52s (50.68%)
-Showing nodes accounting for 8105.68s, 86.92% of 9325.52s total
-Dropped 1066 nodes (cum <= 46.63s)
-      flat  flat%   sum%        cum   cum%
-  2429.33s 26.05% 26.05%   2441.58s 26.18%  syscall.syscall
-  1944.39s 20.85% 46.90%   1944.84s 20.86%  runtime.kevent
-   992.84s 10.65% 57.55%    992.94s 10.65%  runtime.pthread_cond_wait
-   613.05s  6.57% 64.12%    613.19s  6.58%  runtime.pthread_cond_signal
-   362.42s  3.89% 68.01%    362.52s  3.89%  runtime.usleep
-   348.22s  3.73% 71.74%    348.22s  3.73%  aeshashbody
-   144.71s  1.55% 73.29%    161.57s  1.73%  runtime.findObject
-   105.53s  1.13% 74.42%    366.27s  3.93%  runtime.scanobject
-   104.08s  1.12% 75.54%    594.21s  6.37%  main.jaccard
-    87.74s  0.94% 76.48%    621.06s  6.66%  runtime.mapassign_faststr
-    86.21s  0.92% 77.41%   2005.05s 21.50%  runtime.netpoll
-    77.49s  0.83% 78.24%     77.49s  0.83%  internal/runtime/maps.ctrlGroup.matchH2 (inline)
-    74.89s   0.8% 79.04%     99.78s  1.07%  internal/runtime/maps.(*Iter).Next
-    69.59s  0.75% 79.79%    663.95s  7.12%  main.findMostTypicalTweets
-    63.07s  0.68% 80.46%     63.07s  0.68%  runtime.memmove
-    59.07s  0.63% 81.10%    123.61s  1.33%  internal/runtime/maps.(*Map).getWithoutKeySmallFastStr
-    55.75s   0.6% 81.69%    484.68s  5.20%  cursor-twitter/src/pipeline.(*OptimizedTweetClusterer).calculateJaccardSimilarity (inline)
-    52.94s  0.57% 82.26%     52.94s  0.57%  runtime.memclrNoHeapPointers
-    41.28s  0.44% 82.70%     86.71s  0.93%  internal/runtime/maps.(*Map).putSlotSmallFastStr
-    32.55s  0.35% 83.05%       163s  1.75%  runtime.mapaccess2_faststr
-    23.58s  0.25% 83.31%     60.79s  0.65%  runtime.selectgo
-    23.02s  0.25% 83.55%     65.18s   0.7%  regexp.(*Regexp).tryBacktrack
-    19.04s   0.2% 83.76%    101.51s  1.09%  runtime.mapaccess1_faststr
-    18.71s   0.2% 83.96%   3584.63s 38.44%  runtime.park_m
-    16.88s  0.18% 84.14%    137.71s  1.48%  runtime.mallocgcSmallScanNoHeader
-    16.78s  0.18% 84.32%    255.80s  2.74%  runtime.mallocgc
-    12.48s  0.13% 84.45%     68.86s  0.74%  runtime.greyobject
-    12.27s  0.13% 84.58%    383.48s  4.11%  runtime.stealWork
-    11.79s  0.13% 84.71%     46.66s   0.5%  cursor-twitter/src/pipeline.(*BusyWordProcessor).run
-    11.10s  0.12% 84.83%     98.04s  1.05%  regexp.(*Regexp).backtrack
-    10.63s  0.11% 84.94%    149.27s  1.60%  main.simpleTokenize
-    10.44s  0.11% 85.06%     86.82s  0.93%  runtime.mapIterNext
-     9.49s   0.1% 85.16%   3187.51s 34.18%  runtime.findRunnable
-     9.05s 0.097% 85.25%    494.49s  5.30%  cursor-twitter/src/pipeline.(*OptimizedTweetClusterer).buildSparseGraph
-     8.70s 0.093% 85.35%    133.62s  1.43%  internal/runtime/maps.(*Map).growToTable
-     8.19s 0.088% 85.44%     66.17s  0.71%  runtime.mallocgcSmallNoscan
-     8.09s 0.087% 85.52%     76.06s  0.82%  regexp.(*Regexp).allMatches
-     6.99s 0.075% 85.60%     65.95s  0.71%  runtime.growslice
-     6.68s 0.072% 85.67%     76.86s  0.82%  runtime.newobject
-     6.28s 0.067% 85.74%    293.02s  3.14%  bufio.(*Reader).Read
-     6.10s 0.065% 85.80%     85.89s  0.92%  runtime.makeslice
-     5.36s 0.057% 85.86%   3537.82s 37.94%  runtime.schedule
-     5.35s 0.057% 85.92%     46.99s   0.5%  encoding/csv.(*Reader).readRecord
-     5.33s 0.057% 85.97%    298.35s  3.20%  io.ReadAtLeast
-     5.24s 0.056% 86.03%    703.04s  7.54%  runtime.gcDrain
-     4.44s 0.048% 86.08%   1227.50s 13.16%  main.runClusteringForBatch
-     4.40s 0.047% 86.12%     62.63s  0.67%  runtime.(*timers).check
-     3.57s 0.038% 86.16%     62.12s  0.67%  runtime.mapIterStart
-     3.47s 0.037% 86.20%    339.47s  3.64%  runtime.runqgrab
-     3.34s 0.036% 86.24%   2204.95s 23.64%  main.main
-     3.19s 0.034% 86.27%     47.67s  0.51%  runtime.makemap
-     3.17s 0.034% 86.30%   2160.94s 23.17%  internal/poll.(*FD).Write
-     2.78s  0.03% 86.33%   1093.13s 11.72%  runtime.systemstack
-     2.58s 0.028% 86.36%    361.55s  3.88%  main.parseCSVToTweet
-     2.30s 0.025% 86.39%    304.10s  3.26%  runtime.ready
-     2.12s 0.023% 86.41%     58.82s  0.63%  runtime.(*mcache).refill
-     1.97s 0.021% 86.43%      3587s 38.46%  runtime.mcall
-     1.95s 0.021% 86.45%     49.78s  0.53%  github.com/streadway/amqp.(*reader).parseMethodFrame
-     1.87s  0.02% 86.47%   1717.11s 18.41%  github.com/streadway/amqp.(*Channel).sendOpen
-     1.82s  0.02% 86.49%     49.60s  0.53%  internal/runtime/maps.(*table).reset
-     1.82s  0.02% 86.51%     53.09s  0.57%  runtime.(*mheap).allocSpan
-     1.81s 0.019% 86.53%        88s  0.94%  regexp.(*Regexp).Split
-     1.69s 0.018% 86.55%     46.89s   0.5%  github.com/streadway/amqp.(*Connection).dispatchN
-     1.68s 0.018% 86.57%    373.32s  4.00%  github.com/streadway/amqp.(*reader).ReadFrame
-     1.65s 0.018% 86.58%   1721.87s 18.46%  github.com/streadway/amqp.(*Channel).Ack
-     1.63s 0.017% 86.60%     64.36s  0.69%  runtime.(*mcache).nextFree
-     1.58s 0.017% 86.62%     71.10s  0.76%  internal/runtime/maps.newTable
-     1.53s 0.016% 86.63%   1654.69s 17.74%  bufio.(*Writer).Flush
-     1.42s 0.015% 86.65%     99.46s  1.07%  regexp.(*Regexp).doExecute
-     1.38s 0.015% 86.66%   1007.83s 10.81%  runtime.semasleep
-     1.37s 0.015% 86.68%   1690.95s 18.13%  github.com/streadway/amqp.(*writer).WriteFrame
-     1.37s 0.015% 86.69%    340.84s  3.65%  runtime.runqsteal
-     1.33s 0.014% 86.71%   2153.26s 23.09%  syscall.write
-     1.31s 0.014% 86.72%    635.61s  6.82%  runtime.wakep
-     1.21s 0.013% 86.73%     79.37s  0.85%  cursor-twitter/src/pipeline.GenerateThreePartKey
-     1.12s 0.012% 86.75%    640.41s  6.87%  runtime.semawakeup
-     1.09s 0.012% 86.76%     48.46s  0.52%  github.com/streadway/amqp.(*Connection).demux
-     1.03s 0.011% 86.77%    437.68s  4.69%  github.com/streadway/amqp.(*Connection).reader
-     1.02s 0.011% 86.78%   1651.37s 17.71%  net.(*netFD).Write
-     0.97s  0.01% 86.79%    614.14s  6.59%  cursor-twitter/src/pipeline.(*FrequencyComputationThread).run
-     0.89s 0.0095% 86.80%   1710.27s 18.34%  github.com/streadway/amqp.(*Connection).send
-     0.74s 0.0079% 86.81%   1007.07s 10.80%  runtime.notesleep
-     0.66s 0.0071% 86.82%    577.45s  6.19%  cursor-twitter/src/pipeline.(*FrequencyComputationThread).processTokens
-     0.66s 0.0071% 86.82%    639.42s  6.86%  runtime.notewakeup
-     0.64s 0.0069% 86.83%    625.26s  6.70%  runtime.startm
-     0.62s 0.0066% 86.84%   1011.56s 10.85%  runtime.stopm
-     0.60s 0.0064% 86.84%    289.94s  3.11%  internal/poll.(*FD).Read
-     0.56s 0.006% 86.85%   1651.98s 17.71%  net.(*conn).Write
-     0.54s 0.0058% 86.85%   1722.41s 18.47%  github.com/streadway/amqp.Delivery.Ack (inline)
-     0.52s 0.0056% 86.86%   1717.63s 18.42%  github.com/streadway/amqp.(*Channel).send
-     0.52s 0.0056% 86.87%     76.58s  0.82%  regexp.(*Regexp).FindAllStringIndex
-     0.45s 0.0048% 86.87%    461.08s  4.94%  runtime.gcBgMarkWorker
-     0.44s 0.0047% 86.87%    333.49s  3.58%  runtime.resetspinning
-     0.40s 0.0043% 86.88%     47.39s  0.51%  encoding/csv.(*Reader).Read
-     0.35s 0.0038% 86.88%   1216.60s 13.05%  main.runGraphClustering
-     0.33s 0.0035% 86.89%    544.98s  5.84%  cursor-twitter/src/pipeline.(*FrequencyComputationThread).writeTokenFile
-     0.33s 0.0035% 86.89%   2153.59s 23.09%  syscall.Write (inline)
-     0.32s 0.0034% 86.89%    282.32s  3.03%  net.(*netFD).Read
-     0.32s 0.0034% 86.90%    287.39s  3.08%  syscall.read
-     0.30s 0.0032% 86.90%   1007.37s 10.80%  runtime.mPark (inline)
-     0.27s 0.0029% 86.90%    298.62s  3.20%  io.ReadFull (inline)
-     0.27s 0.0029% 86.91%    282.60s  3.03%  net.(*conn).Read
-     0.26s 0.0028% 86.91%     50.66s  0.54%  runtime.(*mheap).alloc.func1
-     0.20s 0.0021% 86.91%    283.15s  3.04%  runtime.send.goready.func1
-     0.16s 0.0017% 86.91%   2441.39s 26.18%  internal/poll.ignoringEINTRIO (inline)
-     0.15s 0.0016% 86.91%    507.09s  5.44%  fmt.Fprintln
-     0.15s 0.0016% 86.92%    511.05s  5.48%  os.(*File).Write
-     0.12s 0.0013% 86.92%    287.51s  3.08%  syscall.Read (inline)
-     0.09s 0.00097% 86.92%    307.61s  3.30%  main.convertIndividualClusterToHumanReadable
-     0.04s 0.00043% 86.92%    307.17s  3.29%  main.removeNearDuplicates
-     0.03s 0.00032% 86.92%    510.88s  5.48%  os.(*File).write (inline)
-     0.03s 0.00032% 86.92%    315.88s  3.39%  runtime.pollWork
-     0.02s 0.00021% 86.92%    352.38s  3.78%  main.convertBatchToHumanReadable
-         0     0% 86.92%     46.66s   0.5%  cursor-twitter/src/pipeline.(*FrequencyClassProcessor).Start.func1
-         0     0% 86.92%    501.27s  5.38%  cursor-twitter/src/pipeline.(*OptimizedTweetClusterer).ClusterTweets
-         0     0% 86.92%    352.95s  3.78%  main.OutputClusterWithConfig
-         0     0% 86.92%    352.38s  3.78%  main.convertToHumanReadable
-         0     0% 86.92%   1227.61s 13.16%  main.startAnalysisThread.func1
-         0     0% 86.92%    703.80s  7.55%  runtime.gcBgMarkWorker.func2
-         0     0% 86.92%    246.25s  2.64%  runtime.gcDrainMarkWorkerDedicated (inline)
-         0     0% 86.92%    456.79s  4.90%  runtime.gcDrainMarkWorkerIdle (inline)
-         0     0% 86.92%   2204.95s 23.64%  runtime.main
-```

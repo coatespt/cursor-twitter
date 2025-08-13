@@ -12,6 +12,7 @@ sender_status.txt
 main
 language_detector
 token_frequency_analyzer
+*_output.txt
 
 # Python bytecode and cache files
 *.pyc

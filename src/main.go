@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -292,6 +293,8 @@ type Config struct {
 		BusyWordSimilarityThreshold    float64          `yaml:"busy_word_similarity_threshold"`    // Separate threshold for busy word similarity
 		BWQueueMax                     float64          `yaml:"bw_queue_max"`                      // Multiplier for batch size to trigger busyword queue warnings
 		AnalyticsBatchLagThreshold     int              `yaml:"analytics_batch_lag_threshold"`     // Maximum lag between global and analytics batch counts
+		BWThreadSlowDelay              int              `yaml:"bw_thread_slow_delay"`               // Total sleep time in milliseconds when busyword queues are backlogged
+		AnalyticsLagSlowDelay           int              `yaml:"analytics_lag_slow_delay"`            // Sleep time in milliseconds when analytics thread falls behind
 	} `yaml:"analysis"`
 }
 
@@ -304,6 +307,7 @@ var (
 	lastTweetCount      int
 	freqClasses         int // Number of frequency classes from config
 	analyticsBatchCount int // Track which batch the analytics thread has completed
+	analyticsLagFlag    int32 // Atomic flag set by analytics thread to signal main thread to sleep
 
 )
 
@@ -517,8 +521,8 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 			if currentBatchNumber != result.BatchNumber {
 				// Run clustering for previous batch if it exists
 				if currentBatchNumber >= 0 {
-					// Get recent tweets from global queue for clustering
-					recentTweets := globalTweetQueue.GetRecentTweets(cfg.Analysis.ClusteringWindowBatches * cfg.BatchSize)
+					// Get recent tweets from global queue for clustering (only latest batch)
+					recentTweets := globalTweetQueue.GetRecentTweets(cfg.BatchSize)
 					runClusteringForBatch(currentBatch, recentTweets, currentBatchNumber, cfg)
 				}
 
@@ -555,8 +559,8 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 
 		// Run clustering for final batch
 		if currentBatchNumber >= 0 {
-			// Get recent tweets from global queue for clustering
-			recentTweets := globalTweetQueue.GetRecentTweets(cfg.Analysis.ClusteringWindowBatches * cfg.BatchSize)
+			// Get recent tweets from global queue for clustering (only latest batch)
+			recentTweets := globalTweetQueue.GetRecentTweets(cfg.BatchSize)
 			runClusteringForBatch(currentBatch, recentTweets, currentBatchNumber, cfg)
 		}
 
@@ -587,6 +591,9 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 
 			// Echo to stderr
 			fmt.Fprintf(os.Stderr, "*** %s ***\n", warningMsg)
+
+			// Set flag to signal main thread to slow down
+			atomic.StoreInt32(&analyticsLagFlag, 1)
 		}
 	}
 
@@ -1567,6 +1574,27 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 
 						// Echo to stderr
 						fmt.Fprintf(os.Stderr, "*** %s ***\n", warningMsg)
+
+						// Sleep immediately to let this processor catch up
+						if cfg.Analysis.BWThreadSlowDelay > 0 {
+							sleepMs := cfg.Analysis.BWThreadSlowDelay / cfg.FreqClasses
+							slog.Warn("Main thread sleeping due to busy word queue backlog",
+								"frequency_class", classIndex,
+								"queue_size", queueSize,
+								"threshold", threshold,
+								"sleep_ms", sleepMs)
+							time.Sleep(time.Duration(sleepMs) * time.Millisecond)
+						}
+
+						// Check if analytics thread is lagging and sleep if needed
+						if atomic.LoadInt32(&analyticsLagFlag) == 1 {
+							if cfg.Analysis.AnalyticsLagSlowDelay > 0 {
+								slog.Warn("Main thread sleeping due to analytics thread lag",
+									"sleep_ms", cfg.Analysis.AnalyticsLagSlowDelay)
+								time.Sleep(time.Duration(cfg.Analysis.AnalyticsLagSlowDelay) * time.Millisecond)
+							}
+							atomic.StoreInt32(&analyticsLagFlag, 0) // Reset flag
+						}
 					}
 				}
 			}
@@ -1810,6 +1838,27 @@ func processCSVFile(filePath string, cfg *Config, printTweets bool) {
 
 						// Echo to stderr
 						fmt.Fprintf(os.Stderr, "*** %s ***\n", warningMsg)
+
+						// Sleep immediately to let this processor catch up
+						if cfg.Analysis.BWThreadSlowDelay > 0 {
+							sleepMs := cfg.Analysis.BWThreadSlowDelay / cfg.FreqClasses
+							slog.Warn("Main thread sleeping due to busy word queue backlog",
+								"frequency_class", classIndex,
+								"queue_size", queueSize,
+								"threshold", threshold,
+								"sleep_ms", sleepMs)
+							time.Sleep(time.Duration(sleepMs) * time.Millisecond)
+						}
+
+						// Check if analytics thread is lagging and sleep if needed
+						if atomic.LoadInt32(&analyticsLagFlag) == 1 {
+							if cfg.Analysis.AnalyticsLagSlowDelay > 0 {
+								slog.Warn("Main thread sleeping due to analytics thread lag",
+									"sleep_ms", cfg.Analysis.AnalyticsLagSlowDelay)
+								time.Sleep(time.Duration(cfg.Analysis.AnalyticsLagSlowDelay) * time.Millisecond)
+							}
+							atomic.StoreInt32(&analyticsLagFlag, 0) // Reset flag
+						}
 					}
 				}
 			}
@@ -2001,7 +2050,7 @@ func setupLogger(logDir string) (*slog.Logger, *os.File, error) {
 func startStatsPrinter() {
 	lastStatsTime = time.Now()
 	lastTweetCount = 0
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	go func() {
 		for range ticker.C {
 			printStats()
