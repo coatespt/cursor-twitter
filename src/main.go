@@ -221,7 +221,8 @@ type Config struct {
 
 	Filter struct {
 		Enabled    bool   `yaml:"enabled"`
-		FilterFile string `yaml:"filter_file"`
+		FilterDir  string `yaml:"filter_dir"`
+		FilterFile string `yaml:"filter_file"` // Keep for backward compatibility
 	} `yaml:"filter"`
 
 	TokenFilters struct {
@@ -272,7 +273,8 @@ type Config struct {
 		DropExcessiveQuestions         bool             `yaml:"drop_excessive_questions"`      // Drop tweets with excessive question marks
 		MaxHumanTweetsDisplayed        int              `yaml:"max_human_tweets_displayed"`    // Maximum number of tweets to display in human-readable format
 		FilterRepetitivePatterns       bool             `yaml:"filter_repetitive_patterns"`    // Filter out clusters with repetitive meme-like patterns
-		BannedPhrasesFile              string           `yaml:"banned_phrases_file"`           // Path to file containing banned phrases
+		BannedPhrasesDir               string           `yaml:"banned_phrases_dir"`            // Path to directory containing banned phrase files
+		BannedPhrasesFile              string           `yaml:"banned_phrases_file"`           // Path to file containing banned phrases (backward compatibility)
 		RepetitivePatternThreshold     float64          `yaml:"repetitive_pattern_threshold"`  // Threshold for filtering repetitive clusters
 		CompiledBannedPatterns         []*regexp.Regexp // Compiled regex patterns (not in yaml)
 		DeduplicateByUser              bool             `yaml:"deduplicate_by_user"`               // Deduplicate tweets by user within clusters
@@ -293,8 +295,8 @@ type Config struct {
 		BusyWordSimilarityThreshold    float64          `yaml:"busy_word_similarity_threshold"`    // Separate threshold for busy word similarity
 		BWQueueMax                     float64          `yaml:"bw_queue_max"`                      // Multiplier for batch size to trigger busyword queue warnings
 		AnalyticsBatchLagThreshold     int              `yaml:"analytics_batch_lag_threshold"`     // Maximum lag between global and analytics batch counts
-		BWThreadSlowDelay              int              `yaml:"bw_thread_slow_delay"`               // Total sleep time in milliseconds when busyword queues are backlogged
-		AnalyticsLagSlowDelay           int              `yaml:"analytics_lag_slow_delay"`            // Sleep time in milliseconds when analytics thread falls behind
+		BWThreadSlowDelay              int              `yaml:"bw_thread_slow_delay"`              // Total sleep time in milliseconds when busyword queues are backlogged
+		AnalyticsLagSlowDelay          int              `yaml:"analytics_lag_slow_delay"`          // Sleep time in milliseconds when analytics thread falls behind
 	} `yaml:"analysis"`
 }
 
@@ -305,8 +307,8 @@ var (
 	globalBatchCount    int // Track batches sent for processing (incremented when signal 3PK sent)
 	lastStatsTime       time.Time
 	lastTweetCount      int
-	freqClasses         int // Number of frequency classes from config
-	analyticsBatchCount int // Track which batch the analytics thread has completed
+	freqClasses         int   // Number of frequency classes from config
+	analyticsBatchCount int   // Track which batch the analytics thread has completed
 	analyticsLagFlag    int32 // Atomic flag set by analytics thread to signal main thread to sleep
 
 )
@@ -815,7 +817,7 @@ func runKMeansClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[s
 	}
 
 	LogInfo(func() string {
-		return fmt.Sprintf("K-means clustering completed (batch=%d, total_clusters=%d, clusters_above_min_size=%d, total_tweets=%d)", 
+		return fmt.Sprintf("K-means clustering completed (batch=%d, total_clusters=%d, clusters_above_min_size=%d, total_tweets=%d)",
 			batchNumber, totalClusters, clustersAboveMinSize, len(tweetsWithBusyWords))
 	})
 	OutputClusterWithConfig(batchData, cfg)
@@ -945,7 +947,7 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 	}
 
 	LogInfo(func() string {
-		return fmt.Sprintf("Graph clustering completed (batch=%d, total_clusters=%d, clusters_above_min_size=%d, total_tweets=%d)", 
+		return fmt.Sprintf("Graph clustering completed (batch=%d, total_clusters=%d, clusters_above_min_size=%d, total_tweets=%d)",
 			batchNumber, totalClusters, clustersAboveMinSize, len(tweetsWithBusyWords))
 	})
 	OutputClusterWithConfig(batchData, cfg)
@@ -978,7 +980,19 @@ func loadAndValidateConfig(path string) (*Config, error) {
 
 	// Load and compile banned phrases
 	if cfg.Analysis.FilterRepetitivePatterns {
-		patterns, err := loadBannedPhrases(cfg.Analysis.BannedPhrasesFile)
+		var patterns []*regexp.Regexp
+		var err error
+
+		// Try directory first (new approach)
+		if cfg.Analysis.BannedPhrasesDir != "" {
+			patterns, err = loadBannedPhrasesFromDirectory(cfg.Analysis.BannedPhrasesDir)
+		} else if cfg.Analysis.BannedPhrasesFile != "" {
+			// Fall back to single file (backward compatibility)
+			patterns, err = loadBannedPhrases(cfg.Analysis.BannedPhrasesFile)
+		} else {
+			return nil, fmt.Errorf("neither banned_phrases_dir nor banned_phrases_file specified in config")
+		}
+
 		if err != nil {
 			return nil, fmt.Errorf("failed to load banned phrases: %v", err)
 		}
@@ -1030,12 +1044,27 @@ func initializeStatsCSV(cfg *Config) string {
 // Helper: Initialize word filter
 func initializeWordFilter(cfg *Config) (*filter.WordFilter, error) {
 	if cfg.Filter.Enabled {
+		LogInfo(func() string { return "Initializing word filter..." })
 		globalWordFilter := filter.NewWordFilter()
-		if err := globalWordFilter.LoadFromFile(cfg.Filter.FilterFile); err != nil {
-			return nil, err
+
+		// Try directory first (new approach)
+		if cfg.Filter.FilterDir != "" {
+			LogInfo(func() string { return fmt.Sprintf("Using filter directory: %s", cfg.Filter.FilterDir) })
+			if err := globalWordFilter.LoadFromDirectory(cfg.Filter.FilterDir); err != nil {
+				return nil, err
+			}
+		} else if cfg.Filter.FilterFile != "" {
+			// Fall back to single file (backward compatibility)
+			LogInfo(func() string { return fmt.Sprintf("Using filter file: %s", cfg.Filter.FilterFile) })
+			if err := globalWordFilter.LoadFromFile(cfg.Filter.FilterFile); err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, fmt.Errorf("neither filter_dir nor filter_file specified in config")
 		}
 		return globalWordFilter, nil
 	}
+	LogInfo(func() string { return "Word filter disabled in config" })
 	return nil, nil
 }
 
@@ -1277,11 +1306,22 @@ func main() {
 	LogInfo(func() string { return fmt.Sprintf("Cluster sort descending: %v", cfg.Analysis.ClusterSortDescending) })
 	LogInfo(func() string { return "--- Filter Settings ---" })
 	LogInfo(func() string { return fmt.Sprintf("Filter enabled: %v", cfg.Filter.Enabled) })
+	if cfg.Analysis.FilterRepetitivePatterns {
+		if cfg.Analysis.BannedPhrasesDir != "" {
+			LogInfo(func() string { return fmt.Sprintf("Banned phrases directory: %s", cfg.Analysis.BannedPhrasesDir) })
+		} else if cfg.Analysis.BannedPhrasesFile != "" {
+			LogInfo(func() string { return fmt.Sprintf("Banned phrases file: %s", cfg.Analysis.BannedPhrasesFile) })
+		}
+		LogInfo(func() string {
+			return fmt.Sprintf("Repetitive pattern threshold: %.2f", cfg.Analysis.RepetitivePatternThreshold)
+		})
+	}
 	LogInfo(func() string { return fmt.Sprintf("RabbitMQ: %s:%d/%s", cfg.MQHost, cfg.MQPort, cfg.MQQueue) })
 	LogInfo(func() string { return fmt.Sprintf("Load state: %v", *loadState) })
 	LogInfo(func() string { return fmt.Sprintf("Print tweets: %v", *printTweets) })
 	LogInfo(func() string { return "--- Additional Settings ---" })
 	LogInfo(func() string { return "Token filtering parameters available in config.yaml (token_filters section)" })
+
 	LogInfo(func() string { return "=== STARTUP PROGRESS ===" })
 	LogInfo(func() string { return "Building frequency class filters... (this may take a few minutes)" })
 
@@ -1309,6 +1349,13 @@ func main() {
 	globalWordFilter, err = initializeWordFilter(cfg)
 	if err != nil {
 		log.Fatalf("Failed to load word filter: %v", err)
+	}
+	if globalWordFilter != nil {
+		LogInfo(func() string {
+			return fmt.Sprintf("Word filter initialized with %d words", globalWordFilter.GetFilteredCount())
+		})
+	} else {
+		LogInfo(func() string { return "Word filter is nil (disabled)" })
 	}
 
 	// Initialize pre-compiled regexes for tokenization
@@ -3602,6 +3649,36 @@ func loadBannedPhrases(filePath string) ([]*regexp.Regexp, error) {
 	}
 
 	return patterns, nil
+}
+
+// loadBannedPhrasesFromDirectory loads and compiles banned phrase patterns from all .txt files in a directory
+func loadBannedPhrasesFromDirectory(dirPath string) ([]*regexp.Regexp, error) {
+	if dirPath == "" {
+		return nil, nil
+	}
+
+	// Read all .txt files in directory
+	files, err := filepath.Glob(filepath.Join(dirPath, "*.txt"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read directory %s: %v", dirPath, err)
+	}
+
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no .txt files found in directory %s", dirPath)
+	}
+
+	LogInfo(func() string { return fmt.Sprintf("Loading banned phrases from %d files in %s:", len(files), dirPath) })
+	var allPatterns []*regexp.Regexp
+	for _, file := range files {
+		LogInfo(func() string { return fmt.Sprintf("  - %s", filepath.Base(file)) })
+		patterns, err := loadBannedPhrases(file)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load %s: %v", file, err)
+		}
+		allPatterns = append(allPatterns, patterns...)
+	}
+	LogInfo(func() string { return fmt.Sprintf("Loaded %d total banned phrase patterns", len(allPatterns)) })
+	return allPatterns, nil
 }
 
 // BatchOutput represents the human-readable batch output with guaranteed field ordering

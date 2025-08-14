@@ -1,9 +1,12 @@
 # How to Listen to a Million Voices
 
-This project implements a heuristic for discovering new subjects in the X/Twitter firehose in near real time. 
+This project implements a heuristic for discovering new subjects in the X/Twitter firehose in near real time.  
 
-The heuristic presented here is capable of extracting the new subjects that people are Tweeting about from the volume of the full X/Twitter firehose--upward of 5000 Tweets/second--with a latency and granularity of a few seconds, using a minimal single-CPU platform.
-Half a dozen to a dozen Tweets can be enough to spot a new subject.
+It can far exceed the speed of the firehose on historical data. The analysis is much faster than parsing the JSON. 
+
+For historical data, it makes sense to preprocess it all in advance. There is a multi-threaded utility for doing this. 
+
+The heuristic presented here is capable of extracting the new subjects that people are Tweeting at several times the volume of the full X/Twitter firehose--upward of 45,000 Tweets/second--with a latency and granularity of a single digit seconds, using a minimal single-CPU platform.
 
 ## Subjects and Real Time
 Our definition of subject is intuitive--a cluster of Tweets that a person would immediately recognize as being about the same thing. We single out a medioid Tweet from each as being the most typical.

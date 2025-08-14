@@ -87,10 +87,10 @@ busyword_classes: [2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
 
 # Word filtering configuration
 filter:
-  # Enable word filtering. This explicitly discards tokens in the filter_file.
+  # Enable word filtering. This explicitly discards tokens in the filter_dir.
   enabled: true
-  # Path to file containing words to filter out
-  filter_file: "/Users/petercoates/python-work/cursor-twitter/config/filter_lists/token_filters.txt"
+  # Path to directory containing .txt files with words to filter out
+  filter_dir: "/Users/petercoates/python-work/cursor-twitter/config/filter_files"
 
 # Persistence configuration
 persistence:
@@ -179,8 +179,8 @@ analysis:
   min_cluster_size: 5
   # Filter out clusters with repetitive meme-like patterns
   filter_repetitive_patterns: true
-  # Path to file containing banned phrases (one per line, can be regex)
-  banned_phrases_file: "/Users/petercoates/python-work/cursor-twitter/config/banned_phrases.txt"
+  # Path to directory containing banned phrase files (one per line, can be regex)
+  banned_phrases_dir: "/Users/petercoates/python-work/cursor-twitter/config/banned_phrases"
   # Threshold for filtering: if this percentage of tweets in a cluster match banned patterns, filter out the cluster
   repetitive_pattern_threshold: 0.6
   # Deduplicate tweets by user within each cluster (filters out spam from same user)

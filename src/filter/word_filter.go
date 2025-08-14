@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -52,6 +53,30 @@ func (wf *WordFilter) LoadFromFile(filename string) error {
 		return fmt.Errorf("error reading filter file %s at line %d: %v", filename, lineNum, err)
 	}
 
+	return nil
+}
+
+// LoadFromDirectory loads filtered words from all .txt files in a directory
+// Each file should contain one word per line, lines starting with # are comments
+func (wf *WordFilter) LoadFromDirectory(dirPath string) error {
+	// Read all .txt files in directory
+	files, err := filepath.Glob(filepath.Join(dirPath, "*.txt"))
+	if err != nil {
+		return fmt.Errorf("failed to read directory %s: %v", dirPath, err)
+	}
+	
+	if len(files) == 0 {
+		return fmt.Errorf("no .txt files found in directory %s", dirPath)
+	}
+	
+	fmt.Fprintf(os.Stderr, "Loading word filters from %d files in %s:\n", len(files), dirPath)
+	for _, file := range files {
+		fmt.Fprintf(os.Stderr, "  - %s\n", filepath.Base(file))
+		if err := wf.LoadFromFile(file); err != nil {
+			return fmt.Errorf("failed to load %s: %v", file, err)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "Loaded %d total filtered words\n", wf.GetFilteredCount())
 	return nil
 }
 
