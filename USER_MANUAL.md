@@ -11,6 +11,8 @@ This manual describes how to use all the programs and utilities in the Twitter s
 
 When running the project, copy an existing config/config.yaml file and ajust it to suit, naming it something like config/config.my-computer.yaml.  This way you won't step on other configs.  If you are changing the config code, make sure you ask Cursor to propagate you changes to the other config files so they don't diverge.
 
+There is no adequate writeup of the meaning of the many config parameters other than the comments in the config files.  Hopefully one is coming.
+
 ## Table of Contents
 
 1. [Main Application](#main-application)

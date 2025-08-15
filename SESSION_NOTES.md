@@ -268,13 +268,14 @@ cd to cursor-twitter
 # Notes On Things That Have Been Checked/Fixed/Explored
 
 ## Batch Size Confusion
-We had an error where Cursor had the clustering routine working on a multiple of the batch size.  
+We had an error where Cursor had the clustering routine working on a multiple of the batch size as set in clustering_window_batches (which is for something else.)  
 
 globalTweetQueue.GetRecentTweets(cfg.Analysis.ClusteringWindowBatches * cfg.BatchSize)
 
 This was wrong, and we fixed it, but it's actually not a bad idea. Why should the busywords at the moment only be tested against the batch? Perhaps clusters go back farther than this? Worth investigating.
 
-Note, it will cause an error were the time spanned in a cluster is excessive. WHich was what we were fixing when we noticed this.
+Note, it will cause an error were the time spanned in a cluster is excessive (which was what we were fixing when we noticed this.)
+
 
 ## Detecting Backup on the Busy Word Processor Queues
 The main pipeline puts tokens on each of F queues for the F busyword processors.  These should be fast, but if they ever began to run more slowly than the main thread, the queues would grow without bound and eventually result in an OOM error.
@@ -296,17 +297,15 @@ We need a program for systematically seeing config parameters work and what do n
 Ther are a number of parameters that affect meta clustering. See the config files for details. At the very least, the effect of the parameters on meta-cluster quality needs to be explored.
 
 ## Processing Rate
-A large set of enhancements have greatly improved throughput.
 
-The feeder is running on the same box feeding CSV via RabbitMQ.
+We now have two data input modes: RabbitMQ and reading CSV files directly from disk.
+Reading directly from disk is an order of magnitude faster than reading from RabbitMQ.
 
-It is not clear what limits processing. It may be RabbitMQ, which shares the compute platform with the main app. It is also possible that the limit is imposed by the ability of the main thread to take items off of RabbitMQ. The sender program could also be a bottleneck, as could the main-thread processing that takes place after a Tweet is removed from RabbitMQ. 
+A large set of enhancements have greatly improved throughput for both modes.
 
-Throughput might be higher for historical data if RabbitMQ were eliminated entirely:
-- The feeder were writing to STDOUT and the main reading fro STDIN
-- The main were reading the files directly
+The feeder is running on the same box feeding CSV via RabbitMQ which undoubtedly has some effect.
 
-It is also not clear whether the feeder running on another machine with Rabbit writing over the LAN would net slower of faster.
+However, profiling reveals that even with the extreme processing rates obtained with directly reading from disk, the program is still I/O bound. The FCT doing the background computing is the biggest CPU user. After that, it's parsing and cleaning up the tokens, followed by the meta-clustering. The busyword computation costs almost nothing and the primary clustering is only one or two percent.  
 
 ## Speedups
 Optimizations have tremendously increased throughput.
@@ -349,11 +348,8 @@ Moving the token cleanup to the backend ingestion would significantly speed up t
 
 The main work in the core pipeline would be bottlenecked by reading and unpacking the CSV.
 
-
-
-
 ## Confirmation of the Z-score Principle
-The data technically violates the assumptions of Z because a Gaussian assumes continuous data, not integer counts. (There is an argument to be made for Poission based scoring.)
+The data technically violates the assumptions of Z because a Gaussian assumes continuous data, not integer counts. (There is an argument to be made for Poisson based scoring.)
 
 Also, we pre-suppose that only the underlying frequencies are approximately Gaussian. We explicitly assume that the busywords impose an explicitly non-Gaussian distribution on top of this underlying normal distribution of pseudo random values.
 
@@ -441,7 +437,7 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 Would clustering be improved by weighting the frequency classes?
 
 - The rarer the word class, the more it is worth?
-- Or possibly the opposite.
+- Or possibly the opposite?
 
 Not too hard to do if it seems worth it.
 
@@ -472,50 +468,17 @@ Sometimes you see a gross inflation of the number of busy words. It is not clear
 We save the busy words sets, so we could do some statistical analysis of them.  We might need to add to that to correlate them with the clusters.
 
 ## Possible logic error
-We sometimes get notification in the logs of burst of 3pk's not mapping to tokens. 
+We sometimes get notification in the logs of a burst of 3pk's not mapping to tokens. 
 This should be almost impossible (it says so right in the warning message.) 'Sup with that?
 
 Suspect this is a phenomenon of startup from token counts on disks.
 This needs to be confirmed.
  
-## New Input Mode(s)
-The main is now fed through RabbitMQ. 
-This is a realistic model of consuming the live firehose.
-
-It would be interesting to have a "history" mode specifically for mass consumption as fast as possible.
-The following are possibilities
-
-- Create a mode that reads from STDIN.
-  - Cat the lines in the CSV to standard out. D
-  - Does it need to be speed limited or will it somehow self-throttle?
-- Add a mode for actively the CSV 
-  - Throttling may not be an issue 
-  - If it is, it's easy enought to start inserting on-second sleeps in the main pipeline when either the busyword processors or the analytics thread get overwhelmed.
-
- 
 ## Ongoing  Items
 
-- Comments Key areas need to be commented to keep out don't touch, etc.
+- Comments Key areas need to be commented to keep out, don't touch, etc.
 
 - Testing has been neglected. Make tests around everything.
-
-## The Token Filter File
-
-This is currently populated by whimsy. Basically, I look at the logged busywords per frequency class output and put the obvious crap in the toke_filters.txt file
-
-This filters out a ton of words--something like 60% of usages right at the entry to the pipeline.
-
-A more mathematically sound way to do this might include entropy.
-
-But you don't necessarily want to blindly eliminate the super common words. 
-Some very common words matter. If "Trump" is normally in F-class 3, and suddenly jumps to F-class 1, it might actually mean something.
-
-See my Evernote notes on entropy for this.  It's a long file, but most of it doesn't apply. Basically, all you need to do is compute the Shannon entropy on the word counts and exclude those with insufficient entropy.
-
-The right approach seems to be the one clipped at the bottome. Slotted entropy based on the token files used to age tokens out of the counts.
-
-The FCT thread could compute entropy every time it makes the filters. We'd have to time this. It might take a minute!  But does it matter?
-
 
 ## Major: Improving Busy Word Detection Quality by Computing Redundantly
 
@@ -528,17 +491,6 @@ Consider that dual sets of pipelines, or even three sets, each with different ha
 It is not clear how big an impact this would have on performance. All the BW processors are doing is counting and periodically computing Z on a thousand values in each of the three counter arrays. There is a tiny bit more work in the analysis to take only the words that appear in the required number of sets. It doesn't really affect the analysis phase that follows, and it's just a little more work for the main to put the tokens on more queues than before.
 
 Risk. If multiplying the work in the busyword processors made them in aggregate slower than the combined main pipeline and the clustering, it would cause the queues to grow without bound and crash the program. You'd need to detect the problem and throttle the reads if this is a problem. Actually, this should probably be done anyway! Who knows if some combination of config parameters could cause this to happen.
-
-## Possible Blow-up From Overload
-The busyword processor queues are now monitored for length an throw out warnings
-if they grow beyond bw_queue_max * batch in length.
-
-It is not clear whether backup from the analytics processor would be caught here. The bw processors put their data on queues with a barrier to ensure that the analytics queues works with all F busyword sets. However, it must be verified that the bw processors can't continue even when the analytics processor can't keep up!  
-
-Not clear how to ensure programmatically that the analytics thread is keeping up.
-
-It could count batches and compare them to the number of batches by the front end. It would normally be at least one behind, but if the global batch number exceeded the analytics batch number by some fixed amount, e.g. 3, it would warn and print out both batch counts..
-   
 
 ## Major: Clustering Across Batches
 
@@ -571,7 +523,7 @@ It doesn't do any harm, but we're never going to use it and it could be confusin
 People don't Tweet the same things at breakfast on Monday that they do at 1:00 AM on Saturday.  Also, the world turns, and while New Yorkers are getting up in the morning, people in Bejing are out for the evening.
 
 ### New and Evolving Subjects Change the Background Frequencies
-Also, surges in usage continually change the current frequencies.
+The surges in usage (that we are looking for) continually change the current prevailing frequencies.
 
 Even relatively common words are rare. This means you 
 need a lot of words (millions) to get even a reasonably accurate estimate 
@@ -668,35 +620,41 @@ Y: 27021 to 44298119
 
 # Volume Issues
 
-## Test Data Set
-You need a pre-processed version of the data if you care about a particular language, e.g., "en".
+## The Data Set
+The full dataset is the original JSON. It has 5399 five minute files, comprising 598,725,870 Tweets. We preprocess this to 105 Gigabytes in uncompressed CSV format (Which is significantly smaller than the compressed JSON!)
 
-- The same data set post-processed for language identification is in ../twits/test_language_detect_out
-
-- The full dataset of 5399 files has 598,725,870 Tweets and is about 105 Gigabytes in uncompressed CSV format (Which is significantly smaller than the compressed JSON!)
-
-- The analysis program reports that there are 
-  - 44,298,119 distinct tokens in 137 million Tweets, 
-  - 135,315,247 distinct tokens in the full data set 
-
-The analyis program is pretty fast, at 52,683 Tweets/sec    
-
-- 599 million Tweets equals approximately six billion tokens.  
+The dataset has 599 million Tweets, which contain approximately six billion tokens.  
  
-- Volume of decahose = 500/sec
+The dataset is two weeks of the decahose, at about 500/sec. You can process it at any speed, but the time stamps in the data will correspond to the real clock time when they were recorded. 
 
-- Volume of firehose = 5000/sec
+The volume of real firehose is typically about 5000/sec but has been known to surge up to 20k/sec. 
 
-- 500/sec = 30k Tweets/min = 450,000 Tweets/15min  = 1.8m Tweets/hour in nominal Tweet time
-
+The decahose nominal Tweet time is about
+- 500/sec 
+- 30k Tweets/min 
+- 450,000 Tweets/15min  
+- 1.8m Tweets/hour 
 - There are an average of 10 words/Tweet = 4,400,000 words/15 min or 18m words/hour
 
 ## Our Processing Speed
 
-The System76 laptop does about 8k Tweets/second. The iMac does about 3k.
+Running over RabbitMQ, the iMac can do about 
+1100 Tweets/second and the System 76 running Linux can do about 8,000 Tweets/second.
+So, about 2.5 decahoses and 16 decahoses respectively.
 
-- The Tweets get ACKed, so RabbitMQ manages to never let the queue get very long--it seems to never get up to 50.
+With direct reading of the Tweets from disk, the System76 laptop and the iMac do about 55k and 45k Tweets/second respecively. 
+They both appear to be bottlenecked on reading the Tweets in, not on processing.
+This is very fast--about five or six firehoses, i.e. fifty or sixty decahoses.
+
+So the system as a whole is overwhelmingly bottlnecked on parsing the JSON.  This is not a problem for historical data as the task is easy to share over as many CPU's as you want. 
+
+It's a little trickier for real time because without significant complexity, you r are limted to the speed of the processor receiving the feed and parsing the JSON. 
+
   
-- Note that for historical data it will scale in direct proportion to the number of machines so you can do bulk processing essentially as fast as you are willing to pay for.
+## Language 
 
-- We have about 350 hours of decahose, which the 76 can process in about a day. 
+If you care about a particular language, e.g., "en", you need a pre-processed version of the data because the lang: field in the original data is essentially worthless, being evidently based only on the environmetal settings of the person issuing Tweet.
+There is a multi-threaded utility to identify the actual language and set the field accordingly, (see USER_MANUAL.md) but it should be noted that the NLP processing to 
+if by far the most expensive part of the processing, outweighing everything else put together buy a multiple.
+
+We have a set of the CSV files that have been post-processed to have this more reliable lang: field. 

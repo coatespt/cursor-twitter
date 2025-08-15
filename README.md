@@ -30,10 +30,10 @@ The solution isn't difficult to grasp: present only the new subjects as they app
   - By exposing only new subjects, in the limit, one gets all subjects.
   - If you only see the new subjects, you automatically bypass the old.
 
-It turns out that what we recognize as a subject is well captured by the sudden appearance togtether of words that are normally unusual. 
-This is almost the opposite of our first intuition. Neither "Trump" nor "Taylor Swift" indicate a subject, let alone a new subject because these words appear every day in countless Tweets on many subjects. 
+It turns out that what we recognize as a subject is well captured by the sudden appearance together of words that are normally unusual. 
+This is almost the opposite of our first intuition. Neither "Trump" nor "Taylor Swift" indicate a subject, let alone a new subject, because these words appear every day in countless Tweets on many subjects. 
 
-On the contrary, it is the appearance together of clusters words that are normally rare that characterizes something different people are talking about: human names, place names, unusual verbs, science terms, economic terms, etc.
+On the contrary, it is the appearance together of clusters words that are normally unusual or rare that characterizes something different people are talking about: human names, place names, unusual verbs, science terms, economic terms, etc.
 Those clusters of word usage drag the very common words with them, not the other way around.
 
  Fortunately, most words are very rare indeed. 
@@ -53,10 +53,13 @@ Fortunately, relative frequency is a red herring.
 The only reason you care about relative frequency is so you can identify words that are being used more frequently now than they were a few seconds ago. The critical observation is that it's not the frequency that matters, but the fact that it's surging.
 
 ## The Key
-It turns out that it is possible to identify words with surging frequency without actually computing relative frequency or doing any other global operations--you don't even have to check individual words. When you leave out the global computations, the process can be very fast. 
-A novel heuristic for doing that is the core of the processing.
+It turns out that it is possible to identify words with surging frequency without actually computing relative frequency or doing any other CPU-hungry global operations--you don't even have to check individual words. When you leave out the global computations, the process can be very fast. 
 
-The heuristic reduces the computation from being in proportion to the cardinality of the set of words that are in use--millions--to something more like the cardinality of the set of words that are surging--dozens to hundreds. There's a constant, too, but it's modest.
+A novel heuristic for doing that seemingly impossible thing is the core of the processing.
 
-The solution is fast and efficient. A commodity laptop can process significantly more than the 5,000 Tweet/second firehose. A server could do several. 
+The heuristic reduces the computation from being in proportion to the cardinality of the set of words that are in use--millions--to being in proportion to something more like the cardinality of the set of words that are surging--dozens to hundreds. There's a constant, too, but it's modest.
+
+The solution is fast and efficient. A commodity laptop can process at a rate several time that of the 5,000 Tweet/second firehose.
+
+In fact, the job of parsing the JSON to get the fields of interest is several times as CPU intensive as the actual Tweet processing.
    
