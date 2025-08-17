@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cursor Twitter Display - {{.BatchInfo}}</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #eee;
+        }
+        .navigation {
+            text-align: center;
+            margin: 20px 0;
+        }
+        .navigation a {
+            display: inline-block;
+            padding: 10px 20px;
+            margin: 0 10px;
+            background-color: #007bff;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+        }
+        .navigation a:hover {
+            background-color: #0056b3;
+        }
+        .navigation a.disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .batch-info {
+            background-color: #e9ecef;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            text-align: center;
+            font-weight: bold;
+        }
+        .cluster {
+            margin-bottom: 30px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        .cluster-header {
+            background-color: #f8f9fa;
+            padding: 10px 15px;
+            border-bottom: 1px solid #ddd;
+            font-weight: bold;
+        }
+        .cluster-content {
+            padding: 15px;
+        }
+        pre {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        
+        .chart-container {
+            margin: 20px 0;
+            padding: 20px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .chart-title {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #333;
+        }
+        
+        #chart {
+            width: 100%;
+            height: 400px;
+        }
+        
+        /* JSON Panel Styles */
+        .json-panel {
+            margin: 20px 0;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .json-header {
+            padding: 15px 20px;
+            background-color: #f8f9fa;
+            border-bottom: 1px solid #ddd;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-radius: 8px 8px 0 0;
+        }
+        
+        .json-header:hover {
+            background-color: #e9ecef;
+        }
+        
+        .json-header h2 {
+            margin: 0;
+            color: #333;
+            font-size: 1.2em;
+        }
+        
+        .toggle-icon {
+            font-size: 12px;
+            color: #666;
+            transition: transform 0.3s ease;
+        }
+        
+        .json-content {
+            padding: 20px;
+            max-height: 400px;
+            overflow-y: auto;
+            transition: max-height 0.3s ease;
+        }
+        
+        .json-content.collapsed {
+            max-height: 0;
+            padding: 0 20px;
+            overflow: hidden;
+        }
+        
+        .json-content pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Cursor Twitter Cluster Display</h1>
+        </div>
+
+        <div class="batch-info">
+            {{.BatchInfo}}
+        </div>
+
+        <div class="navigation">
+            {{if .HasPrev}}
+                <a href="/batch/{{subtract .CurrentBatch 1}}">← Previous</a>
+            {{else}}
+                <a href="#" class="disabled">← Previous</a>
+            {{end}}
+            
+            {{if .HasNext}}
+                <a href="/batch/{{add .CurrentBatch 1}}">Next →</a>
+            {{else}}
+                <a href="#" class="disabled">Next →</a>
+            {{end}}
+        </div>
+
+        <div class="batch-header">
+            <h2>Batch Information</h2>
+            <p><strong>Batch Number:</strong> {{.Batch.Data.BatchNumber}}</p>
+            <p><strong>Batch Time:</strong> {{.Batch.Data.BatchTime}}</p>
+            <p><strong>Method:</strong> {{.Batch.Data.Method}}</p>
+            <p><strong>Total Tweets:</strong> {{.Batch.Data.TotalTweets}}</p>
+            <p><strong>Total Clusters:</strong> {{.Batch.Data.TotalClusters}}</p>
+            <p><strong>Clusters Above Min Size:</strong> {{.Batch.Data.ClustersAboveMinSize}}</p>
+        </div>
+
+                       <div class="chart-container">
+                   <h3 class="chart-title">Cluster Busy Words Distribution</h3>
+                   <div id="chart"></div>
+               </div>
+
+               <div class="json-panel">
+                   <div class="json-header" onclick="toggleJsonPanel()">
+                       <h2>Raw Batch Data</h2>
+                       <span class="toggle-icon" id="toggle-icon">▼</span>
+                   </div>
+                   <div class="json-content" id="json-content">
+                       <pre>{{prettyPrint .Batch}}</pre>
+                   </div>
+               </div>
+
+        <div class="navigation">
+            {{if .HasPrev}}
+                <a href="/batch/{{subtract .CurrentBatch 1}}">← Previous</a>
+            {{else}}
+                <a href="#" class="disabled">← Previous</a>
+            {{end}}
+            
+            {{if .HasNext}}
+                <a href="/batch/{{add .CurrentBatch 1}}">Next →</a>
+            {{else}}
+                <a href="#" class="disabled">Next →</a>
+            {{end}}
+        </div>
+    </div>
+
+    <script>
+        // Load chart data and create visualization
+        async function loadChartData() {
+            try {
+                const response = await fetch('/api/chart-data/{{.CurrentBatch}}');
+                const data = await response.json();
+                createStackedBarChart(data);
+            } catch (error) {
+                console.error('Error loading chart data:', error);
+                document.getElementById('chart').innerHTML = '<p>Error loading chart data</p>';
+            }
+        }
+
+        function createStackedBarChart(data) {
+            // Clear previous chart
+            d3.select('#chart').selectAll('*').remove();
+
+            if (!data.clusters || data.clusters.length === 0) {
+                document.getElementById('chart').innerHTML = '<p>No cluster data available</p>';
+                return;
+            }
+
+            console.log('Creating chart for', data.clusters.length, 'clusters');
+            data.clusters.forEach((cluster, i) => {
+                console.log(`Cluster ${i}: ID=${cluster.cluster_id}, Size=${cluster.size}, Words=${cluster.busy_words.length}`);
+            });
+
+            const margin = {top: 20, right: 30, bottom: 40, left: 60};
+            const width = 800 - margin.left - margin.right;
+            const height = 400 - margin.top - margin.bottom;
+
+            const svg = d3.select('#chart')
+                .append('svg')
+                .attr('width', width + margin.right + margin.left)
+                .attr('height', height + margin.top + margin.bottom)
+                .append('g')
+                .attr('transform', `translate(${margin.left},${margin.top})`);
+
+            // Prepare data for stacking
+            const stackData = data.clusters.map((cluster, i) => {
+                const stack = [];
+                cluster.busy_words.forEach((word, j) => {
+                    stack.push({
+                        cluster: `Cluster ${cluster.cluster_id}`,
+                        word: word,
+                        value: cluster.word_counts[j] || 1,
+                        clusterId: cluster.cluster_id
+                    });
+                });
+                return stack;
+            }).flat();
+
+            // Set up scales
+            const x = d3.scaleBand()
+                .domain(data.clusters.map(d => `Cluster ${d.cluster_id}`))
+                .range([0, width])
+                .padding(0.1);
+
+            console.log('X-axis domain:', x.domain());
+            console.log('X-axis range:', x.range());
+
+            const y = d3.scaleLinear()
+                .domain([0, d3.max(data.clusters, d => d.total_tweets)])
+                .range([height, 0]);
+
+            // Collect all unique words across all clusters
+            const allWords = new Set();
+            data.clusters.forEach(cluster => {
+                cluster.busy_words.forEach(word => {
+                    allWords.add(word);
+                });
+            });
+            
+            // Sort unique words alphabetically for consistent ordering
+            const sortedWords = Array.from(allWords).sort();
+            
+            // Create color scale based on sorted unique words
+            const color = d3.scaleOrdinal()
+                .domain(sortedWords)
+                .range(d3.schemeCategory10);
+
+            // Add axes
+            svg.append('g')
+                .attr('transform', `translate(0,${height})`)
+                .call(d3.axisBottom(x))
+                .selectAll('text')
+                .style('text-anchor', 'middle');
+
+            svg.append('g')
+                .call(d3.axisLeft(y));
+
+            // Create stacked bars
+            data.clusters.forEach((cluster, clusterIndex) => {
+                console.log(`Creating bar for cluster ${clusterIndex}: ID=${cluster.cluster_id}, Size=${cluster.size}`);
+                const totalHeight = y(0) - y(cluster.total_tweets);
+                let currentY = y(0);
+                
+                // Create array of word-data pairs for this cluster
+                const wordData = cluster.busy_words.map((word, index) => ({
+                    word: word,
+                    count: cluster.word_counts[index] || 1
+                }));
+                
+                // Sort words based on their position in the global sorted word list
+                wordData.sort((a, b) => {
+                    const aIndex = sortedWords.indexOf(a.word);
+                    const bIndex = sortedWords.indexOf(b.word);
+                    return aIndex - bIndex;
+                });
+                
+                // Calculate proportional heights for each word based on its count
+                const totalWordCount = wordData.reduce((sum, item) => sum + item.count, 0);
+                
+                wordData.forEach((item) => {
+                    const value = item.count;
+                    // Calculate proportional height based on word count vs total tweets
+                    const wordProportion = totalWordCount > 0 ? value / totalWordCount : 1 / wordData.length;
+                    const barHeight = totalHeight * wordProportion;
+                    
+                    const barX = x(`Cluster ${cluster.cluster_id}`);
+                    const barY = currentY - barHeight;
+                    console.log(`Bar for ${item.word}: x=${barX}, y=${barY}, width=${x.bandwidth()}, height=${barHeight}`);
+                    
+                    svg.append('rect')
+                        .attr('x', barX)
+                        .attr('y', barY)
+                        .attr('width', x.bandwidth())
+                        .attr('height', barHeight)
+                        .attr('fill', color(item.word))
+                        .attr('stroke', '#fff')
+                        .attr('stroke-width', 1)
+                        .append('title')
+                        .text(`${item.word}: ${value} (${Math.round(wordProportion * 100)}% of cluster)`);
+                    
+                    currentY -= barHeight;
+                });
+            });
+
+            // Add legend
+            const legend = svg.append('g')
+                .attr('class', 'legend')
+                .attr('transform', `translate(${width + 10}, 0)`);
+
+            const uniqueWords = sortedWords;
+            
+            uniqueWords.forEach((word, i) => {
+                const legendRow = legend.append('g')
+                    .attr('transform', `translate(0, ${i * 20})`);
+                
+                legendRow.append('rect')
+                    .attr('width', 15)
+                    .attr('height', 15)
+                    .attr('fill', color(word));
+                
+                legendRow.append('text')
+                    .attr('x', 20)
+                    .attr('y', 12)
+                    .text(word)
+                    .style('font-size', '12px');
+            });
+        }
+
+        // Toggle JSON panel visibility
+        function toggleJsonPanel() {
+            const content = document.getElementById('json-content');
+            const icon = document.getElementById('toggle-icon');
+            
+            if (content.classList.contains('collapsed')) {
+                content.classList.remove('collapsed');
+                icon.textContent = '▼';
+            } else {
+                content.classList.add('collapsed');
+                icon.textContent = '▶';
+            }
+        }
+
+        // Load chart when page loads
+        document.addEventListener('DOMContentLoaded', loadChartData);
+    </script>
+</body>
+</html>

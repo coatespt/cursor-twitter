@@ -64,4 +64,31 @@ The heuristic reduces the computation from being in proportion to the cardinalit
 The solution is fast and efficient. A commodity laptop can process at a rate several time that of the 5,000 Tweet/second firehose.
 
 In fact, the job of parsing the JSON to get the fields of interest is several times as CPU intensive as the actual Tweet processing.
+
+## Display Component
+
+This project includes a web-based display component for visualizing the cluster analysis results in real-time. The display provides an interactive web interface for viewing Twitter subject clusters as they are discovered.
+
+### Quick Start
+
+```bash
+# Build the display component
+cd display
+./build.sh
+
+# Run with cluster data
+./cursor-twitter-display ../logs/clusters_YYYYMMDD_HHMMSS.txt
+
+# Open browser to http://localhost:8080
+```
+
+### Features
+
+- **Real-time visualization** of Twitter subject clusters
+- **Batch navigation** through processed data
+- **Auto-play mode** for continuous monitoring
+- **Grid view** for alternative cluster visualization
+- **JSON inspection** of cluster data
+
+For detailed information about the display component, see the [Display Documentation](display/README.md) and [User Manual](USER_MANUAL.md#display-component).
    

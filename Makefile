@@ -45,10 +45,21 @@ build-examine-tokens:
 	go build -o examine_tokens util_go/examine_tokens.go
 	@echo "Token examiner build complete!"
 
+# Build display component
+build-display:
+	@echo "Building display component..."
+	cd display && ./build.sh
+	@echo "Display component build complete!"
+
+# Build all components (main + display)
+build-all: build build-display
+	@echo "All components built!"
+
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
 	rm -f twitter-pipeline language_detector find_csv_file csv_file_mapping token_frequency_analyzer analyze_tokens examine_tokens
+	rm -f display/cursor-twitter-display
 	@echo "Clean complete!"
 
 # Run tests (if any)
@@ -72,6 +83,8 @@ help:
 	@echo "  build-token-frequency - Build the token frequency analyzer"
 	@echo "  build-analyze-tokens  - Build the token analyzer"
 	@echo "  build-examine-tokens  - Build the token examiner"
+	@echo "  build-display         - Build the display component"
+	@echo "  build-all             - Build all components (main + display)"
 	@echo "  clean        - Remove build artifacts"
 	@echo "  test         - Run tests"
 	@echo "  test-all     - Run all tests (same as test)"
