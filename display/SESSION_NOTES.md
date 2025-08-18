@@ -23,37 +23,31 @@ If any changes seem to involve multiple threads, be sure to get my agreement bef
 
 # TTD
 
+## The Front End is Exploratory
+The front end is interesting to play with, but for commercial use, the principles buy which it works would probably need to be adapted to automation.
+- The evaluation of subject significance would be enhanced to identify only the most significant subjects.
+- More powerful ways to look back. Once a subject is ID'd, looking back in time for the origins and related subjects might make sense.
+- A more compact display emphasizing the medioids with the ability to drill in for a deeper look at certain subjects.
+- Semantic analysis. The subject identification is really a form of data reduction.  It should be possible to apply NLP and/or AI to this greatly reduced data set to find:
+    - Human understandable description of what's up
+    - ID related subjects 
+    - Flag subjects for further attention
+    - etc
+
+## Testing is Incomplete
+
+## Put a sample input data set in Git and indicate it in the manual.
+
+## Put the config.yaml in a config directory
+
+## Make the config file to be used a command line option
+
 ## A Metric for Subjects
-Playing with the grid display suggests that real subjects in a batch share a lot of busy words with earlier batches if they are going to amount to anything.
+This metric now exists and is displayed, but it is a first cut. Various enhancements are possible. Details to be decided.
 
-Accordingly, is there a metric we could computed based on some combination of the number of Tweets in the cluster and how many busy words it uses that appeared how far back.
+It currently is a function of the number of Tweets in the cluster, how long its busy words have persisted over previous batches, the LD of its medioid from the Tweets in earlier batches, etc.
 
-What you often see is clear subject that don't seem to persist. But you also see clear subjects that have the same busywords trailing all the way to the left side of the grid. 
-
-Come up with a metric that reflects the average persistence of the busywords over time and the number of Tweets involved.
-
-### An LD-based Metric
-We see lots of clusters that keep recurring e.g. "Taylor our queen" but don't show up graphically in the grid.
-
-Search backwards for mediods within some LD or normalized LD of the current cluster's mediod.
-
-For each older batch that matches, highlight the cell. 
-
-### If we have such a metric, reflect it in the display somehow. 
-- Backgrond color of the Tweets and/or busywords
-- Bold
-
-## Darken the background coloration of every other cluster
-It is a little hard to see the cluster demarkations
-
-## Quality Score Implementation
-
-### Function: `calculateQualityScore`
-**Location**: `display/display_main.go` (lines ~95-130)
-
-**Purpose**: Computes a composite quality score (0-1) for each cluster based on multiple factors indicating its significance and persistence.
-
-**Formula**: Weighted composite of 5 components:
+The score is computed thusly:
 ```
 Quality Score = (0.35 × Persistence) + (0.25 × Recurrence Strength) + (0.15 × Size Weight) + (0.20 × Tweet Weight) + (0.05 × Consistency)
 ```
@@ -80,12 +74,3 @@ Quality Score = (0.35 × Persistence) + (0.25 × Recurrence Strength) + (0.15 ×
 5. **Consistency** (5%): `recurrence_count / total_historical_batches`
    - How evenly distributed the recurrences are across batches
    - Higher score if recurrences are spread out rather than clustered
-
-**Usage**: 
-- Displayed in "Quality" column in grid view
-- Shows as decimal (e.g., "0.63")
-- Monospace font for easy reading
-- Color coding ready (green=high, yellow=medium, red=low)
-
-**Example**: A cluster with score 0.63 indicates strong persistence, good recurrence detection, substantial size, and moderate tweet volume with diminishing returns applied.
-

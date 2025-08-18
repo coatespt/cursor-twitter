@@ -138,10 +138,19 @@
                }
 
         .cluster-row-even {
-            background-color: #f8f9fa;
+            background-color: #e9ecef; /* Medium gray for even clusters */
         }
 
         .cluster-row-odd {
+            background-color: #ffffff; /* White for odd clusters */
+        }
+
+        /* Ensure the background color applies to all cells in the row */
+        .cluster-row-even td {
+            background-color: #e9ecef;
+        }
+
+        .cluster-row-odd td {
             background-color: #ffffff;
         }
 
