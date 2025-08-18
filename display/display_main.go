@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -78,6 +79,60 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// calculateQualityScore computes a quality score for a cluster based on persistence, recurrence, size, and tweet count
+func calculateQualityScore(historicalData map[string]string, recurrenceData map[string]bool, clusterSize int, maxClusterSize int, tweetCount int, maxTweetCount int, currentMedoid string, historicalBatches []int) float64 {
+	// Persistence: percentage of historical batches where cluster appears
+	appearances := 0
+	for _, value := range historicalData {
+		if value != "" {
+			appearances++
+		}
+	}
+	persistence := float64(appearances) / float64(len(historicalBatches))
+
+	// Recurrence Strength: average similarity of recurring instances
+	recurrenceCount := 0
+	totalSimilarity := 0.0
+	for _, isRecurrence := range recurrenceData {
+		if isRecurrence {
+			recurrenceCount++
+			// For now, use a default similarity score of 0.7 for detected recurrences
+			// In a more sophisticated version, we could store the actual similarity scores
+			totalSimilarity += 0.7
+		}
+	}
+	recurrenceStrength := 0.0
+	if recurrenceCount > 0 {
+		recurrenceStrength = totalSimilarity / float64(recurrenceCount)
+	}
+
+	// Size Weight: normalized cluster size
+	sizeWeight := 0.0
+	if maxClusterSize > 0 {
+		sizeWeight = float64(clusterSize) / float64(maxClusterSize)
+	}
+
+	// Tweet Count Weight: logarithmic normalization
+	tweetWeight := 0.0
+	if maxTweetCount > 0 && tweetCount > 0 {
+		// Use log scale: log(tweetCount) / log(maxTweetCount)
+		// This gives diminishing returns for very large tweet counts
+		tweetWeight = math.Log(float64(tweetCount)) / math.Log(float64(maxTweetCount))
+	}
+
+	// Consistency: how evenly distributed the recurrences are
+	consistency := 1.0
+	if recurrenceCount > 1 {
+		// Simple consistency: if recurrences are spread across multiple batches, higher consistency
+		consistency = float64(recurrenceCount) / float64(len(historicalBatches))
+	}
+
+	// Weighted composite score (adjusted weights to include tweet count)
+	qualityScore := (0.35 * persistence) + (0.25 * recurrenceStrength) + (0.15 * sizeWeight) + (0.20 * tweetWeight) + (0.05 * consistency)
+
+	return qualityScore
 }
 
 // Batch represents a single batch from the JSON data
@@ -343,6 +398,7 @@ type GridRow struct {
 	Word           string            `json:"word"`
 	ClusterID      int               `json:"cluster_id"`
 	ClusterSize    int               `json:"cluster_size"`
+	QualityScore   float64           `json:"quality_score"`
 	HistoricalData map[string]string `json:"historical_data"` // batch_number -> word or empty
 	RecurrenceData map[string]bool   `json:"recurrence_data"` // batch_number -> true if similar medoid found
 }
@@ -675,6 +731,7 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 				Word:           word,
 				ClusterID:      int(clusterID),
 				ClusterSize:    int(size),
+				QualityScore:   0.0, // Will be calculated after historical data is filled
 				HistoricalData: make(map[string]string),
 			}
 			gridRows = append(gridRows, gridRow)
@@ -861,6 +918,69 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 				gridRows[i].RecurrenceData[fmt.Sprintf("%d", historicalIndex)] = recurrenceFound
 			}
 		}
+	}
+
+	// Calculate quality scores for each row
+	maxClusterSize := 0
+	maxTweetCount := 0
+	for _, row := range gridRows {
+		if row.ClusterSize > maxClusterSize {
+			maxClusterSize = row.ClusterSize
+		}
+		// Get tweet count for this cluster
+		for _, cluster := range clusters {
+			if int(cluster["cluster_id"].(float64)) == row.ClusterID {
+				if tweetTexts, ok := cluster["tweet_texts"].([]interface{}); ok {
+					tweetCount := len(tweetTexts)
+					if tweetCount > maxTweetCount {
+						maxTweetCount = tweetCount
+					}
+				}
+				break
+			}
+		}
+	}
+
+	for i := range gridRows {
+		// Get current medoid for this row's cluster
+		var currentMedoid string
+		for _, cluster := range clusters {
+			if int(cluster["cluster_id"].(float64)) == gridRows[i].ClusterID {
+				if medoid, ok := cluster["medoid_tweet"].(string); ok {
+					currentMedoid = stripTimestamp(medoid)
+				} else {
+					// Fallback: use first tweet if no medoid
+					if tweetTexts, ok := cluster["tweet_texts"].([]interface{}); ok && len(tweetTexts) > 0 {
+						if firstTweet, ok := tweetTexts[0].(string); ok {
+							currentMedoid = stripTimestamp(firstTweet)
+						}
+					}
+				}
+				break
+			}
+		}
+
+		// Get tweet count for this row's cluster
+		tweetCount := 0
+		for _, cluster := range clusters {
+			if int(cluster["cluster_id"].(float64)) == gridRows[i].ClusterID {
+				if tweetTexts, ok := cluster["tweet_texts"].([]interface{}); ok {
+					tweetCount = len(tweetTexts)
+				}
+				break
+			}
+		}
+
+		gridRows[i].QualityScore = calculateQualityScore(
+			gridRows[i].HistoricalData,
+			gridRows[i].RecurrenceData,
+			gridRows[i].ClusterSize,
+			maxClusterSize,
+			tweetCount,
+			maxTweetCount,
+			currentMedoid,
+			historicalBatchNumbers,
+		)
 	}
 
 	// Calculate batch duration if we have previous batch
