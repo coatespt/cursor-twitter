@@ -306,6 +306,17 @@
         .quality-score.low {
             color: #dc3545;
         }
+
+        .end-of-file {
+            text-align: center;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            color: #6c757d;
+            font-size: 16px;
+            margin: 20px 0;
+        }
     </style>
 </head>
 <body>
@@ -394,7 +405,10 @@
                 
                 // Check if we got empty data (no batches with displayable data)
                 if (!data.rows || data.rows.length === 0) {
-                    if (currentBatch === 0) {
+                    if (data.current_batch === -1) {
+                        // End of file reached
+                        gridContent.innerHTML = '<div class="end-of-file">Reached end of input file. No more batches available.</div>';
+                    } else if (currentBatch === 0) {
                         gridContent.innerHTML = '<div class="loading">Welcome! Batch 0 has no data to display. Click "Next" to see the first batch with data.</div>';
                     } else {
                         gridContent.innerHTML = '<div class="loading">No data available for this batch. Click "Next" to find the next batch with data.</div>';

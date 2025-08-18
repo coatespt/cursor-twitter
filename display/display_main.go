@@ -329,7 +329,7 @@ func loadMoreChunks(requiredBatch int) error {
 		}
 		// If no new batches were loaded, we've reached the end
 		if len(allBatches) == previousBatchCount {
-			fmt.Printf("loadMoreChunks: no more batches available, reached end of file\n")
+			fmt.Printf("loadMoreChunks: no more batches available, reached end of file (total batches: %d)\n", len(allBatches))
 			return fmt.Errorf("no more batches available")
 		}
 		fmt.Printf("loadMoreChunks: now have %d batches\n", len(allBatches))
@@ -537,7 +537,11 @@ func hasDataForBatch(batchIndex int, minClusterSize int) bool {
 	if batchIndex >= len(allBatches) {
 		fmt.Printf("hasDataForBatch: batch %d >= %d, loading more chunks\n", batchIndex, len(allBatches))
 		if err := loadMoreChunks(batchIndex); err != nil {
-			fmt.Printf("hasDataForBatch: error loading chunks: %v\n", err)
+			if strings.Contains(err.Error(), "no more batches available") {
+				fmt.Printf("hasDataForBatch: reached end of input file at batch %d (total batches: %d)\n", batchIndex, len(allBatches))
+			} else {
+				fmt.Printf("hasDataForBatch: actual error loading chunks: %v\n", err)
+			}
 			return false
 		}
 	}
@@ -1115,7 +1119,35 @@ func handleGridDataAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if batchNum < 0 || batchNum >= len(allBatches) {
+	if batchNum < 0 {
+		http.Error(w, "Batch number out of range", http.StatusBadRequest)
+		return
+	}
+
+	// If batch number is beyond what we have, check if we can load more
+	if batchNum >= len(allBatches) {
+		fmt.Printf("handleGridDataAPI: batch %d >= %d, attempting to load more chunks\n", batchNum, len(allBatches))
+		if err := loadMoreChunks(batchNum); err != nil {
+			if strings.Contains(err.Error(), "no more batches available") {
+				fmt.Printf("handleGridDataAPI: reached end of file at batch %d (total batches: %d)\n", batchNum, len(allBatches))
+				// Return end-of-file indicator instead of error
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(GridData{
+					CurrentBatch: -1, // Special value to indicate end of file
+					Rows:         []GridRow{},
+				})
+				return
+			} else {
+				fmt.Printf("handleGridDataAPI: actual error loading chunks: %v\n", err)
+				http.Error(w, "Error loading data", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
+	// Double-check that we now have the requested batch
+	if batchNum >= len(allBatches) {
+		fmt.Printf("handleGridDataAPI: batch %d still out of range after loading chunks (total: %d)\n", batchNum, len(allBatches))
 		http.Error(w, "Batch number out of range", http.StatusBadRequest)
 		return
 	}
@@ -1138,10 +1170,24 @@ func handleGridDataAPI(w http.ResponseWriter, r *http.Request) {
 				fmt.Printf("Auto-advancing from batch %d to previous batch %d\n", originalBatch, batchNum)
 			} else {
 				fmt.Printf("No batches with data found around batch %d\n", originalBatch)
-				// Return empty grid data if no batches with data are found
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(GridData{})
-				return
+				// Check if we've reached the end of the input file
+				if len(allBatches) > 0 {
+					lastBatch := len(allBatches) - 1
+					fmt.Printf("Reached end of input file. Last available batch is %d (total batches loaded: %d)\n", lastBatch, len(allBatches))
+					// Return empty grid data with end-of-file indicator
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(GridData{
+						CurrentBatch: -1, // Special value to indicate end of file
+						Rows:         []GridRow{},
+					})
+					return
+				} else {
+					fmt.Printf("No batches loaded at all - input file may be empty or invalid\n")
+					// Return empty grid data if no batches with data are found
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(GridData{})
+					return
+				}
 			}
 		}
 	}
