@@ -664,6 +664,28 @@ cd display
 - **Batch Counter**: Shows current position (e.g., "Batch 3 of 10")
 - **Grid View**: Alternative view for cluster visualization
 
+### Configuration
+
+The display component uses `display/config.yaml` for configuration:
+
+```yaml
+input_file: "/path/to/clusters.json"
+batch_size: 10
+historical_batches: 5
+min_cluster_size: 3
+recurrence_threshold: 0.4
+recurrence_strategy: "all_tweets"  # Options: "medoid_only" or "all_tweets"
+```
+
+**Recurrence Detection Settings:**
+- `recurrence_threshold`: Similarity threshold (0.0 = identical, 1.0 = completely different)
+  - `0.3` = Very strict (70% similarity required)
+  - `0.4` = Moderate (60% similarity required) 
+  - `0.6` = Relaxed (40% similarity required)
+- `recurrence_strategy`: Comparison method
+  - `"medoid_only"`: Compare current medoid to historical medoids only
+  - `"all_tweets"`: Compare current medoid to all historical tweets (more comprehensive)
+
 ### File Format
 
 The display expects JSON files with one batch per line, where each line contains a JSON object with this structure:

@@ -11,15 +11,73 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
 	"gopkg.in/yaml.v3"
 )
 
 // Config holds the server configuration
 type Config struct {
-	InputFile         string `yaml:"input_file"`
-	BatchSize         int    `yaml:"batch_size"`
-	HistoricalBatches int    `yaml:"historical_batches"`
-	MinClusterSize    int    `yaml:"min_cluster_size"`
+	InputFile           string  `yaml:"input_file"`
+	BatchSize           int     `yaml:"batch_size"`
+	HistoricalBatches   int     `yaml:"historical_batches"`
+	MinClusterSize      int     `yaml:"min_cluster_size"`
+	RecurrenceThreshold float64 `yaml:"recurrence_threshold"`
+	RecurrenceStrategy  string  `yaml:"recurrence_strategy"`
+}
+
+// calculateNormalizedLevenshtein calculates the normalized Levenshtein distance between two strings
+func calculateNormalizedLevenshtein(s1, s2 string) float64 {
+	if s1 == s2 {
+		return 0.0
+	}
+
+	len1, len2 := len(s1), len(s2)
+	if len1 == 0 {
+		return 1.0
+	}
+	if len2 == 0 {
+		return 1.0
+	}
+
+	// Calculate Levenshtein distance
+	matrix := make([][]int, len1+1)
+	for i := range matrix {
+		matrix[i] = make([]int, len2+1)
+		matrix[i][0] = i
+	}
+	for j := range matrix[0] {
+		matrix[0][j] = j
+	}
+
+	for i := 1; i <= len1; i++ {
+		for j := 1; j <= len2; j++ {
+			if s1[i-1] == s2[j-1] {
+				matrix[i][j] = matrix[i-1][j-1]
+			} else {
+				matrix[i][j] = min(min(matrix[i-1][j]+1, matrix[i][j-1]+1), matrix[i-1][j-1]+1)
+			}
+		}
+	}
+
+	ld := matrix[len1][len2]
+	maxLen := max(len1, len2)
+
+	// Normalize by maximum length
+	return float64(ld) / float64(maxLen)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // Batch represents a single batch from the JSON data
@@ -286,6 +344,7 @@ type GridRow struct {
 	ClusterID      int               `json:"cluster_id"`
 	ClusterSize    int               `json:"cluster_size"`
 	HistoricalData map[string]string `json:"historical_data"` // batch_number -> word or empty
+	RecurrenceData map[string]bool   `json:"recurrence_data"` // batch_number -> true if similar medoid found
 }
 
 // TweetData represents tweet information for display
@@ -692,9 +751,31 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 		}
 	}
 
-	// Fill in historical data for each row
+	// Fill in historical data and recurrence data for each row
 	for i := range gridRows {
 		word := gridRows[i].Word
+		clusterID := gridRows[i].ClusterID
+
+		// Initialize recurrence data map
+		gridRows[i].RecurrenceData = make(map[string]bool)
+
+		// Get current cluster's medoid for comparison
+		var currentMedoid string
+		for _, cluster := range clusters {
+			if int(cluster["cluster_id"].(float64)) == clusterID {
+				if medoid, ok := cluster["medoid_tweet"].(string); ok {
+					currentMedoid = stripTimestamp(medoid)
+				} else {
+					// Fallback: use first tweet if no medoid
+					if tweetTexts, ok := cluster["tweet_texts"].([]interface{}); ok && len(tweetTexts) > 0 {
+						if firstTweet, ok := tweetTexts[0].(string); ok {
+							currentMedoid = stripTimestamp(firstTweet)
+						}
+					}
+				}
+				break
+			}
+		}
 
 		for _, historicalIndex := range historicalBatchNumbers {
 			if historicalIndex >= 0 && historicalIndex < len(allBatches) {
@@ -704,10 +785,13 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 				historicalClustersInterface, ok := historicalBatch.Data.Clusters.([]interface{})
 				if !ok {
 					gridRows[i].HistoricalData[fmt.Sprintf("%d", historicalIndex)] = ""
+					gridRows[i].RecurrenceData[fmt.Sprintf("%d", historicalIndex)] = false
 					continue
 				}
 
 				found := false
+				recurrenceFound := false
+
 				for _, clusterInterface := range historicalClustersInterface {
 					clusterMap, ok := clusterInterface.(map[string]interface{})
 					if !ok {
@@ -719,6 +803,48 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 						historicalWord, ok := wordInterface.(string)
 						if ok && historicalWord == word {
 							found = true
+
+							// Check for recurrence by comparing tweets
+							if currentMedoid != "" {
+								if config.RecurrenceStrategy == "medoid_only" {
+									// Strategy 1: Compare only medoids
+									var historicalMedoidClean string
+									if historicalMedoid, ok := clusterMap["medoid_tweet"].(string); ok {
+										historicalMedoidClean = stripTimestamp(historicalMedoid)
+									} else {
+										// Fallback: use first tweet if no medoid
+										if tweetTexts, ok := clusterMap["tweet_texts"].([]interface{}); ok && len(tweetTexts) > 0 {
+											if firstTweet, ok := tweetTexts[0].(string); ok {
+												historicalMedoidClean = stripTimestamp(firstTweet)
+											}
+										}
+									}
+
+									if historicalMedoidClean != "" {
+										distance := calculateNormalizedLevenshtein(currentMedoid, historicalMedoidClean)
+										if distance <= config.RecurrenceThreshold {
+											recurrenceFound = true
+										}
+									}
+								} else {
+									// Strategy 2: Compare to all tweets (default)
+									if tweetTexts, ok := clusterMap["tweet_texts"].([]interface{}); ok {
+										fmt.Printf("DEBUG: Comparing current medoid '%s' to %d historical tweets\n", currentMedoid, len(tweetTexts))
+										for i, tweetInterface := range tweetTexts {
+											if historicalTweet, ok := tweetInterface.(string); ok {
+												historicalTweetClean := stripTimestamp(historicalTweet)
+												distance := calculateNormalizedLevenshtein(currentMedoid, historicalTweetClean)
+												fmt.Printf("  Tweet %d: '%s' -> distance %.3f\n", i, historicalTweetClean, distance)
+												if distance <= config.RecurrenceThreshold {
+													recurrenceFound = true
+													fmt.Printf("  RECURRENCE DETECTED! (distance %.3f <= %.3f)\n", distance, config.RecurrenceThreshold)
+													break // Found a match, no need to check more tweets
+												}
+											}
+										}
+									}
+								}
+							}
 							break
 						}
 					}
@@ -732,6 +858,7 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 				} else {
 					gridRows[i].HistoricalData[fmt.Sprintf("%d", historicalIndex)] = ""
 				}
+				gridRows[i].RecurrenceData[fmt.Sprintf("%d", historicalIndex)] = recurrenceFound
 			}
 		}
 	}

@@ -1,4 +1,6 @@
 input_file: "/Users/petercoates/python-work/data/front-end-data/august_12_clusters.json"
 batch_size: 10
-historical_batches: 5
+historical_batches: 10
 min_cluster_size: 3
+recurrence_threshold: 0.8
+recurrence_strategy: "all_tweets"  # Options: "medoid_only" or "all_tweets"

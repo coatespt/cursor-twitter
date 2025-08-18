@@ -277,6 +277,16 @@
         .tweet-text-inline {
             color: #333;
         }
+
+        .recurrence-highlight {
+            background-color: #fff3cd !important;
+            border: 2px solid #ffc107 !important;
+            font-weight: bold;
+        }
+
+        .recurrence-highlight:hover {
+            background-color: #ffeaa7 !important;
+        }
     </style>
 </head>
 <body>
@@ -482,9 +492,11 @@
                         const batchNum = historicalBatches[i];
                         const histKey = batchNum.toString();
                         const value = row.historical_data[histKey];
+                        const isRecurrence = row.recurrence_data && row.recurrence_data[histKey];
                         
                         if (value && value !== '') {
-                            html += `<td class="historical-cell" title="${value}">${value}</td>`;
+                            const cellClass = isRecurrence ? 'historical-cell recurrence-highlight' : 'historical-cell';
+                            html += `<td class="${cellClass}" title="${value}">${value}</td>`;
                         } else {
                             html += '<td class="empty-cell"></td>';
                         }
