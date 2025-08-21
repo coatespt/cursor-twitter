@@ -205,6 +205,9 @@ func main() {
 	http.HandleFunc("/grid", handleGridDefault) // Default grid route
 	http.HandleFunc("/grid/", handleGrid)       // Grid with batch number
 	http.HandleFunc("/api/grid-data/", handleGridDataAPI)
+	http.HandleFunc("/medoid", handleMedoidDefault) // Default medoid route
+	http.HandleFunc("/medoid/", handleMedoid)       // Medoid with batch number
+	http.HandleFunc("/api/medoid-data/", handleMedoidDataAPI)
 
 	fmt.Printf("Starting server on http://localhost:8080\n")
 	fmt.Printf("Loaded %d batches from initial chunk of %s (chunked loading enabled)\n", len(allBatches), config.InputFile)
@@ -1203,4 +1206,282 @@ func handleGridDataAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "JSON encoding error", http.StatusInternalServerError)
 		return
 	}
+}
+
+// MedoidRow represents a single row in the medoid list
+type MedoidRow struct {
+	BatchNumber     int               `json:"batch_number"`
+	BatchTime       string            `json:"batch_time"`
+	ClusterID       int               `json:"cluster_id"`
+	ClusterSize     int               `json:"cluster_size"`
+	MedoidText      string            `json:"medoid_text"`
+	BusyWords       []string          `json:"busy_words"`
+	PersistenceData map[string]int    `json:"persistence_data"` // batch_number -> persistence count
+}
+
+// MedoidData represents the complete medoid list for display
+type MedoidData struct {
+	CurrentBatch      int         `json:"current_batch"`
+	BatchTime         string      `json:"batch_time"`
+	BatchDuration     string      `json:"batch_duration"`
+	HistoricalBatches []int       `json:"historical_batches"`
+	Rows              []MedoidRow `json:"rows"`
+	MinClusterSize    int         `json:"min_cluster_size"`
+}
+
+func handleMedoidDefault(w http.ResponseWriter, r *http.Request) {
+	// Redirect to medoid with batch 0
+	http.Redirect(w, r, "/medoid/0", http.StatusSeeOther)
+}
+
+func handleMedoid(w http.ResponseWriter, r *http.Request) {
+	// Extract batch number from URL
+	path := r.URL.Path
+	batchNumStr := path[len("/medoid/"):]
+
+	batchNum, err := strconv.Atoi(batchNumStr)
+	if err != nil {
+		// Default to batch 0 if no number provided
+		batchNum = 0
+	}
+
+	if batchNum < 0 {
+		http.Error(w, "Batch number out of range", http.StatusBadRequest)
+		return
+	}
+
+	// Parse the medoid template
+	tmpl, err := template.ParseFiles("templates/medoid.html")
+	if err != nil {
+		http.Error(w, "Template error", http.StatusInternalServerError)
+		return
+	}
+
+	// Prepare template data
+	data := struct {
+		CurrentBatch int
+	}{
+		CurrentBatch: batchNum,
+	}
+
+	// Execute template
+	if err := tmpl.Execute(w, data); err != nil {
+		http.Error(w, "Template execution error", http.StatusInternalServerError)
+		return
+	}
+}
+
+func handleMedoidDataAPI(w http.ResponseWriter, r *http.Request) {
+	// Extract batch number from URL
+	path := r.URL.Path
+	batchNumStr := path[len("/api/medoid-data/"):]
+
+	batchNum, err := strconv.Atoi(batchNumStr)
+	if err != nil {
+		http.Error(w, "Invalid batch number", http.StatusBadRequest)
+		return
+	}
+
+	if batchNum < 0 {
+		http.Error(w, "Batch number out of range", http.StatusBadRequest)
+		return
+	}
+
+	// If batch number is beyond what we have, check if we can load more
+	if batchNum >= len(allBatches) {
+		fmt.Printf("handleMedoidDataAPI: batch %d >= %d, attempting to load more chunks\n", batchNum, len(allBatches))
+		if err := loadMoreChunks(batchNum); err != nil {
+			if strings.Contains(err.Error(), "no more batches available") {
+				fmt.Printf("handleMedoidDataAPI: reached end of file at batch %d (total batches: %d)\n", batchNum, len(allBatches))
+				// Return end-of-file indicator instead of error
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(MedoidData{
+					CurrentBatch: -1, // Special value to indicate end of file
+					Rows:         []MedoidRow{},
+				})
+				return
+			} else {
+				fmt.Printf("handleMedoidDataAPI: actual error loading chunks: %v\n", err)
+				http.Error(w, "Error loading data", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
+	// Double-check that we now have the requested batch
+	if batchNum >= len(allBatches) {
+		fmt.Printf("handleMedoidDataAPI: batch %d still out of range after loading chunks (total: %d)\n", batchNum, len(allBatches))
+		http.Error(w, "Batch number out of range", http.StatusBadRequest)
+		return
+	}
+
+	// Check if the requested batch has data, if not find the next one that does
+	originalBatch := batchNum
+	hasData := hasDataForBatch(batchNum, config.MinClusterSize)
+	fmt.Printf("handleMedoidDataAPI: batch %d hasDataForBatch returned %v\n", batchNum, hasData)
+	if !hasData {
+		fmt.Printf("Batch %d has no data (min cluster size: %d), looking for next batch with data\n", batchNum, config.MinClusterSize)
+		nextBatch := findNextBatchWithData(batchNum, 1, config.MinClusterSize)
+		if nextBatch != batchNum {
+			batchNum = nextBatch
+			fmt.Printf("Auto-advancing from batch %d to batch %d\n", originalBatch, batchNum)
+		} else {
+			// Try going backwards if no next batch found
+			prevBatch := findNextBatchWithData(originalBatch, -1, config.MinClusterSize)
+			if prevBatch != originalBatch {
+				batchNum = prevBatch
+				fmt.Printf("Auto-advancing from batch %d to previous batch %d\n", originalBatch, batchNum)
+			} else {
+				fmt.Printf("No batches with data found around batch %d\n", originalBatch)
+				// Check if we've reached the end of the input file
+				if len(allBatches) > 0 {
+					lastBatch := len(allBatches) - 1
+					fmt.Printf("Reached end of input file. Last available batch is %d (total batches loaded: %d)\n", lastBatch, len(allBatches))
+					// Return empty medoid data with end-of-file indicator
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(MedoidData{
+						CurrentBatch: -1, // Special value to indicate end of file
+						Rows:         []MedoidRow{},
+					})
+					return
+				} else {
+					fmt.Printf("No batches loaded at all - input file may be empty or invalid\n")
+					// Return empty medoid data if no batches with data are found
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(MedoidData{})
+					return
+				}
+			}
+		}
+	}
+
+	// Compute medoid data
+	medoidData := computeMedoidData(batchNum, config.HistoricalBatches, config.MinClusterSize)
+
+	// Set response headers
+	w.Header().Set("Content-Type", "application/json")
+
+	// Encode and send response
+	if err := json.NewEncoder(w).Encode(medoidData); err != nil {
+		http.Error(w, "JSON encoding error", http.StatusInternalServerError)
+		return
+	}
+}
+
+func computeMedoidData(batchNum, historicalBatches, minClusterSize int) MedoidData {
+	batch := allBatches[batchNum]
+	
+	// Get historical batch numbers
+	historicalBatchNumbers := make([]int, 0)
+	for i := 1; i <= historicalBatches; i++ {
+		histBatch := batchNum - i
+		if histBatch >= 0 {
+			historicalBatchNumbers = append(historicalBatchNumbers, histBatch)
+		}
+	}
+
+	// Extract clusters from batch data
+	clustersInterface, ok := batch.Data.Clusters.([]interface{})
+	if !ok {
+		return MedoidData{
+			CurrentBatch:      batchNum,
+			BatchTime:         batch.Data.BatchTime,
+			HistoricalBatches: historicalBatchNumbers,
+			Rows:              []MedoidRow{},
+			MinClusterSize:    minClusterSize,
+		}
+	}
+
+	var medoidRows []MedoidRow
+
+	for _, clusterInterface := range clustersInterface {
+		clusterMap, ok := clusterInterface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Extract cluster data
+		clusterID, _ := clusterMap["cluster_id"].(float64)
+		size, _ := clusterMap["size"].(float64)
+		
+		// Skip clusters below minimum size
+		if int(size) < minClusterSize {
+			continue
+		}
+
+		// Extract medoid text
+		medoidText := ""
+		if medoid, ok := clusterMap["medoid"].(string); ok {
+			medoidText = medoid
+		}
+
+		// Extract busy words
+		var busyWords []string
+		if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
+			for _, word := range busyWordsInterface {
+				if wordStr, ok := word.(string); ok {
+					busyWords = append(busyWords, wordStr)
+				}
+			}
+		}
+
+		// Calculate persistence data (how many batches back this cluster can be traced)
+		persistenceData := make(map[string]int)
+		for _, histBatch := range historicalBatchNumbers {
+			if histBatch >= 0 && histBatch < len(allBatches) {
+				// Simple persistence calculation - could be enhanced with LD method
+				persistenceCount := calculatePersistence(int(clusterID), histBatch, batchNum)
+				persistenceData[fmt.Sprintf("%d", histBatch)] = persistenceCount
+			}
+		}
+
+		medoidRow := MedoidRow{
+			BatchNumber:     batchNum,
+			BatchTime:       batch.Data.BatchTime,
+			ClusterID:       int(clusterID),
+			ClusterSize:     int(size),
+			MedoidText:      medoidText,
+			BusyWords:       busyWords,
+			PersistenceData: persistenceData,
+		}
+
+		medoidRows = append(medoidRows, medoidRow)
+	}
+
+	return MedoidData{
+		CurrentBatch:      batchNum,
+		BatchTime:         batch.Data.BatchTime,
+		HistoricalBatches: historicalBatchNumbers,
+		Rows:              medoidRows,
+		MinClusterSize:    minClusterSize,
+	}
+}
+
+func calculatePersistence(clusterID, histBatch, currentBatch int) int {
+	// Simple persistence calculation - returns 1 if cluster exists in historical batch
+	// This could be enhanced with Levenshtein distance method as mentioned in the spec
+	
+	if histBatch < 0 || histBatch >= len(allBatches) {
+		return 0
+	}
+
+	histBatchData := allBatches[histBatch]
+	clustersInterface, ok := histBatchData.Data.Clusters.([]interface{})
+	if !ok {
+		return 0
+	}
+
+	for _, clusterInterface := range clustersInterface {
+		clusterMap, ok := clusterInterface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		histClusterID, _ := clusterMap["cluster_id"].(float64)
+		if int(histClusterID) == clusterID {
+			return 1
+		}
+	}
+
+	return 0
 }

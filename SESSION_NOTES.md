@@ -433,6 +433,17 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 
 # TTD and Direction
 
+## New Front-End Mode
+It would be interesting to have a scrolling list of the medoids of the clusters.
+
+This could use the same data as the grid mode.
+
+Several columns:
+- Metadata for each batch--the first three or four columns.
+- Next column or two metadata for the cluster
+- Main column, the medoid for the cluster.
+- Successive columns could be the batches back that it can be traced via the LD method used in the grid display.
+
 ## Clustering Improvement By Weighting Frequency Classes
 Would clustering be improved by weighting the frequency classes?
 

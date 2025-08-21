@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medoid List - Batch {{.CurrentBatch}}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            max-width: 1800px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            padding: 20px;
+        }
+
+        .main-content {
+            margin-top: 20px;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #eee;
+        }
+
+        .title {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .navigation {
+            display: flex;
+            gap: 10px;
+        }
+
+        .nav-button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s;
+        }
+
+        .nav-button:hover {
+            background-color: #0056b3;
+        }
+
+        .nav-button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        .view-toggle {
+            margin-left: 20px;
+        }
+
+        .view-toggle a {
+            padding: 8px 16px;
+            background-color: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .view-toggle a:hover {
+            background-color: #218838;
+        }
+
+        .batch-info {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #666;
+        }
+
+        .medoid-container {
+            overflow-x: auto;
+            overflow-y: auto;
+            max-height: 80vh;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+
+        .medoid-table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 800px;
+        }
+
+        .medoid-table th,
+        .medoid-table td {
+            padding: 12px 8px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+            vertical-align: top;
+        }
+
+        .medoid-table th {
+            background-color: #f8f9fa;
+            font-weight: bold;
+            color: #495057;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .medoid-table tr:hover {
+            background-color: #f8f9fa;
+        }
+
+        .medoid-text {
+            max-width: 600px;
+            word-wrap: break-word;
+            line-height: 1.4;
+        }
+
+        .busy-words {
+            font-size: 12px;
+            color: #666;
+            max-width: 150px;
+            word-wrap: break-word;
+        }
+
+        .persistence-cell {
+            text-align: center;
+            font-size: 12px;
+            min-width: 25px;
+            max-width: 25px;
+            width: 25px;
+        }
+
+        .persistence-1 {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        .persistence-0 {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+            font-style: italic;
+        }
+
+        .end-of-file {
+            text-align: center;
+            padding: 40px;
+            color: #721c24;
+            background-color: #f8d7da;
+            border-radius: 5px;
+        }
+
+        .cluster-size {
+            font-weight: bold;
+            color: #007bff;
+        }
+
+        .cluster-id {
+            font-family: monospace;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="title">Medoid List View</div>
+            <div class="navigation">
+                <button class="nav-button" onclick="previousBatch()" id="prevBtn">Previous</button>
+                <button class="nav-button" onclick="toggleAutoPlay()" id="playBtn">Play</button>
+                <button class="nav-button" onclick="nextBatch()" id="nextBtn">Next</button>
+                <div class="view-toggle">
+                    <a href="/grid/{{.CurrentBatch}}">Switch to Grid View</a>
+                </div>
+            </div>
+        </div>
+
+        <div class="batch-info" id="batchInfo">
+            Loading...
+        </div>
+
+        <div class="medoid-container">
+            <div id="medoidContent" class="loading">
+                Loading medoid data...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentBatch = {{.CurrentBatch}};
+        let autoPlayInterval = null;
+        let isPlaying = false;
+
+        // Load medoid data from API for multiple batches
+        async function loadMedoidData() {
+            const medoidContent = document.getElementById('medoidContent');
+            const batchInfo = document.getElementById('batchInfo');
+
+            try {
+                medoidContent.innerHTML = '<div class="loading">Loading medoid data...</div>';
+                batchInfo.textContent = `Starting from Batch ${currentBatch}`;
+
+                // Load data for multiple batches (current batch + previous 10 batches)
+                const numBatchesToLoad = 11; // Current + 10 previous
+                let allRows = [];
+                let latestBatchTime = '';
+                
+                for (let i = 0; i < numBatchesToLoad; i++) {
+                    const batchToLoad = currentBatch - i;
+                    if (batchToLoad < 0) break;
+                    
+                    const response = await fetch(`/api/medoid-data/${batchToLoad}`);
+                    if (!response.ok) {
+                        if (response.status === 404 || batchToLoad < 0) {
+                            break; // Stop if we've reached the beginning
+                        }
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+
+                    const data = await response.json();
+                    
+                    // Check if we got empty data
+                    if (!data.rows || data.rows.length === 0) {
+                        if (data.current_batch === -1) {
+                            break; // End of file
+                        }
+                        continue; // Skip empty batches
+                    }
+                    
+                    // Store the latest batch time
+                    if (i === 0) {
+                        latestBatchTime = data.batch_time;
+                    }
+                    
+                    // Add all rows from this batch
+                    allRows = allRows.concat(data.rows);
+                }
+                
+                // Check if we got any data
+                if (allRows.length === 0) {
+                    if (currentBatch === 0) {
+                        medoidContent.innerHTML = '<div class="loading">Welcome! No data available. Click "Next" to see the first batch with data.</div>';
+                    } else {
+                        medoidContent.innerHTML = '<div class="loading">No data available for recent batches. Click "Next" to find batches with data.</div>';
+                    }
+                    return;
+                }
+                
+                // Update batch info with timestamp
+                batchInfo.textContent = `Showing batches from ${currentBatch} backwards - Latest: ${latestBatchTime}`;
+                
+                // Get historical batches for the header (from the first batch we loaded)
+                let historicalBatches = [];
+                const firstBatchResponse = await fetch(`/api/medoid-data/${currentBatch}`);
+                if (firstBatchResponse.ok) {
+                    const firstBatchData = await firstBatchResponse.json();
+                    historicalBatches = firstBatchData.historical_batches || [];
+                }
+                
+                // Build the medoid table
+                let tableHTML = '<table class="medoid-table">';
+                
+                // Header row
+                tableHTML += '<thead><tr>';
+                tableHTML += '<th>Batch</th>';
+                tableHTML += '<th>Cluster ID</th>';
+                tableHTML += '<th>Size</th>';
+                tableHTML += '<th>Medoid Text</th>';
+                tableHTML += '<th>Busy Words</th>';
+                
+                // Historical batch columns (newest to oldest, left to right)
+                for (let i = 0; i < historicalBatches.length; i++) {
+                    const histBatch = historicalBatches[i];
+                    tableHTML += `<th>B${histBatch}</th>`;
+                }
+                
+                tableHTML += '</tr></thead><tbody>';
+                
+                // Data rows (newest batches first, then newest clusters within each batch)
+                allRows.forEach(row => {
+                    tableHTML += '<tr>';
+                    tableHTML += `<td class="cluster-id">${row.batch_number}</td>`;
+                    tableHTML += `<td class="cluster-id">${row.cluster_id}</td>`;
+                    tableHTML += `<td class="cluster-size">${row.cluster_size}</td>`;
+                    tableHTML += `<td class="medoid-text">${escapeHtml(row.medoid_text)}</td>`;
+                    tableHTML += `<td class="busy-words">${row.busy_words.join(', ')}</td>`;
+                    
+                    // Historical persistence columns (newest to oldest, left to right)
+                    for (let i = 0; i < historicalBatches.length; i++) {
+                        const histBatch = historicalBatches[i];
+                        const histKey = histBatch.toString();
+                        const persistence = row.persistence_data[histKey] || 0;
+                        const persistenceClass = persistence > 0 ? 'persistence-1' : 'persistence-0';
+                        tableHTML += `<td class="persistence-cell ${persistenceClass}">${persistence}</td>`;
+                    }
+                    
+                    tableHTML += '</tr>';
+                });
+                
+                tableHTML += '</tbody></table>';
+                
+                medoidContent.innerHTML = tableHTML;
+                
+            } catch (error) {
+                console.error('Error loading medoid data:', error);
+                medoidContent.innerHTML = '<div class="loading">Error loading data. Please try again.</div>';
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function previousBatch() {
+            if (currentBatch > 0) {
+                currentBatch--;
+                window.history.pushState(null, '', `/medoid/${currentBatch}`);
+                loadMedoidData();
+            }
+        }
+
+        function nextBatch() {
+            currentBatch++;
+            window.history.pushState(null, '', `/medoid/${currentBatch}`);
+            loadMedoidData();
+        }
+
+        function toggleAutoPlay() {
+            const playBtn = document.getElementById('playBtn');
+            
+            if (isPlaying) {
+                // Stop auto-play
+                if (autoPlayInterval) {
+                    clearInterval(autoPlayInterval);
+                    autoPlayInterval = null;
+                }
+                isPlaying = false;
+                playBtn.textContent = 'Play';
+            } else {
+                // Start auto-play
+                autoPlayInterval = setInterval(() => {
+                    nextBatch();
+                }, 2000); // 2 seconds
+                isPlaying = true;
+                playBtn.textContent = 'Pause';
+            }
+        }
+
+        // Handle browser back/forward buttons
+        window.addEventListener('popstate', function() {
+            const path = window.location.pathname;
+            const match = path.match(/\/medoid\/(\d+)/);
+            if (match) {
+                currentBatch = parseInt(match[1]);
+                loadMedoidData();
+            }
+        });
+
+        // Load initial data
+        document.addEventListener('DOMContentLoaded', function() {
+            loadMedoidData();
+        });
+    </script>
+</body>
+</html>
