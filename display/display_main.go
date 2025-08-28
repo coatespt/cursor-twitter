@@ -208,6 +208,7 @@ func main() {
 	http.HandleFunc("/medoid", handleMedoidDefault) // Default medoid route
 	http.HandleFunc("/medoid/", handleMedoid)       // Medoid with batch number
 	http.HandleFunc("/api/medoid-data/", handleMedoidDataAPI)
+	http.HandleFunc("/api/cluster-data/", handleClusterDataAPI)
 
 	fmt.Printf("Starting server on http://localhost:8080\n")
 	fmt.Printf("Loaded %d batches from initial chunk of %s (chunked loading enabled)\n", len(allBatches), config.InputFile)
@@ -1210,13 +1211,13 @@ func handleGridDataAPI(w http.ResponseWriter, r *http.Request) {
 
 // MedoidRow represents a single row in the medoid list
 type MedoidRow struct {
-	BatchNumber     int               `json:"batch_number"`
-	BatchTime       string            `json:"batch_time"`
-	ClusterID       int               `json:"cluster_id"`
-	ClusterSize     int               `json:"cluster_size"`
-	MedoidText      string            `json:"medoid_text"`
-	BusyWords       []string          `json:"busy_words"`
-	PersistenceData map[string]int    `json:"persistence_data"` // batch_number -> persistence count
+	BatchNumber     int            `json:"batch_number"`
+	BatchTime       string         `json:"batch_time"`
+	ClusterID       int            `json:"cluster_id"`
+	ClusterSize     int            `json:"cluster_size"`
+	MedoidText      string         `json:"medoid_text"`
+	BusyWords       []string       `json:"busy_words"`
+	PersistenceData map[string]int `json:"persistence_data"` // batch_number -> persistence count
 }
 
 // MedoidData represents the complete medoid list for display
@@ -1370,7 +1371,7 @@ func handleMedoidDataAPI(w http.ResponseWriter, r *http.Request) {
 
 func computeMedoidData(batchNum, historicalBatches, minClusterSize int) MedoidData {
 	batch := allBatches[batchNum]
-	
+
 	// Get historical batch numbers
 	historicalBatchNumbers := make([]int, 0)
 	for i := 1; i <= historicalBatches; i++ {
@@ -1403,7 +1404,7 @@ func computeMedoidData(batchNum, historicalBatches, minClusterSize int) MedoidDa
 		// Extract cluster data
 		clusterID, _ := clusterMap["cluster_id"].(float64)
 		size, _ := clusterMap["size"].(float64)
-		
+
 		// Skip clusters below minimum size
 		if int(size) < minClusterSize {
 			continue
@@ -1460,7 +1461,7 @@ func computeMedoidData(batchNum, historicalBatches, minClusterSize int) MedoidDa
 func calculatePersistence(clusterID, histBatch, currentBatch int) int {
 	// Simple persistence calculation - returns 1 if cluster exists in historical batch
 	// This could be enhanced with Levenshtein distance method as mentioned in the spec
-	
+
 	if histBatch < 0 || histBatch >= len(allBatches) {
 		return 0
 	}
@@ -1484,4 +1485,87 @@ func calculatePersistence(clusterID, histBatch, currentBatch int) int {
 	}
 
 	return 0
+}
+
+func handleClusterDataAPI(w http.ResponseWriter, r *http.Request) {
+	// Extract batch number and cluster ID from URL
+	path := r.URL.Path
+	pathParts := strings.Split(path[len("/api/cluster-data/"):], "/")
+	if len(pathParts) != 2 {
+		http.Error(w, "Invalid URL format. Expected /api/cluster-data/batch/cluster", http.StatusBadRequest)
+		return
+	}
+
+	batchNum, err := strconv.Atoi(pathParts[0])
+	if err != nil {
+		http.Error(w, "Invalid batch number", http.StatusBadRequest)
+		return
+	}
+
+	clusterID, err := strconv.Atoi(pathParts[1])
+	if err != nil {
+		http.Error(w, "Invalid cluster ID", http.StatusBadRequest)
+		return
+	}
+
+	if batchNum < 0 || batchNum >= len(allBatches) {
+		http.Error(w, "Batch number out of range", http.StatusBadRequest)
+		return
+	}
+
+	// Get the batch data
+	batch := allBatches[batchNum]
+	clustersInterface, ok := batch.Data.Clusters.([]interface{})
+	if !ok {
+		http.Error(w, "Invalid clusters data format", http.StatusInternalServerError)
+		return
+	}
+
+	// Find the specific cluster
+	var targetCluster map[string]interface{}
+	for _, clusterInterface := range clustersInterface {
+		clusterMap, ok := clusterInterface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		clusterIDFloat, _ := clusterMap["cluster_id"].(float64)
+		if int(clusterIDFloat) == clusterID {
+			targetCluster = clusterMap
+			break
+		}
+	}
+
+	if targetCluster == nil {
+		http.Error(w, "Cluster not found", http.StatusNotFound)
+		return
+	}
+
+	// Extract tweet data
+	var tweets []map[string]interface{}
+	if tweetTextsInterface, ok := targetCluster["tweet_texts"].([]interface{}); ok {
+		for _, tweetInterface := range tweetTextsInterface {
+			if tweetText, ok := tweetInterface.(string); ok {
+				tweets = append(tweets, map[string]interface{}{
+					"text": tweetText,
+				})
+			}
+		}
+	}
+
+	// Create response
+	response := map[string]interface{}{
+		"batch_number": batchNum,
+		"cluster_id":   clusterID,
+		"tweets":       tweets,
+	}
+
+	// Set response headers
+	w.Header().Set("Content-Type", "application/json")
+
+	// Encode and send response
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, "JSON encoding error", http.StatusInternalServerError)
+		return
+	}
 }

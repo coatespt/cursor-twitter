@@ -178,6 +178,53 @@
             font-family: monospace;
             color: #666;
         }
+
+        .medoid-text {
+            cursor: pointer;
+            position: relative;
+        }
+
+        .medoid-text:hover {
+            background-color: #e3f2fd;
+        }
+
+        .tweet-popup {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            background: white;
+            border: 2px solid #007bff;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            padding: 15px;
+            max-width: 500px;
+            max-height: 400px;
+            overflow-y: auto;
+            z-index: 1000;
+            display: none;
+        }
+
+        .tweet-popup h4 {
+            margin: 0 0 10px 0;
+            color: #007bff;
+            font-size: 14px;
+        }
+
+        .tweet-popup .tweet {
+            padding: 8px;
+            margin: 5px 0;
+            background: #f8f9fa;
+            border-left: 3px solid #007bff;
+            border-radius: 4px;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .tweet-popup .tweet.medoid {
+            background: #e3f2fd;
+            border-left-color: #2196f3;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
@@ -202,6 +249,12 @@
             <div id="medoidContent" class="loading">
                 Loading medoid data...
             </div>
+        </div>
+
+        <!-- Tweet popup -->
+        <div id="tweetPopup" class="tweet-popup">
+            <h4 id="popupTitle">Cluster Tweets</h4>
+            <div id="popupContent"></div>
         </div>
     </div>
 
@@ -296,12 +349,12 @@
                 tableHTML += '</tr></thead><tbody>';
                 
                 // Data rows (newest batches first, then newest clusters within each batch)
-                allRows.forEach(row => {
+                allRows.forEach((row, index) => {
                     tableHTML += '<tr>';
                     tableHTML += `<td class="cluster-id">${row.batch_number}</td>`;
                     tableHTML += `<td class="cluster-id">${row.cluster_id}</td>`;
                     tableHTML += `<td class="cluster-size">${row.cluster_size}</td>`;
-                    tableHTML += `<td class="medoid-text">${escapeHtml(row.medoid_text)}</td>`;
+                    tableHTML += `<td class="medoid-text" onmouseover="showTweetPopup(event, ${row.batch_number}, ${row.cluster_id}, ${index})" onmouseout="hideTweetPopup()">${escapeHtml(row.medoid_text)}</td>`;
                     tableHTML += `<td class="busy-words">${row.busy_words.join(', ')}</td>`;
                     
                     // Historical persistence columns (newest to oldest, left to right)
@@ -376,6 +429,71 @@
                 loadMedoidData();
             }
         });
+
+        // Global variable to store cluster data for popups
+        let clusterDataCache = {};
+
+        // Show tweet popup on hover
+        async function showTweetPopup(event, batchNumber, clusterId, rowIndex) {
+            const popup = document.getElementById('tweetPopup');
+            const popupTitle = document.getElementById('popupTitle');
+            const popupContent = document.getElementById('popupContent');
+            
+            // Position the popup
+            const rect = event.target.getBoundingClientRect();
+            popup.style.left = rect.left + 'px';
+            popup.style.top = (rect.bottom + 5) + 'px';
+            
+            // Set title
+            popupTitle.textContent = `Batch ${batchNumber}, Cluster ${clusterId} - All Tweets`;
+            
+            // Check if we have the data cached
+            const cacheKey = `${batchNumber}-${clusterId}`;
+            if (clusterDataCache[cacheKey]) {
+                displayClusterTweets(popupContent, clusterDataCache[cacheKey]);
+                popup.style.display = 'block';
+                return;
+            }
+            
+            // Fetch cluster data
+            try {
+                const response = await fetch(`/api/cluster-data/${batchNumber}/${clusterId}`);
+                if (response.ok) {
+                    const clusterData = await response.json();
+                    clusterDataCache[cacheKey] = clusterData;
+                    displayClusterTweets(popupContent, clusterData);
+                    popup.style.display = 'block';
+                } else {
+                    popupContent.innerHTML = '<p>Error loading cluster data</p>';
+                    popup.style.display = 'block';
+                }
+            } catch (error) {
+                popupContent.innerHTML = '<p>Error loading cluster data</p>';
+                popup.style.display = 'block';
+            }
+        }
+
+        // Hide tweet popup
+        function hideTweetPopup() {
+            const popup = document.getElementById('tweetPopup');
+            popup.style.display = 'none';
+        }
+
+        // Display cluster tweets in popup
+        function displayClusterTweets(container, clusterData) {
+            if (!clusterData.tweets || clusterData.tweets.length === 0) {
+                container.innerHTML = '<p>No tweets available for this cluster</p>';
+                return;
+            }
+            
+            let html = '';
+            clusterData.tweets.forEach((tweet, index) => {
+                const isMedoid = index === 0; // Assuming first tweet is medoid
+                const tweetClass = isMedoid ? 'tweet medoid' : 'tweet';
+                html += `<div class="${tweetClass}">${escapeHtml(tweet.text)}</div>`;
+            });
+            container.innerHTML = html;
+        }
 
         // Load initial data
         document.addEventListener('DOMContentLoaded', function() {
