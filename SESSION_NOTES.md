@@ -433,9 +433,12 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 
 # TTD and Direction
 
-## Fix the use of paths
-Cursor fucks up relative paths. I finally gave up and punted on this and simply require that you use absolute paths. Super amateur--go fix it.
+## Global configs on the graphical output. 
 
+It would be nice to see global parameters on the output screen so you could see things like:
+- How big a batch is.
+- How much clock time is represented by each batch
+- Some values we aren't yet computing or displaying like, the quality of a cluster.
 
 ## Clustering Improvement By Weighting Frequency Classes
 Would clustering be improved by weighting the frequency classes?
