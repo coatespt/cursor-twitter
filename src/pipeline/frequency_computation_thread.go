@@ -99,8 +99,8 @@ func NewFrequencyComputationThread(
 		tokenPersistFiles: tokenPersistFiles,
 		rebuildEveryFiles: rebuildEveryFiles,
 		stateDir:          stateDir,
-		tokenFileCounter:  tokenFileCounter,
 		minCountThreshold: minCountThreshold,
+		tokenFileCounter:  tokenFileCounter,
 	}
 }
 

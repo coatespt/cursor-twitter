@@ -4,3 +4,5 @@ historical_batches: 15
 min_cluster_size: 3
 recurrence_threshold: 0.8
 recurrence_strategy: "all_tweets"  # Options: "medoid_only" or "all_tweets"
+bubble_batches: 10  # Number of batches to show in bubble graph
+bubble_color: "blue"  # Base color for bubbles (blue, green, purple, etc.)

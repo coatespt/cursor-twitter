@@ -686,16 +686,16 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 
 	switch clusteringMethod {
 	case "kmeans":
-		runKMeansClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber)
+		runKMeansClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber, classResults)
 	case "graph":
 		fallthrough
 	default:
-		runGraphClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber)
+		runGraphClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber, classResults)
 	}
 }
 
 // runKMeansClustering runs k-means clustering on tweets
-func runKMeansClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[string]bool, cfg *Config, batchNumber int) {
+func runKMeansClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[string]bool, cfg *Config, batchNumber int, classResults map[int][]string) {
 	// Use existing k-means clustering function with silent output
 	writeOutput := func(format string, args ...interface{}) {
 		// Silent - no output needed
@@ -744,6 +744,20 @@ func runKMeansClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[s
 		}
 		sort.Strings(busyWordsList)
 
+		// Create frequency class mapping for busy words
+		busyWordClasses := make(map[string]int)
+		for word := range clusterBusyWords {
+			// Find which frequency class this word belongs to
+			for classIndex, words := range classResults {
+				for _, classWord := range words {
+					if classWord == word {
+						busyWordClasses[word] = classIndex
+						break
+					}
+				}
+			}
+		}
+
 		// Find most typical tweet (medoid)
 		_, medoidIdx, _, _ := findMostTypicalTweets(cluster.Tweets, cfg.Analysis.MinJaccardSimilarity)
 		var mostTypicalTweet *tweets.Tweet
@@ -788,6 +802,7 @@ func runKMeansClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[s
 			"size":               len(cluster.Tweets),
 			"tweets":             cluster.Tweets,
 			"busy_words":         busyWordsList,
+			"busy_word_classes":  busyWordClasses,
 			"first_tweet_time":   timeStr,
 			"most_typical_tweet": mostTypicalTweet,
 			"persistence_info":   persistenceInfo,
@@ -824,7 +839,7 @@ func runKMeansClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[s
 }
 
 // runGraphClustering runs graph-based clustering on tweets
-func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[string]bool, cfg *Config, batchNumber int) {
+func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[string]bool, cfg *Config, batchNumber int, classResults map[int][]string) {
 	// Perform optimized graph clustering
 	clusterer := pipeline.NewOptimizedTweetClusterer(
 		cfg.Analysis.MinJaccardSimilarity,
@@ -874,6 +889,20 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 		}
 		sort.Strings(busyWordsList)
 
+		// Create frequency class mapping for busy words
+		busyWordClasses := make(map[string]int)
+		for word := range clusterBusyWords {
+			// Find which frequency class this word belongs to
+			for classIndex, words := range classResults {
+				for _, classWord := range words {
+					if classWord == word {
+						busyWordClasses[word] = classIndex
+						break
+					}
+				}
+			}
+		}
+
 		// Find most typical tweet (medoid)
 		_, medoidIdx, _, _ := findMostTypicalTweets(cluster.Tweets, cfg.Analysis.MinJaccardSimilarity)
 		var mostTypicalTweet *tweets.Tweet
@@ -918,6 +947,7 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 			"size":               len(cluster.Tweets),
 			"tweets":             cluster.Tweets,
 			"busy_words":         busyWordsList,
+			"busy_word_classes":  busyWordClasses,
 			"first_tweet_time":   timeStr,
 			"most_typical_tweet": mostTypicalTweet,
 			"persistence_info":   persistenceInfo,

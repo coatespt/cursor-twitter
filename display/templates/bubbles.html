@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Busyword Bubbles - Batch {{.CurrentBatch}}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            max-width: 1800px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            padding: 20px;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #eee;
+        }
+
+        .title {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .navigation {
+            display: flex;
+            gap: 10px;
+        }
+
+        .nav-button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s;
+        }
+
+        .nav-button:hover {
+            background-color: #0056b3;
+        }
+
+        .nav-button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        .view-toggle {
+            margin-left: 20px;
+        }
+
+        .view-toggle a {
+            padding: 8px 16px;
+            background-color: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 14px;
+            margin-right: 10px;
+        }
+
+        .view-toggle a:hover {
+            background-color: #218838;
+        }
+
+        .batch-info {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #666;
+            font-size: 16px;
+            font-weight: bold;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+            height: 70vh;
+        }
+
+        .bubble-panel {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 20px;
+            background: #fafafa;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .bubble-canvas {
+            width: 100%;
+            height: 100%;
+            border: 1px solid #ccc;
+            background: white;
+        }
+
+        .side-panel {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 20px;
+            background: white;
+            overflow-y: auto;
+        }
+
+        .cluster-item {
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 1px solid #e0e0e0;
+            border-radius: 5px;
+            background: #f9f9f9;
+        }
+
+        .cluster-header {
+            font-weight: bold;
+            color: #007bff;
+            margin-bottom: 10px;
+        }
+
+        .medoid-text {
+            font-style: italic;
+            color: #333;
+            margin-bottom: 10px;
+            line-height: 1.4;
+        }
+
+        .cluster-stats {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 8px;
+        }
+
+        .busy-words {
+            font-size: 12px;
+            color: #888;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+            font-style: italic;
+        }
+
+        .end-of-file {
+            text-align: center;
+            padding: 40px;
+            color: #721c24;
+            background-color: #f8d7da;
+            border-radius: 5px;
+        }
+
+        .bubble {
+            position: absolute;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: bold;
+            color: white;
+            text-shadow: 1px 1px 1px rgba(0,0,0,0.5);
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .bubble:hover {
+            transform: scale(1.1);
+        }
+
+        .batch-labels {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .batch-label {
+            margin-right: 20px;
+        }
+
+        .word-list-header {
+            font-weight: bold;
+            color: #007bff;
+            margin-bottom: 15px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #eee;
+            font-size: 16px;
+        }
+
+        .word-list-item {
+            display: flex;
+            gap: 8px;
+            padding: 6px 0;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 12px;
+            align-items: center;
+        }
+
+        .word-batch {
+            background: #007bff;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: bold;
+            min-width: 30px;
+            text-align: center;
+        }
+
+        .word-freq {
+            background: #28a745;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: bold;
+            min-width: 25px;
+            text-align: center;
+        }
+
+        .word-text {
+            color: #333;
+            font-weight: 500;
+            flex: 1;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="title">Busyword Bubble Graph</div>
+            <div class="navigation">
+                <button class="nav-button" onclick="previousBatch()" id="prevBtn">Previous</button>
+                <button class="nav-button" onclick="nextBatch()" id="nextBtn">Next</button>
+                <button class="nav-button" onclick="advanceMultiple(5)">+5</button>
+                <button class="nav-button" onclick="advanceMultiple(10)">+10</button>
+                <div class="view-toggle">
+                    <a href="/grid/{{.CurrentBatch}}">Grid View</a>
+                    <a href="/medoid/{{.CurrentBatch}}">Medoid View</a>
+                </div>
+            </div>
+        </div>
+
+        <div class="batch-info" id="batchInfo">
+            Loading...
+        </div>
+
+        <div class="main-content">
+            <div class="bubble-panel">
+                <canvas id="bubbleCanvas" class="bubble-canvas"></canvas>
+                <div class="batch-labels" id="batchLabels"></div>
+            </div>
+            <div class="side-panel" id="sidePanel">
+                <div class="loading">Loading cluster data...</div>
+            </div>
+        </div>
+        </div>
+    </div>
+
+    <script>
+        let currentBatch = {{.CurrentBatch}};
+        let canvas, ctx;
+        let bubbleData = null;
+        let tooltip = null;
+        let tooltipTimeout = null;
+
+        // Initialize canvas
+        function initCanvas() {
+            canvas = document.getElementById('bubbleCanvas');
+            ctx = canvas.getContext('2d');
+            
+            // Set canvas size to match container
+            const container = canvas.parentElement;
+            canvas.width = container.clientWidth - 40; // Account for padding
+            canvas.height = container.clientHeight - 40;
+        }
+
+        // Load bubble data from API
+        async function loadBubbleData() {
+            const batchInfo = document.getElementById('batchInfo');
+            const sidePanel = document.getElementById('sidePanel');
+
+            try {
+                batchInfo.textContent = 'Loading bubble data...';
+                sidePanel.innerHTML = '<div class="loading">Loading cluster data...</div>';
+
+                const response = await fetch(`/api/bubble-data/${currentBatch}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+                
+                // Check if we got empty data
+                if (!data.bubble_words || data.bubble_words.length === 0) {
+                    if (data.current_batch === -1) {
+                        // End of file reached
+                        batchInfo.textContent = 'Reached end of input file. No more batches available.';
+                        sidePanel.innerHTML = '<div class="end-of-file">Reached end of input file. No more batches available.</div>';
+                    } else {
+                        batchInfo.textContent = 'No data available for this batch.';
+                        sidePanel.innerHTML = '<div class="loading">No data available for this batch.</div>';
+                    }
+                    return;
+                }
+                
+                bubbleData = data;
+                
+                // Update batch info
+                batchInfo.textContent = data.batch_info;
+                
+                // Render bubbles
+                renderBubbles();
+                
+                // Update side panel
+                renderSidePanel();
+                
+            } catch (error) {
+                console.error('Error loading bubble data:', error);
+                batchInfo.textContent = 'Error loading data. Please try again.';
+                sidePanel.innerHTML = '<div class="loading">Error loading data. Please try again.</div>';
+            }
+        }
+
+        // Render bubbles on canvas
+        function renderBubbles() {
+            if (!bubbleData || !bubbleData.bubble_words) return;
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            const bubbles = bubbleData.bubble_words;
+            const numBatches = bubbleData.num_batches;
+            
+            // Calculate positioning
+            const margin = 50;
+            const availableWidth = canvas.width - 2 * margin;
+            const availableHeight = canvas.height - 2 * margin;
+            const batchWidth = availableWidth / numBatches;
+            
+            // Draw batch separators (vertical lines)
+            ctx.strokeStyle = '#e0e0e0';
+            ctx.lineWidth = 1;
+            for (let i = 1; i < numBatches; i++) {
+                const x = margin + i * batchWidth;
+                ctx.beginPath();
+                ctx.moveTo(x, margin);
+                ctx.lineTo(x, canvas.height - margin);
+                ctx.stroke();
+            }
+            
+            // Draw bubbles
+            bubbles.forEach(bubble => {
+                // X position: right to left based on batch position
+                const x = margin + (numBatches - 1 - bubble.batch_position) * batchWidth + batchWidth / 2;
+                
+                // Y position: use consistent position from data
+                const y = margin + bubble.y_position * (availableHeight - 100) + 50;
+                
+                // Bubble size based on statistical divergence
+                const radius = 15 + bubble.bubble_size * 25;
+                
+                // Color based on frequency class - different shades of the same base color
+                const frequencyClass = bubble.frequency_class;
+                const maxClass = 24; // 24 frequency classes
+                const normalizedClass = Math.min(frequencyClass / maxClass, 1.0);
+                
+                // Get base color from config, default to blue
+                const baseColor = bubbleData.bubble_color || 'blue';
+                
+                // Convert base color to HSL and create shades
+                let hue, saturation, lightness;
+                if (baseColor === 'blue') {
+                    hue = 210; // Blue
+                } else if (baseColor === 'green') {
+                    hue = 120; // Green
+                } else if (baseColor === 'purple') {
+                    hue = 270; // Purple
+                } else if (baseColor === 'red') {
+                    hue = 0; // Red
+                } else if (baseColor === 'orange') {
+                    hue = 30; // Orange
+                } else {
+                    hue = 210; // Default to blue
+                }
+                
+                // Create 24 different shades by varying lightness
+                // Frequency class 1 (rarest) = lightest shade, class 24 (most common) = darkest shade
+                saturation = 70; // Keep saturation consistent
+                lightness = 90 - (normalizedClass * 60); // 90% to 30% lightness range
+                
+                ctx.fillStyle = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+                ctx.strokeStyle = '#333';
+                ctx.lineWidth = 2;
+                
+                // Draw bubble
+                ctx.beginPath();
+                ctx.arc(x, y, radius, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.stroke();
+                
+                // Draw word text
+                ctx.fillStyle = 'white';
+                ctx.font = 'bold 10px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                
+                // Truncate long words
+                const displayText = bubble.word.length > 8 ? bubble.word.substring(0, 8) + '...' : bubble.word;
+                ctx.fillText(displayText, x, y);
+            });
+            
+            // Draw batch labels
+            renderBatchLabels(numBatches, margin, availableWidth);
+            
+            // Draw word list in rightmost column
+            renderWordListInGrid();
+        }
+
+        // Render batch labels
+        function renderBatchLabels(numBatches, margin, availableWidth) {
+            const batchWidth = availableWidth / numBatches;
+            const labelsContainer = document.getElementById('batchLabels');
+            labelsContainer.innerHTML = '';
+            
+            for (let i = 0; i < numBatches; i++) {
+                const batchNum = currentBatch - i;
+                if (batchNum >= 0) {
+                    const label = document.createElement('span');
+                    label.className = 'batch-label';
+                    label.textContent = `B${batchNum}`;
+                    labelsContainer.appendChild(label);
+                }
+            }
+        }
+
+        // Render side panel with cluster data
+        function renderSidePanel() {
+            if (!bubbleData || !bubbleData.medoid_clusters) return;
+            
+            const sidePanel = document.getElementById('sidePanel');
+            let html = '';
+            
+            bubbleData.medoid_clusters.forEach(cluster => {
+                html += `
+                    <div class="cluster-item">
+                        <div class="cluster-header">Cluster ${cluster.cluster_id}</div>
+                        <div class="medoid-text">${escapeHtml(cluster.medoid_text)}</div>
+                        <div class="cluster-stats">Size: ${cluster.cluster_size} tweets</div>
+                        <div class="busy-words">Busy words: ${cluster.busy_words.join(', ')}</div>
+                    </div>
+                `;
+            });
+            
+            sidePanel.innerHTML = html;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function previousBatch() {
+            if (currentBatch > 0) {
+                currentBatch--;
+                window.history.pushState(null, '', `/bubbles/${currentBatch}`);
+                loadBubbleData();
+            }
+        }
+
+        function nextBatch() {
+            currentBatch++;
+            window.history.pushState(null, '', `/bubbles/${currentBatch}`);
+            loadBubbleData();
+        }
+
+        function advanceMultiple(count) {
+            currentBatch += count;
+            window.history.pushState(null, '', `/bubbles/${currentBatch}`);
+            loadBubbleData();
+        }
+
+        // Handle browser back/forward buttons
+        window.addEventListener('popstate', function() {
+            const path = window.location.pathname;
+            const match = path.match(/\/bubbles\/(\d+)/);
+            if (match) {
+                currentBatch = parseInt(match[1]);
+                loadBubbleData();
+            }
+        });
+
+        // Handle window resize
+        window.addEventListener('resize', function() {
+            initCanvas();
+            if (bubbleData) {
+                renderBubbles();
+            }
+        });
+
+        // Handle mouse movement for tooltips
+        function handleMouseMove(event) {
+            if (!bubbleData || !bubbleData.bubble_words) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = event.clientX - rect.left;
+            const mouseY = event.clientY - rect.top;
+            
+            // Find which bubble the mouse is over
+            const margin = 50;
+            const availableWidth = canvas.width - 2 * margin;
+            const availableHeight = canvas.height - 2 * margin;
+            const numBatches = bubbleData.num_batches;
+            const batchWidth = availableWidth / numBatches;
+            
+            let hoveredBubble = null;
+            
+            // Check each bubble (in reverse order so topmost bubble is found first)
+            for (let i = bubbleData.bubble_words.length - 1; i >= 0; i--) {
+                const bubble = bubbleData.bubble_words[i];
+                const x = margin + (numBatches - 1 - bubble.batch_position) * batchWidth + batchWidth / 2;
+                const y = margin + bubble.y_position * (availableHeight - 100) + 50;
+                const radius = 15 + bubble.bubble_size * 25;
+                
+                const distance = Math.sqrt((mouseX - x) ** 2 + (mouseY - y) ** 2);
+                if (distance <= radius) {
+                    hoveredBubble = bubble;
+                    break; // Found the topmost bubble
+                }
+            }
+            
+            // Show/hide tooltip
+            if (hoveredBubble) {
+                showTooltip(hoveredBubble, mouseX, mouseY);
+            } else {
+                hideTooltip();
+            }
+        }
+
+        function showTooltip(bubble, mouseX, mouseY) {
+            if (tooltipTimeout) {
+                clearTimeout(tooltipTimeout);
+                tooltipTimeout = null;
+            }
+            
+            if (!tooltip) {
+                tooltip = document.createElement('div');
+                tooltip.style.position = 'absolute';
+                tooltip.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+                tooltip.style.color = 'white';
+                tooltip.style.padding = '8px 12px';
+                tooltip.style.borderRadius = '4px';
+                tooltip.style.fontSize = '12px';
+                tooltip.style.fontFamily = 'Arial, sans-serif';
+                tooltip.style.pointerEvents = 'none';
+                tooltip.style.zIndex = '1000';
+                tooltip.style.maxWidth = '200px';
+                tooltip.style.wordWrap = 'break-word';
+                document.body.appendChild(tooltip);
+            }
+            
+            tooltip.innerHTML = `
+                <strong>${bubble.word}</strong><br>
+                Batch: ${bubble.batch_position}<br>
+                F-Class: ${bubble.frequency_class}<br>
+                Divergence: ${bubble.divergence_score.toFixed(2)}
+            `;
+            
+            // Position tooltip near mouse but keep it on screen
+            const tooltipWidth = tooltip.offsetWidth;
+            const tooltipHeight = tooltip.offsetHeight;
+            const canvasRect = canvas.getBoundingClientRect();
+            
+            let tooltipX = mouseX + canvasRect.left + 10;
+            let tooltipY = mouseY + canvasRect.top - tooltipHeight - 10;
+            
+            // Adjust if tooltip would go off screen
+            if (tooltipX + tooltipWidth > window.innerWidth) {
+                tooltipX = mouseX + canvasRect.left - tooltipWidth - 10;
+            }
+            if (tooltipY < 0) {
+                tooltipY = mouseY + canvasRect.top + 10;
+            }
+            
+            tooltip.style.left = tooltipX + 'px';
+            tooltip.style.top = tooltipY + 'px';
+            tooltip.style.display = 'block';
+        }
+
+        function hideTooltip() {
+            if (tooltipTimeout) {
+                clearTimeout(tooltipTimeout);
+            }
+            
+            tooltipTimeout = setTimeout(() => {
+                if (tooltip) {
+                    tooltip.style.display = 'none';
+                }
+            }, 100); // Small delay to prevent flickering
+        }
+
+        // Render word list in rightmost grid column
+        function renderWordListInGrid() {
+            if (!bubbleData || !bubbleData.word_list) return;
+            
+            const margin = 50;
+            const availableWidth = canvas.width - 2 * margin;
+            const availableHeight = canvas.height - 2 * margin;
+            const numBatches = bubbleData.num_batches;
+            const batchWidth = availableWidth / numBatches;
+            
+            // Position for rightmost column (batch position 0)
+            const rightmostX = margin + (numBatches - 1) * batchWidth + batchWidth / 2;
+            
+            // Calculate how many words can fit
+            const headerHeight = 30;
+            const wordHeight = 20;
+            const startY = margin + headerHeight;
+            const maxWords = Math.floor((canvas.height - margin - startY) / wordHeight);
+            
+            // Draw header
+            ctx.fillStyle = '#333';
+            ctx.font = 'bold 12px Arial';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillText('Busy Words', rightmostX - batchWidth/2 + 10, margin + 10);
+            
+            // Draw words that fit
+            const wordsToShow = bubbleData.word_list.slice(0, maxWords);
+            wordsToShow.forEach((wordInfo, index) => {
+                const y = startY + (index * wordHeight);
+                const batchId = wordInfo.batch_id;
+                const freqClass = wordInfo.frequency_class;
+                const word = wordInfo.word;
+                
+                // Draw background for the word entry
+                const text = `${batchId} ${freqClass} ${word}`;
+                const textWidth = ctx.measureText(text).width;
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                ctx.fillRect(rightmostX - batchWidth/2 + 7, y - 1, textWidth + 6, 18);
+                
+                // Draw the text
+                ctx.fillStyle = '#333';
+                ctx.font = '10px Arial';
+                ctx.fillText(text, rightmostX - batchWidth/2 + 10, y);
+            });
+            
+            // Show count if some words were cut off
+            if (bubbleData.word_list.length > maxWords) {
+                const remainingCount = bubbleData.word_list.length - maxWords;
+                ctx.fillStyle = '#666';
+                ctx.font = '9px Arial';
+                ctx.fillText(`+${remainingCount} more`, rightmostX - batchWidth/2 + 10, startY + (maxWords * wordHeight) + 5);
+            }
+        }
+
+        // Load initial data
+        document.addEventListener('DOMContentLoaded', function() {
+            initCanvas();
+            loadBubbleData();
+            
+            // Add mouse event listeners for tooltips
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('mouseleave', hideTooltip);
+        });
+    </script>
+
+    <!-- Frequency Class Legend -->
+    <div class="legend" style="position: fixed; bottom: 20px; left: 20px; background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); z-index: 1000;">
+        <h4 style="margin: 0 0 10px 0; color: #333;">Frequency Class Colors</h4>
+        <div style="display: flex; flex-direction: column; gap: 5px; font-size: 12px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <div style="width: 20px; height: 20px; background: linear-gradient(to right, #e3f2fd, #1976d2); border-radius: 50%;"></div>
+                <span>Rare words (low frequency class)</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <div style="width: 20px; height: 20px; background: linear-gradient(to right, #1976d2, #0d47a1); border-radius: 50%;"></div>
+                <span>Common words (high frequency class)</span>
+            </div>
+            <div style="margin-top: 8px; font-size: 11px; color: #666;">
+                <strong>Bubble size:</strong> Based on statistical divergence<br>
+                <strong>Position:</strong> Current batch = right, older = left
+            </div>
+        </div>
+    </div>
+</body>
+</html>

@@ -24,6 +24,8 @@ type Config struct {
 	MinClusterSize      int     `yaml:"min_cluster_size"`
 	RecurrenceThreshold float64 `yaml:"recurrence_threshold"`
 	RecurrenceStrategy  string  `yaml:"recurrence_strategy"`
+	BubbleBatches       int     `yaml:"bubble_batches"`
+	BubbleColor         string  `yaml:"bubble_color"` // Base color for bubbles (e.g., "blue", "green", "purple")
 }
 
 // calculateNormalizedLevenshtein calculates the normalized Levenshtein distance between two strings
@@ -209,6 +211,9 @@ func main() {
 	http.HandleFunc("/medoid/", handleMedoid)       // Medoid with batch number
 	http.HandleFunc("/api/medoid-data/", handleMedoidDataAPI)
 	http.HandleFunc("/api/cluster-data/", handleClusterDataAPI)
+	http.HandleFunc("/bubbles", handleBubblesDefault) // Default bubbles route
+	http.HandleFunc("/bubbles/", handleBubbles)       // Bubbles with batch number
+	http.HandleFunc("/api/bubble-data/", handleBubbleDataAPI)
 
 	fmt.Printf("Starting server on http://localhost:8080\n")
 	fmt.Printf("Loaded %d batches from initial chunk of %s (chunked loading enabled)\n", len(allBatches), config.InputFile)
@@ -237,8 +242,20 @@ func loadData() error {
 	fileHandle = file
 	fileOffset = 0
 
-	// Load initial chunk (just a few batches for fast startup)
-	return loadNextChunk()
+	// Load initial chunks to get frequency class data
+	fmt.Printf("Loading initial data to find frequency class mappings...\n")
+	for i := 0; i < 5; i++ { // Load first 5 chunks (5MB) to get frequency class data
+		if err := loadNextChunk(); err != nil {
+			if strings.Contains(err.Error(), "end of file") {
+				break // Reached end of file
+			}
+			return err
+		}
+		fmt.Printf("Loaded chunk %d, now have %d batches\n", i+1, len(allBatches))
+	}
+
+	fmt.Printf("Initial load complete: %d batches loaded\n", len(allBatches))
+	return nil
 }
 
 func loadNextChunk() error {
@@ -1487,6 +1504,259 @@ func calculatePersistence(clusterID, histBatch, currentBatch int) int {
 	return 0
 }
 
+func handleBubblesDefault(w http.ResponseWriter, r *http.Request) {
+	// Redirect to the latest batch with data
+	if len(allBatches) > 0 {
+		latestBatch := len(allBatches) - 1
+		http.Redirect(w, r, fmt.Sprintf("/bubbles/%d", latestBatch), http.StatusSeeOther)
+	} else {
+		http.Error(w, "No data available", http.StatusNotFound)
+	}
+}
+
+func handleBubbles(w http.ResponseWriter, r *http.Request) {
+	// Extract batch number from URL
+	path := r.URL.Path
+	batchNumStr := path[len("/bubbles/"):]
+	batchNum, err := strconv.Atoi(batchNumStr)
+	if err != nil {
+		http.Error(w, "Invalid batch number", http.StatusBadRequest)
+		return
+	}
+
+	if batchNum < 0 || batchNum >= len(allBatches) {
+		http.Error(w, "Batch number out of range", http.StatusBadRequest)
+		return
+	}
+
+	// Render the bubbles template
+	data := map[string]interface{}{
+		"CurrentBatch": batchNum,
+		"TotalBatches": len(allBatches),
+	}
+
+	if err := templates.ExecuteTemplate(w, "bubbles.html", data); err != nil {
+		http.Error(w, "Template error", http.StatusInternalServerError)
+		return
+	}
+}
+
+func handleBubbleDataAPI(w http.ResponseWriter, r *http.Request) {
+	// Extract batch number from URL
+	path := r.URL.Path
+	batchNumStr := path[len("/api/bubble-data/"):]
+	batchNum, err := strconv.Atoi(batchNumStr)
+	if err != nil {
+		http.Error(w, "Invalid batch number", http.StatusBadRequest)
+		return
+	}
+
+	if batchNum < 0 || batchNum >= len(allBatches) {
+		http.Error(w, "Batch number out of range", http.StatusBadRequest)
+		return
+	}
+
+	// Compute bubble data
+	bubbleData := computeBubbleData(batchNum, config.BubbleBatches, config.MinClusterSize)
+
+	// Set response headers
+	w.Header().Set("Content-Type", "application/json")
+
+	// Encode and send response
+	if err := json.NewEncoder(w).Encode(bubbleData); err != nil {
+		http.Error(w, "JSON encoding error", http.StatusInternalServerError)
+		return
+	}
+}
+
+func computeBubbleData(batchNum, historicalBatches, minClusterSize int) map[string]interface{} {
+	// Get historical batch numbers (current batch and previous batches)
+	historicalBatchNumbers := make([]int, 0)
+	for i := 0; i < historicalBatches; i++ {
+		histBatch := batchNum - i
+		if histBatch >= 0 {
+			historicalBatchNumbers = append(historicalBatchNumbers, histBatch)
+		}
+	}
+
+	// Track active words and their positions across time
+	activeWords := make(map[string]*BubbleWord)
+	medoidClusters := make([]MedoidRow, 0)
+
+	// Process batches from oldest to newest to track word evolution
+	for i := len(historicalBatchNumbers) - 1; i >= 0; i-- {
+		histBatch := historicalBatchNumbers[i]
+		// batchPos := len(historicalBatchNumbers) - 1 - i // 0 = current (right), 1 = previous, etc.
+
+		if histBatch >= len(allBatches) {
+			continue
+		}
+
+		batch := allBatches[histBatch]
+		clustersInterface, ok := batch.Data.Clusters.([]interface{})
+		if !ok {
+			continue
+		}
+
+		// Extract busy words from all clusters in this batch
+		for _, clusterInterface := range clustersInterface {
+			clusterMap, ok := clusterInterface.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			size, _ := clusterMap["size"].(float64)
+			if int(size) < minClusterSize {
+				continue
+			}
+
+			// Get busy words and their frequency classes
+			if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
+				busyWordClasses, _ := clusterMap["busy_word_classes"].(map[string]interface{})
+
+				for _, wordInterface := range busyWordsInterface {
+					word, ok := wordInterface.(string)
+					if !ok {
+						continue
+					}
+
+					// Get frequency class for this word
+					frequencyClass := 12 // Default middle frequency class
+					if freqClassInterface, exists := busyWordClasses[word]; exists {
+						if freqClass, ok := freqClassInterface.(float64); ok {
+							frequencyClass = int(freqClass)
+						}
+					}
+
+					// TEMPORARY: Assign different frequency classes for testing
+					// Use hash of word to get different classes
+					hash := 0
+					for _, char := range word {
+						hash = (hash*31 + int(char)) % 24
+					}
+					frequencyClass = hash + 1 // 1-24 range
+
+					// Calculate divergence score based on how much the word's frequency exceeds its nominal class
+					// For now, use a simple heuristic: rarer words (lower frequency class) have higher divergence
+					divergenceScore := 1.0 - (float64(frequencyClass) / 24.0) // Assuming 24 frequency classes
+
+					// Check if this word is already being tracked
+					if existingBubble, exists := activeWords[word]; exists {
+						// Word reappeared - snap back to current position (right side)
+						existingBubble.BatchPosition = 0
+						existingBubble.FrequencyClass = frequencyClass
+						existingBubble.DivergenceScore = divergenceScore
+						existingBubble.ColorIntensity = float64(frequencyClass) / 24.0
+						existingBubble.BubbleSize = divergenceScore
+					} else {
+						// New word - create bubble at current position
+						colorIntensity := float64(frequencyClass) / 24.0
+						bubbleSize := divergenceScore
+
+						// Assign Y position based on frequency class (0 = top, 1 = bottom)
+						yPosition := float64(frequencyClass) / 24.0
+
+						bubbleWord := &BubbleWord{
+							Word:            word,
+							FrequencyClass:  frequencyClass,
+							DivergenceScore: divergenceScore,
+							BatchPosition:   0, // Current batch (right side)
+							ColorIntensity:  colorIntensity,
+							BubbleSize:      bubbleSize,
+							YPosition:       yPosition,
+						}
+
+						activeWords[word] = bubbleWord
+					}
+				}
+			}
+
+			// Also collect medoid data for the side panel (only from current batch)
+			if i == 0 {
+				clusterID, _ := clusterMap["cluster_id"].(float64)
+				medoidText := ""
+				if medoid, ok := clusterMap["medoid"].(string); ok {
+					medoidText = medoid
+				}
+
+				var busyWords []string
+				if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
+					for _, word := range busyWordsInterface {
+						if wordStr, ok := word.(string); ok {
+							busyWords = append(busyWords, wordStr)
+						}
+					}
+				}
+
+				medoidRow := MedoidRow{
+					BatchNumber: batchNum,
+					BatchTime:   batch.Data.BatchTime,
+					ClusterID:   int(clusterID),
+					ClusterSize: int(size),
+					MedoidText:  medoidText,
+					BusyWords:   busyWords,
+				}
+
+				medoidClusters = append(medoidClusters, medoidRow)
+			}
+		}
+
+		// Age all existing words (move them left)
+		for _, bubble := range activeWords {
+			if bubble.BatchPosition < len(historicalBatchNumbers)-1 {
+				bubble.BatchPosition++
+			}
+		}
+	}
+
+	// Convert map to slice and filter out words that have fallen off the left edge
+	bubbleWords := make([]BubbleWord, 0)
+	wordList := make([]map[string]interface{}, 0) // For the far-right column
+
+	for _, bubble := range activeWords {
+		if bubble.BatchPosition < len(historicalBatchNumbers) {
+			bubbleWords = append(bubbleWords, *bubble)
+		}
+
+		// Add to word list for far-right column (all active words)
+		// Calculate the actual batch where this word originated
+		actualBatchId := batchNum - bubble.BatchPosition
+		wordList = append(wordList, map[string]interface{}{
+			"batch_id":        actualBatchId,
+			"frequency_class": bubble.FrequencyClass,
+			"word":            bubble.Word,
+		})
+	}
+
+	// Sort word list by batch (latest first), then lexically within each batch
+	sort.Slice(wordList, func(i, j int) bool {
+		batchI := wordList[i]["batch_id"].(int)
+		batchJ := wordList[j]["batch_id"].(int)
+		if batchI != batchJ {
+			return batchI > batchJ // Latest batch first
+		}
+		wordI := wordList[i]["word"].(string)
+		wordJ := wordList[j]["word"].(string)
+		return wordI < wordJ
+	})
+
+	// Create batch info string
+	currentBatch := allBatches[batchNum]
+	batchInfo := fmt.Sprintf("Batch %d - %s | Clusters: %d | Active Words: %d",
+		batchNum, currentBatch.Data.BatchTime, len(medoidClusters), len(bubbleWords))
+
+	return map[string]interface{}{
+		"current_batch":   batchNum,
+		"batch_time":      currentBatch.Data.BatchTime,
+		"batch_info":      batchInfo,
+		"bubble_words":    bubbleWords,
+		"medoid_clusters": medoidClusters,
+		"num_batches":     len(historicalBatchNumbers),
+		"bubble_color":    config.BubbleColor,
+		"word_list":       wordList,
+	}
+}
+
 func handleClusterDataAPI(w http.ResponseWriter, r *http.Request) {
 	// Extract batch number and cluster ID from URL
 	path := r.URL.Path
@@ -1568,4 +1838,25 @@ func handleClusterDataAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "JSON encoding error", http.StatusInternalServerError)
 		return
 	}
+}
+
+// BubbleWord represents a single busyword in the bubble graph
+type BubbleWord struct {
+	Word            string  `json:"word"`
+	FrequencyClass  int     `json:"frequency_class"`
+	DivergenceScore float64 `json:"divergence_score"`
+	BatchPosition   int     `json:"batch_position"` // 0 = current, 1 = previous, etc.
+	ColorIntensity  float64 `json:"color_intensity"`
+	BubbleSize      float64 `json:"bubble_size"`
+	YPosition       float64 `json:"y_position"` // Consistent Y position for tracking
+}
+
+// BubbleData represents the complete bubble graph data
+type BubbleData struct {
+	CurrentBatch   int          `json:"current_batch"`
+	BatchTime      string       `json:"batch_time"`
+	BatchInfo      string       `json:"batch_info"`
+	BubbleWords    []BubbleWord `json:"bubble_words"`
+	MedoidClusters []MedoidRow  `json:"medoid_clusters"`
+	NumBatches     int          `json:"num_batches"`
 }

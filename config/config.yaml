@@ -98,6 +98,8 @@ bw_array_len: 1250
 #   of useful information "the", "an", "lol" and muddy things up while still costing
 #   compute cycles. This would have a similar effect to putting huge values in 
 #   the z_scores table above but it skips the computation entirely
+
+
 skip_frequency_classes: [1]  
 
 # Minimum count threshold for frequency class inclusion (0 = no threshold)
