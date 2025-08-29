@@ -170,8 +170,14 @@ var (
 )
 
 func main() {
-	// Load configuration
-	if err := loadConfig(); err != nil {
+	// Get config path from command line or use default
+	configPath := "config.yaml"
+	if len(os.Args) > 1 {
+		configPath = os.Args[1]
+	}
+
+	// Load configuration with path resolution
+	if err := loadConfigWithPathResolution(configPath); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 

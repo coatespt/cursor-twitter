@@ -6,7 +6,7 @@ all: build
 # Build the executable
 build:
 	@echo "Building twitter-pipeline executable..."
-	go build -o twitter-pipeline src/main.go
+	go build -o twitter-pipeline src/*.go
 	@echo "Build complete!"
 
 # Build language detector

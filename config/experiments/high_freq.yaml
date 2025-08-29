@@ -1,0 +1,15 @@
+# High frequency classes experiment
+# This override file changes only the experimental parameters
+
+# Increase frequency classes from 24 to 32
+freq_classes: 32
+
+# Adjust z-scores for the higher number of frequency classes
+z_scores: [7.0, 7.0, 8.0, 7.5, 7.5, 6.5, 6.5, 6.5, 6.5, 6.5, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0]
+
+# Adjust busy word classes for the new frequency class count
+busyword_classes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+
+# Increase minimum busy words per tweet for more focused clustering
+analysis:
+  min_busy_words_per_tweet: 3

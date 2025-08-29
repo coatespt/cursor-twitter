@@ -1,0 +1,11 @@
+# Low threshold experiment
+# This override file changes only the experimental parameters
+
+# Lower z-scores for more sensitive detection
+z_scores: [4.0, 4.0, 5.0, 4.5, 4.5, 3.5, 3.5, 3.5, 3.5, 3.5, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+
+# Lower minimum busy words per tweet for more inclusive clustering
+analysis:
+  min_busy_words_per_tweet: 1
+  min_jaccard_similarity: 0.2
+  min_cluster_size: 3

@@ -352,6 +352,47 @@ skip_frequency_classes: [1, 2, 3]
 	}
 }
 
+// TestResolvePathRelativeToConfig tests the path resolution functionality.
+//
+// Rationale: This test ensures that when a relative path is provided in the config,
+// it is correctly resolved relative to the config file's directory.
+func TestResolvePathRelativeToConfig(t *testing.T) {
+	tests := []struct {
+		name         string
+		configPath   string
+		relativePath string
+		expected     string
+	}{
+		{
+			name:         "absolute path unchanged",
+			configPath:   "/home/user/config.yaml",
+			relativePath: "/absolute/path",
+			expected:     "/absolute/path",
+		},
+		{
+			name:         "relative path resolved",
+			configPath:   "/home/user/config.yaml",
+			relativePath: "logs",
+			expected:     "/home/user/logs",
+		},
+		{
+			name:         "relative path with parent directory",
+			configPath:   "/home/user/project/config.yaml",
+			relativePath: "../data",
+			expected:     "/home/user/data",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := resolvePathRelativeToConfig(tt.configPath, tt.relativePath)
+			if result != tt.expected {
+				t.Errorf("resolvePathRelativeToConfig() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
 // Helper function to create a temporary config file for testing
 //
 // Rationale: Tests need to create temporary config files to test various scenarios.

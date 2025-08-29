@@ -538,6 +538,50 @@ analysis:
   cleanup_max_items: 4000          # Max items per cleanup
 ```
 
+### Configuration Overrides
+
+The pipeline supports config overrides for easy experimentation. You can create override files that contain only the parameters you want to change, and the system will merge them with the base config.
+
+**Usage:**
+```bash
+# Run with base config only
+./main -config config/config.yaml
+
+# Run with base config + override for experiments
+./main -config config/config.yaml -override config/experiments/high_freq.yaml
+
+# Run with different override
+./main -config config/config.yaml -override config/experiments/low_threshold.yaml
+```
+
+**Example Override Files:**
+
+**`config/experiments/high_freq.yaml`**:
+```yaml
+# Only specify what you're changing
+freq_classes: 32
+z_scores: [7.0, 7.0, 8.0, 7.5, 7.5, 6.5, 6.5, 6.5, 6.5, 6.5, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0]
+busyword_classes: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+analysis:
+  min_busy_words_per_tweet: 3
+```
+
+**`config/experiments/low_threshold.yaml`**:
+```yaml
+# Lower thresholds for more sensitive detection
+z_scores: [4.0, 4.0, 5.0, 4.5, 4.5, 3.5, 3.5, 3.5, 3.5, 3.5, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+analysis:
+  min_busy_words_per_tweet: 1
+  min_jaccard_similarity: 0.2
+  min_cluster_size: 3
+```
+
+**Benefits:**
+- **Minimal files**: Only specify what you're changing
+- **Easy tracking**: Each override file focuses on specific parameters
+- **No duplication**: Don't repeat all the common settings
+- **Clear intent**: Obvious what each experiment is testing
+
 ### Building Configuration
 
 Use the Makefile for building all utilities:

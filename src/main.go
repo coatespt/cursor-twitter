@@ -1008,26 +1008,8 @@ func loadAndValidateConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("ERROR: 'log_dir' must be defined in the config file and cannot be empty.")
 	}
 
-	// Load and compile banned phrases
-	if cfg.Analysis.FilterRepetitivePatterns {
-		var patterns []*regexp.Regexp
-		var err error
-
-		// Try directory first (new approach)
-		if cfg.Analysis.BannedPhrasesDir != "" {
-			patterns, err = loadBannedPhrasesFromDirectory(cfg.Analysis.BannedPhrasesDir)
-		} else if cfg.Analysis.BannedPhrasesFile != "" {
-			// Fall back to single file (backward compatibility)
-			patterns, err = loadBannedPhrases(cfg.Analysis.BannedPhrasesFile)
-		} else {
-			return nil, fmt.Errorf("neither banned_phrases_dir nor banned_phrases_file specified in config")
-		}
-
-		if err != nil {
-			return nil, fmt.Errorf("failed to load banned phrases: %v", err)
-		}
-		cfg.Analysis.CompiledBannedPatterns = patterns
-	}
+	// Note: Banned phrases loading moved to after path resolution
+	// to handle relative paths correctly
 
 	return cfg, nil
 }
@@ -1219,6 +1201,7 @@ func main() {
 	// Add a command line flag to control printing of tweets
 	printTweets := flag.Bool("print-tweets", true, "Print each parsed tweet to the console")
 	configPath := flag.String("config", "config/config.yaml", "Path to YAML config file")
+	overridePath := flag.String("override", "", "Path to YAML override config file (optional)")
 	loadState := flag.Bool("load-state", false, "Load persisted state from files on startup")
 	enableProfiling := flag.Bool("profile", false, "Enable CPU profiling (creates cpu.prof)")
 	flag.Parse()
@@ -1237,8 +1220,8 @@ func main() {
 		LogInfo(func() string { return "CPU profiling enabled - will create cpu.prof file" })
 	}
 
-	// Load config from YAML file.
-	cfg, err := loadAndValidateConfig(*configPath)
+	// Load config from YAML file with path resolution and optional override.
+	cfg, err := loadConfigWithOverride(*configPath, *overridePath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
