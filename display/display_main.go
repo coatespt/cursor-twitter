@@ -244,7 +244,7 @@ func loadData() error {
 
 	// Load initial chunks to get frequency class data
 	fmt.Printf("Loading initial data to find frequency class mappings...\n")
-	for i := 0; i < 5; i++ { // Load first 5 chunks (5MB) to get frequency class data
+	for i := 0; i < 2; i++ { // Load first 2 chunks (2MB) to get frequency class data
 		if err := loadNextChunk(); err != nil {
 			if strings.Contains(err.Error(), "end of file") {
 				break // Reached end of file
@@ -341,8 +341,33 @@ func loadNextChunk() error {
 // loadMoreChunks loads additional chunks if needed for a specific batch number
 func loadMoreChunks(requiredBatch int) error {
 	fmt.Printf("loadMoreChunks: requested batch %d, currently have %d batches\n", requiredBatch, len(allBatches))
+
+	// Calculate how many chunks we need to load
+	chunksNeeded := (requiredBatch-len(allBatches))/300 + 1 // Rough estimate: ~300 batches per chunk
+	if chunksNeeded > 3 {
+		chunksNeeded = 3 // Cap at 3 chunks at a time to avoid long delays
+	}
+
+	fmt.Printf("loadMoreChunks: loading %d chunks to reach batch %d\n", chunksNeeded, requiredBatch)
+
+	for i := 0; i < chunksNeeded && len(allBatches) <= requiredBatch; i++ {
+		fmt.Printf("loadMoreChunks: loading chunk %d/%d...\n", i+1, chunksNeeded)
+		previousBatchCount := len(allBatches)
+		if err := loadNextChunk(); err != nil {
+			fmt.Printf("loadMoreChunks: error loading chunk: %v\n", err)
+			return err
+		}
+		// If no new batches were loaded, we've reached the end
+		if len(allBatches) == previousBatchCount {
+			fmt.Printf("loadMoreChunks: no more batches available, reached end of file (total batches: %d)\n", len(allBatches))
+			return fmt.Errorf("no more batches available")
+		}
+		fmt.Printf("loadMoreChunks: now have %d batches\n", len(allBatches))
+	}
+
+	// If we still need more chunks, load them in smaller increments
 	for len(allBatches) <= requiredBatch {
-		fmt.Printf("loadMoreChunks: loading next chunk...\n")
+		fmt.Printf("loadMoreChunks: loading additional chunk...\n")
 		previousBatchCount := len(allBatches)
 		if err := loadNextChunk(); err != nil {
 			fmt.Printf("loadMoreChunks: error loading chunk: %v\n", err)
@@ -1524,7 +1549,7 @@ func handleBubbles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if batchNum < 0 || batchNum >= len(allBatches) {
+	if batchNum < 0 {
 		http.Error(w, "Batch number out of range", http.StatusBadRequest)
 		return
 	}
@@ -1551,9 +1576,59 @@ func handleBubbleDataAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if batchNum < 0 || batchNum >= len(allBatches) {
+	if batchNum < 0 {
 		http.Error(w, "Batch number out of range", http.StatusBadRequest)
 		return
+	}
+
+	// If batch number is beyond what we have, check if we can load more
+	if batchNum >= len(allBatches) {
+		fmt.Printf("handleBubbleDataAPI: batch %d >= %d, attempting to load more chunks\n", batchNum, len(allBatches))
+		if err := loadMoreChunks(batchNum); err != nil {
+			if strings.Contains(err.Error(), "no more batches available") {
+				fmt.Printf("handleBubbleDataAPI: reached end of file at batch %d (total batches: %d)\n", batchNum, len(allBatches))
+				// Return end-of-file indicator instead of error
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"current_batch": -1, // Special value to indicate end of file
+					"bubble_words":  []interface{}{},
+				})
+				return
+			} else {
+				fmt.Printf("handleBubbleDataAPI: actual error loading chunks: %v\n", err)
+				http.Error(w, "Error loading data", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
+	// Double-check that we now have the requested batch
+	if batchNum >= len(allBatches) {
+		fmt.Printf("handleBubbleDataAPI: batch %d still out of range after loading chunks (total: %d)\n", batchNum, len(allBatches))
+		http.Error(w, "Batch number out of range", http.StatusBadRequest)
+		return
+	}
+
+	// Check if the requested batch has data, if not find the next one that does
+	originalBatch := batchNum
+	hasData := hasDataForBatch(batchNum, config.MinClusterSize)
+	fmt.Printf("handleBubbleDataAPI: batch %d hasDataForBatch returned %v\n", batchNum, hasData)
+	if !hasData {
+		fmt.Printf("Batch %d has no data (min cluster size: %d), looking for next batch with data\n", batchNum, config.MinClusterSize)
+		nextBatch := findNextBatchWithData(batchNum, 1, config.MinClusterSize)
+		if nextBatch != batchNum {
+			batchNum = nextBatch
+			fmt.Printf("Auto-advancing from batch %d to batch %d\n", originalBatch, batchNum)
+		} else {
+			// Try going backwards if no next batch found
+			prevBatch := findNextBatchWithData(originalBatch, -1, config.MinClusterSize)
+			if prevBatch != originalBatch {
+				batchNum = prevBatch
+				fmt.Printf("Auto-advancing from batch %d to previous batch %d\n", originalBatch, batchNum)
+			} else {
+				fmt.Printf("No batches with data found around batch %d\n", originalBatch)
+			}
+		}
 	}
 
 	// Compute bubble data

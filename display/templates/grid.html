@@ -65,6 +65,24 @@
             cursor: not-allowed;
         }
 
+        .view-toggle {
+            margin-left: 20px;
+        }
+
+        .view-toggle a {
+            padding: 8px 16px;
+            background-color: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 14px;
+            margin-right: 10px;
+        }
+
+        .view-toggle a:hover {
+            background-color: #218838;
+        }
+
         .batch-info {
             text-align: center;
             margin-bottom: 20px;
@@ -335,6 +353,10 @@
             <div class="navigation">
                 <button class="nav-button" id="prevBtn" onclick="navigateBatch(-1)">← Previous</button>
                 <button class="nav-button" id="nextBtn" onclick="navigateBatch(1)">Next →</button>
+                <div class="view-toggle">
+                    <a href="/bubbles/{{.CurrentBatch}}">Bubble View</a>
+                    <a href="/medoid/{{.CurrentBatch}}">Medoid View</a>
+                </div>
             </div>
         </div>
 
