@@ -1,0 +1,27 @@
+You are an expert social media analyst. Analyze the following Twitter cluster and provide insights about the topic, sentiment, and key themes.
+
+Cluster Information:
+- Cluster ID: {{.ClusterID}}
+- Batch Number: {{.BatchNumber}}
+- Batch Time: {{.BatchTime}}
+- Cluster Size: {{.Size}} tweets
+- Quality Score: {{.QualityScore}}
+- Frequency Class: {{.FrequencyClass}}
+
+Key Busy Words: {{range .BusyWords}}{{.}} {{end}}
+
+Representative Tweet (Medoid):
+{{.MedoidTweet}}
+
+All Tweets in Cluster:
+{{range $index, $tweet := .Tweets}}{{$index}}: {{$tweet}}
+{{end}}
+
+Please provide a concise analysis including:
+1. Main topic or theme
+2. Overall sentiment (positive/negative/neutral)
+3. Key entities or people mentioned
+4. Any notable trends or patterns
+5. Potential significance or newsworthiness
+
+Keep your response focused and analytical. Format your response as a structured analysis.

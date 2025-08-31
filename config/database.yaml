@@ -1,0 +1,22 @@
+# PostgreSQL database connection settings for Twitter Pipeline SQL Loader
+database:
+  host: 192.168.1.76
+  port: 5432
+  name: x_twitter
+  user: petercoates
+  password: aardvark1
+  ssl_mode: disable
+  
+  # PostgreSQL-specific settings
+  timezone: UTC
+  application_name: twitter_pipeline_sql_loader
+  
+  # Connection pool settings
+  max_connections: 10
+  max_idle_connections: 5
+  connection_timeout: 30s
+  idle_timeout: 5m
+
+# Processing options
+max_tweets_per_cluster: 50  # Limit tweets per cluster to save space (0 = no limit)
+validate_data: true         # Enable validation warnings for anomalous data

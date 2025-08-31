@@ -1,0 +1,30 @@
+# AI Feeder Configuration
+# This file configures the AI analysis pipeline that reads from PostgreSQL
+# and sends cluster data to AI services for analysis
+
+# AI Service Configuration
+ai:
+  model: "llama3.1:8b"                    # AI model to use (Ollama model name)
+  endpoint: "http://localhost:11434/api/generate"  # Ollama API endpoint
+  timeout: 60                              # Request timeout in seconds
+
+# Database Configuration (same as SQL loader)
+database:
+  host: 192.168.1.76
+  port: 5432
+  name: x_twitter
+  user: petercoates
+  password: aardvark1
+  ssl_mode: disable
+
+# Processing Configuration
+processing:
+  batch_size: 1                           # Clusters to process in parallel (1 for sequential)
+  max_retries: 3                          # Max retries per AI request
+  retry_delay: 5                          # Seconds between retries
+  prompt_template: "prompts/cluster_analysis.txt"  # Path to prompt template file
+  analysis_type: "cluster_summary"        # Type of analysis to perform
+  session_name: "Cluster Analysis Run 1"  # Name for this analysis session
+  run_id: 1                               # Experiment run ID to analyze
+  max_clusters: 100                       # Max clusters to process (0 = all)
+  start_from_cluster: 1                   # Start from specific cluster ID

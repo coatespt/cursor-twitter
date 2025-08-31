@@ -21,9 +21,10 @@ There is no adequate writeup of the meaning of the many config parameters other 
 4. [Parser Scripts](#parser-scripts)
 5. [Test Utilities](#test-utilities)
 6. [Shell Scripts](#shell-scripts)
-7. [Additional Scripts](#additional-scripts)
-8. [Configuration](#configuration)
-9. [Build System](#build-system)
+7. [SQL Loader](#sql-loader)
+8. [Additional Scripts](#additional-scripts)
+9. [Configuration](#configuration)
+10. [Build System](#build-system)
 
 ---
 
@@ -359,6 +360,123 @@ python ./parser/parser.py [options]
 ```bash
 pip install -r parser/requirements.txt
 ```
+
+---
+
+## SQL Loader
+
+### SQL Loader (`src/sql_loader/main.go`)
+
+Loads the JSON output from the main pipeline into a PostgreSQL database for analysis and AI processing. Includes experiment tracking to compare different parameter configurations.
+
+**Build:**
+```bash
+cd src/sql_loader
+go build -o sql_loader main.go
+```
+
+**Basic Usage:**
+```bash
+./sql_loader "Run Name" ../../config/database.yaml ../../config/config.yaml
+```
+
+**With Experimental Config:**
+```bash
+./sql_loader "High Freq Test" ../../config/database.yaml ../../config/config.yaml ../../config/experiments/high_freq.yaml
+```
+
+**With Specific JSON File:**
+```bash
+./sql_loader "Test Run" ../../config/database.yaml ../../config/config.yaml ../../data/august_12_clusters.json
+```
+
+**Complete Example:**
+```bash
+./sql_loader "High Freq Test" ../../config/database.yaml ../../config/config.yaml ../../config/experiments/high_freq.yaml ../../data/august_12_clusters.json
+```
+
+**Key Features:**
+- **Experiment Tracking**: Each run creates a record with all configuration parameters
+- **Duplicate Prevention**: Automatically skips existing batches/clusters
+- **Configurable Limits**: Option to cap tweets per cluster to manage database size
+- **Data Validation**: Warnings for anomalous data (clusters with no busy words)
+- **Config Override Support**: Works with experimental configurations
+
+**Database Management Scripts:**
+
+The SQL loader includes several scripts for database management:
+
+**1. Create Tables** (`src/sql_loader/create_tables.sql`)
+```bash
+# Creates all tables with proper constraints and indexes
+psql -d x_twitter -f src/sql_loader/create_tables.sql
+```
+- Creates `experiment_runs`, `batches`, `clusters`, `tweets`, `busy_words` tables
+- Sets up foreign key relationships and unique constraints
+- Creates performance indexes
+- Uses `IF NOT EXISTS` to avoid errors if tables already exist
+
+**2. Clear Database** (`src/sql_loader/clear_database.sql`)
+```bash
+# Removes all data while preserving schema structure
+psql -d x_twitter -f src/sql_loader/clear_database.sql
+```
+- Uses `TRUNCATE CASCADE` to efficiently clear all tables
+- Resets sequences to start from 1
+- Verifies tables are empty after cleanup
+- Much faster than deleting individual records
+- **Use this between experiments to get a clean slate**
+
+**3. Drop Tables** (`src/sql_loader/drop_tables.sql`)
+```bash
+# Completely removes all tables and views
+psql -d x_twitter -f src/sql_loader/drop_tables.sql
+```
+- Drops all pipeline tables and views
+- Removes all data and schema
+- **Use this for a complete fresh start**
+
+**4. Fix Permissions** (`src/sql_loader/fix_permissions.sql`)
+```bash
+# Grant necessary permissions (run as superuser)
+psql -d x_twitter -f src/sql_loader/fix_permissions.sql
+```
+- Grants `ALL PRIVILEGES` on all pipeline tables to `petercoates`
+- Grants `USAGE, SELECT` on all sequences
+- Fixes permission issues if tables were created by different user
+- **Run this if you get permission errors**
+
+**Typical Workflow:**
+```bash
+# First time setup
+psql -d x_twitter -f src/sql_loader/create_tables.sql
+psql -d x_twitter -f src/sql_loader/fix_permissions.sql
+
+# Between experiments (recommended)
+psql -d x_twitter -f src/sql_loader/clear_database.sql
+
+# Complete reset (if needed)
+psql -d x_twitter -f src/sql_loader/drop_tables.sql
+psql -d x_twitter -f src/sql_loader/create_tables.sql
+```
+
+**Configuration:**
+- Database settings in `config/database.yaml`
+- Uses same pipeline config as main application
+- Supports config override files for experiments
+
+**Database Schema:**
+- `experiment_runs`: Tracks each experimental run with all parameters
+- `batches`: Batch metadata linked to experiment runs
+- `clusters`: Cluster information within batches
+- `tweets`: Individual tweets within clusters (with medoid marking)
+- `busy_words`: Busy words with frequency classes
+
+**Use Cases:**
+- Compare results across different parameter sets
+- Track which configuration produced which results
+- Enable AI analysis of pipeline output
+- Historical analysis of parameter effectiveness
 
 ---
 
