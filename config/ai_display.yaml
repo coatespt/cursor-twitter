@@ -1,0 +1,21 @@
+# AI Display Server Configuration
+
+# Server Configuration
+server:
+  port: 8081
+  host: "localhost"
+
+# Database Configuration (shared with AI feeder)
+database:
+  host: "192.168.1.76"
+  port: 5432
+  name: "x_twitter"
+  user: "petercoates"
+  password: "aardvark1"
+  sslmode: "disable"
+
+# Display Configuration
+display:
+  batch_window_size: 10  # Number of batches to keep in memory
+  default_viewing_mode: "sequential"
+  auto_advance: false  # Manual advance by default

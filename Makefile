@@ -51,8 +51,14 @@ build-display:
 	cd display && ./build.sh
 	@echo "Display component build complete!"
 
-# Build all components (main + display)
-build-all: build build-display
+# Build AI display component
+build-ai-display:
+	@echo "Building AI display component..."
+	cd ai_display && go build -o ai_display main.go
+	@echo "AI display component build complete!"
+
+# Build all components (main + display + ai-display)
+build-all: build build-display build-ai-display
 	@echo "All components built!"
 
 # Clean build artifacts
@@ -60,6 +66,7 @@ clean:
 	@echo "Cleaning build artifacts..."
 	rm -f twitter-pipeline language_detector find_csv_file csv_file_mapping token_frequency_analyzer analyze_tokens examine_tokens
 	rm -f display/cursor-twitter-display
+	rm -f ai_display/ai_display
 	@echo "Clean complete!"
 
 # Run tests (if any)
@@ -84,7 +91,8 @@ help:
 	@echo "  build-analyze-tokens  - Build the token analyzer"
 	@echo "  build-examine-tokens  - Build the token examiner"
 	@echo "  build-display         - Build the display component"
-	@echo "  build-all             - Build all components (main + display)"
+	@echo "  build-ai-display      - Build the AI display component"
+	@echo "  build-all             - Build all components (main + display + ai-display)"
 	@echo "  clean        - Remove build artifacts"
 	@echo "  test         - Run tests"
 	@echo "  test-all     - Run all tests (same as test)"

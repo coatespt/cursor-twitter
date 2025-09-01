@@ -4,132 +4,143 @@
 
 This manual describes how to use all the programs and utilities in the Twitter subject detection pipeline. The project is organized into several categories:
 
+- **Preprocessor**: Converts original Twitter JSON files to CSV format
 - **Main Application**: The core Twitter processing pipeline
 - **Go Utilities** (`util_go/`): Production utilities for data analysis and processing
 - **Test Utilities** (`util_test/`): Testing and debugging tools
 - **Shell Scripts** (`util_shell/`): Automation and convenience scripts
 
-When running the project, copy an existing config/config.yaml file and ajust it to suit, naming it something like config/config.my-computer.yaml.  This way you won't step on other configs.  If you are changing the config code, make sure you ask Cursor to propagate you changes to the other config files so they don't diverge.
+When running the project, you have two options for configuration:
+
+1. **Copy and modify the main config**: Copy `config/config.yaml` and adjust it to suit, naming it something like `config/config.my-computer.yaml`
+2. **Use config overrides (recommended)**: Keep the main `config/config.yaml` unchanged and use the `-override` flag to apply custom settings from separate files
+
+The override approach is preferred as it keeps the main config as the authoritative source and allows easy experimentation without file divergence. If you are changing the config code, make sure you ask Cursor to propagate your changes to the other config files so they don't diverge.
 
 There is no adequate writeup of the meaning of the many config parameters other than the comments in the config files.  Hopefully one is coming.
 
 ## Table of Contents
 
-1. [Main Application](#main-application)
-2. [Go Utilities](#go-utilities)
-3. [Sender Scripts](#sender-scripts)
-4. [Parser Scripts](#parser-scripts)
-5. [Test Utilities](#test-utilities)
-6. [Shell Scripts](#shell-scripts)
-7. [SQL Loader](#sql-loader)
-8. [Additional Scripts](#additional-scripts)
-9. [Configuration](#configuration)
-10. [Build System](#build-system)
+1. [JSON to CSV Preprocessor](#json-to-csv-preprocessor)
+2. [Language Detector](#language-detector)
+3. [Starting RabbitMQ](#starting-rabbitmq)
+4. [Sender Scripts](#sender-scripts)
+5. [Main Application](#main-application)
+6. [Display Component](#display-component)
+7. [Artificial Intelligence Component](#artificial-intelligence-component)
+8. [SQL Loader](#sql-loader)
+9. [AI Display Server](#ai-display-server)
+10. [Other Software](#other-software)
+11. [Additional Scripts](#additional-scripts)
+12. [Shell Scripts, Utilities, Tests, etc](#shell-scripts-utilities-tests-etc)
+13. [Configuration](#configuration)
+14. [Common Workflows](#common-workflows)
+15. [Parser Scripts](#parser-scripts)
+16. [Go Utilities](#go-utilities)
+17. [Test Utilities](#test-utilities)
+18. [Troubleshooting](#troubleshooting)
+19. [Performance Tips](#performance-tips)
+20. [Support](#support)
 
 ---
 
-## Main Application
+## JSON to CSV Preprocessor
 
-### Twitter Pipeline (`src/main.go`)
+### JSON to CSV Preprocessor (`parser/parser.py`)
 
-The core application that processes Twitter data in real-time.
+**What it does:** This is the **FIRST STEP** in the entire pipeline. It reads the ORIGINAL Twitter JSON files (compressed .json.gz format) and converts them to CSV format for further processing. This preprocessor handles the raw Twitter data format and extracts the essential fields needed for analysis.
 
-Note that there are extensive options in config/config.yaml that are covered there, but not here. 
-
-**Build:**
+**Dependencies:**
 ```bash
-go build -o main src/main.go
-```
-
-**Run:**
-```bash
-./main -config config/config.yaml
-```
-
-**Key Features:**
-- Identification of subjects at single-digit second latency
-- Clustering of similar tweets
-- Real-time tweet processing from RabbitMQ
-- Deduplication and filtering
-- Configurable output suppression for economy of display
-
-**Configuration:**
-- See `config/config.yaml` for all settings
-- Key parameters: `batch_size`, `window_size`, `freq_classes`
-- Clustering: `min_cluster_size`, `min_jaccard_similarity`
-- Deduplication: `deduplicate_by_user`, `use_levenshtein_deduplication`
-
-**Caveats**
-
-The -load-state flag is handy in development as it reads in the state saved on disk to save waiting for millions of tokens. However, the statistics will be thrown off any you'll get poor results until the entire token window has been replaced, which may be a logical hour (a real time fifteen minutes on a slow machine.)
-
-When you are filtering for language, e.g. set lang: en in the config.yaml, the log line, for example, "Pipeline stats" tweets=1690148 tokens=6247611 distinct=65190 inbound_queue_size=45 processing_rate_tweets_per_sec=1109.4297100838241 prints the count of Tweets in the specified language.  With "en", this is less than half the number of Tweets read.  So in the case above, you'd be ingesting nearly 3000 Tweets/second.
-
-## Go Utilities
-
-### 1. Token Analyzer (`util_go/analyze_tokens.go`)
-
-Processes the full dataset to compute unique tokens against total Tweets 
-
-**Build:**
-```bash
-make build-token-frequency
+cd parser
+pip install -r requirements.txt
 ```
 
 **Usage:**
 ```bash
-./token_frequency_analyzer -input data/ -interval 10000 -filter-tokens=true
+python parser/parser.py <input_directory> <output_directory> [options]
 ```
 
-**Parameters:**
-- `-input`: Directory containing CSV files (default: "data")
-- `-interval`: Report stats every N tweets (default: 10000)
-- `-filter-tokens`: Filter URLs, mentions, hashtags (default: true)
+**Required Parameters:**
+- `input_directory`: Directory containing .json.gz Twitter files
+- `output_directory`: Directory where CSV files will be created
 
-**Output:**
-- Token frequency statistics
-- Distinct token counts over time
-- ASCII graph of token growth
+**Optional Parameters:**
+- `--num-workers <N>`: Number of worker processes (default: CPU cores)
+- `--no-language-detect`: Disable language detection, use original lang field
 
 **Example:**
 ```bash
-# Analyze all CSV files in data directory
-./token_frequency_analyzer -input /path/to/tweet/data -interval 5000
+# Convert all JSON files in /raw/tweets to CSV in /processed/tweets
+python parser/parser.py /raw/tweets /processed/tweets
+
+# Use 8 worker processes for faster processing
+python parser/parser.py /raw/tweets /processed/tweets --num-workers 8
+
+# Skip language detection (faster processing)
+python parser/parser.py /raw/tweets /processed/tweets --no-language-detect
 ```
 
-### 2. CSV File Finder (`util_go/find_csv_file.go`)
+**Output Format:**
+The CSV files contain these columns:
+- `id_str`: Tweet ID
+- `created_at`: Tweet creation timestamp
+- `user_id_str`: User ID
+- `retweet_count`: Number of retweets
+- `text`: Tweet text content
+- `retweeted`: Whether this is a retweet
+- `at`: Number of @ mentions
+- `http`: Number of URLs
+- `hashtag`: Number of hashtags
+- `words`: Tokenized words from tweet text
+- `lang`: Language code (detected or from original JSON)
 
-Finds CSV files based on timestamp ranges. Give it a date/time and get back the CSV file that contains that date.  Optional parameter to return the name of the file N filese earlier. This allows for a startup period before the data of interest.
+**Features:**
+- **Multi-threaded processing** for high performance
+- **Automatic encoding detection** (UTF-8, Latin-1, CP1252, ISO-8859-1)
+- **Language detection** using langid library (can be disabled)
+- **Progress reporting** with tweets per second metrics
+- **Error handling** for malformed JSON and encoding issues
+- **Skip processing** if output file already exists
+- **Handles Twitter's JSON format** including delete events and scrub_geo events
 
-**Build:**
-```bash
-make build-find-csv
-```
-
-**Usage:**
-```bash
-./find_csv_file -dir /path/to/csv -datetime "2012-02-14 19:35:55" -n 3
-```
-
-**Parameters:**
-- `-dir`: Directory containing CSV files
-- `-datetime`: Target datetime (format: "2012-02-14 19:35:55")
-- `-n`: Number of files to go back (default: 1)
+**Input Requirements:**
+- Twitter JSON files in .json.gz format
+- Files should contain one JSON object per line
+- Standard Twitter API response format
 
 **Output:**
-- Prints the filename of the Nth file before the target datetime
+- One CSV file per input JSON file
+- Same filename with .csv extension
+- UTF-8 encoded CSV with proper escaping
 
-**Example:**
+**Performance:**
+- Processes thousands of tweets per second
+- Multi-threaded for optimal CPU utilization
+- Automatic resumption if interrupted
+
+**Example Workflow:**
 ```bash
-# Find the file 3 positions before the file containing 2012-02-14 19:35:55
-./find_csv_file -dir /data/tweets -datetime "2012-02-14 19:35:55" -n 3
+# 1. Install dependencies
+cd parser
+pip install -r requirements.txt
+
+# 2. Convert JSON to CSV
+python parser.py /path/to/raw/tweets /path/to/processed/tweets
+
+# 3. Verify output
+ls -la /path/to/processed/tweets/*.csv
+
+# 4. Continue with language detection or main pipeline
 ```
 
-### 3. Language Detector (`util_go/language_detector.go`)
+---
 
-Identifies the language of a Tweet and puts it int he lang: field.
-The contents of that field in the original Tweets are useless.
-The Python parser optionally does this, but go is about fifty to a hundred times faster.
+## Language Detector
+
+### Language Detector (`util_go/language_detector.go`)
+
+**Optional but recommended component** that processes CSV tweet files and fixes the language field. The `lang` value supplied by GNIP in the original Twitter data is worthless, so this component uses proper language detection to set the correct language for each tweet.
 
 **Build:**
 ```bash
@@ -148,10 +159,19 @@ make build-language-detector
 - `-progress`: Show progress updates (default: true)
 
 **Features:**
-- Multi-threaded processing
-- Language detection using Lingua library
-- Progress reporting
-- Error handling and recovery
+- **Multi-threaded processing** for high performance
+- **Language detection** using Lingua library
+- **Progress reporting** and error handling
+- **CSV processing** with language field enrichment
+- **Performance**: 50-100x faster than Python equivalent
+
+**Architecture Role:**
+The Language Detector is the **second step** in the data processing pipeline:
+1. **Raw CSV files** → input data (with worthless GNIP language field)
+2. **Language Detector** → fixes language field using proper detection (data enrichment)
+3. **Main Pipeline** → processes enriched data with accurate language filtering
+4. **SQL Loader** → database storage
+5. **AI Analysis** → cluster analysis and display
 
 **Example:**
 ```bash
@@ -159,72 +179,18 @@ make build-language-detector
 ./language_detector -input /raw/tweets -output /processed/tweets -workers 4
 ```
 
-### 4. CSV Filenames to Time (`util_go/csv_file_mapping.go`)
-
-Creates mappings between CSV files and their time ranges.
-Files are five minutes. This gives the start times.
-
-**Build:**
-```bash
-make build-csv-mapping
-```
-
-**Usage:**
-```bash
-./csv_file_mapping [options]
-```
-
-**Features:**
-- Maps CSV filenames to time ranges
-- Helps with data organization and retrieval
-- Supports timestamp-based file lookup
-
-### 5. Token Frequency Analyzer (`util_go/token_frequency_analyzer.go`)
-
-Advanced token frequency analysis with detailed statistics.
-It's amazingly Zipf. 250 words comprise half of all word usage in English.
-
-**Build:**
-```bash
-make build-token-frequency
-```
-
-**Usage:**
-```bash
-./token_frequency_analyzer [options]
-```
-
-**Features:**
-- Detailed token frequency analysis
-- Statistical reporting
-- Performance metrics
-
-### 6. Token Examiner (`util_go/examine_tokens.go`)
-
-Interactive tool for examining individual tokens and their properties.
-
-**Build:**
-```bash
-go build -o examine_tokens util_go/examine_tokens.go
-```
-
-**Usage:**
-```bash
-./examine_tokens [options]
-```
-
-**Features:**
-- Token-by-token analysis
-- Pattern recognition
-- Debugging tool for token processing
+**Dependencies:**
+- Go 1.21+
+- Lingua library for language detection
+- Multi-threading support
 
 ---
 
 ## Starting RabbitMQ
 
-There are numerous ways to start RabbitMQ. You can run it as a daemon that will always be available when you start your computer.
+You only need to start RabbitMQ if you intend to run the main in that mode. (It can also get the data directly from files.) 
 
-You can also ask Cursor to start rabbit in Docker 
+There are numerous ways to start RabbitMQ. You can run it as a daemon that will always be available when you start your computer. You can also ask Cursor to start rabbit in Docker 
 
 It is easy to start and manage it yourself with the following commands.
  
@@ -241,13 +207,16 @@ It can easily be monitored on their Web app. It tells you how much data it is mo
 The username and passwords are guest,guest.
 
 Note that the sending and acking rates are accurate. If you are using a language filter as specified in config.yaml, you will see a smaller number under "Pipeline statistics" in the log file. This is because Pipeline statitics isn't counting  the ones that are filtered out because they are not mareked as being of your desired language.
- 
+
+---
 
 ## Sender Scripts
 
 ### CSV to RabbitMQ Sender (`sender/send_csv_to_mq.py`)
 
-Sends CSV files as messages to RabbitMQ for processing by the main pipeline.
+The sender reads the CSV Tweet files and sends them one by one as messages via RabbitMQ. The main pipeline program picks them up from Rabbit. There is no real point in doing this for testing, as MQ slows down processing by five to ten X.  
+
+You definitely would want to use this if, for instance, you were getting the JSON live on another machine, parsing it, and sending it on to the main.  
 
 **Usage:**
 ```bash
@@ -339,29 +308,209 @@ python ./sender/send_test_tweets.py [options]
 
 ---
 
-## Parser Scripts
+## Main Application
 
-### JSON Parser (`parser/parser.py`)
+### Twitter Pipeline (`src/main.go`)
 
-Parses JSON tweet data and converts to CSV format for processing.
+The core application reads the pre-processed CSV.  It can be fed by RabbitMQ a line at a time or it can be set to read the CSV directly from the files. The latter is vastly faster. 
 
-**Usage:**
+Note that there are extensive options in config/config.yaml that are covered there, but not here. 
+
+**Build:**
 ```bash
-python ./parser/parser.py [options]
+go build -o main src/main.go
 ```
 
-**Features:**
-- Converts JSON tweet data to CSV format
-- Handles various JSON structures and formats
-- Outputs data suitable for the main pipeline
-- Configurable parsing options
-
-**Dependencies:**
+**Run:**
 ```bash
-pip install -r parser/requirements.txt
+# Basic run with main config
+./main -config config/config.yaml
+
+# Run with config override for experiments
+./main -config config/config.yaml -override config/experiments/high_freq.yaml
+
+# Run with custom override file
+./main -config config/config.yaml -override config/my_custom_settings.yaml
 ```
+
+**Key Features:**
+- Identification of subjects at single-digit second latency
+- Clustering of similar tweets
+- Real-time tweet processing from RabbitMQ
+- Deduplication and filtering
+- Configurable output suppression for economy of display
+
+**Configuration:**
+- **Main config**: `config/config.yaml` contains all default settings
+- **Config overrides**: Use `-override` flag to apply custom settings without modifying the main config
+- **Override files**: Only specify the parameters you want to change - the system merges them with the base config
+- Key parameters: `batch_size`, `window_size`, `freq_classes`
+- Clustering: `min_cluster_size`, `min_jaccard_similarity`
+- Deduplication: `deduplicate_by_user`, `use_levenshtein_deduplication`
+
+**Config Override System:**
+The pipeline supports a flexible config override system that allows you to:
+- Keep the main `config/config.yaml` as the authoritative source
+- Create experiment-specific override files (e.g., `config/experiments/high_freq.yaml`)
+- Override only specific parameters without duplicating the entire config
+- Easily switch between different parameter sets for testing
+
+**Example Override Usage:**
+```bash
+# Run with high frequency experiment settings
+./main -config config/config.yaml -override config/experiments/high_freq.yaml
+
+# Run with low threshold experiment settings  
+./main -config config/config.yaml -override config/experiments/low_threshold.yaml
+
+# Run with your custom settings
+./main -config config/config.yaml -override config/my_computer.yaml
+```
+
+**Caveats**
+
+The -load-state flag is handy in development as it reads in the state saved on disk to save waiting for millions of tokens. However, the statistics will be thrown off any you'll get poor results until the entire token window has been replaced, which may be a logical hour (a real time fifteen minutes on a slow machine.)
+
+When you are filtering for language, e.g. set lang: en in the config.yaml, the log line, for example, "Pipeline stats" tweets=1690148 tokens=6247611 distinct=65190 inbound_queue_size=45 processing_rate_tweets_per_sec=1109.4297100838241 prints the count of Tweets in the specified language.  With "en", this is less than half the number of Tweets read.  So in the case above, you'd be ingesting nearly 3000 Tweets/second.
 
 ---
+
+## Display Component
+
+The project includes a web-based display component for viewing Twitter cluster analysis results in real-time.
+
+### Overview
+
+The display component provides a web interface for:
+- Viewing cluster analysis results from JSON output files
+- Navigating through batches of processed data
+- Auto-playing through results with configurable timing
+- Pretty-printed JSON display of cluster data
+- Batch information and metadata display
+
+### Building the Display
+
+```bash
+# Navigate to display directory
+cd display
+
+# Build the display component
+./build.sh
+```
+
+### Running the Display
+
+```bash
+# Navigate to display directory
+cd display
+
+# Run with default config (uses sample data)
+./cursor-twitter-display
+
+# Or run with a specific JSON clusters file by editing config.json
+# Edit display/config.json to point to your cluster file:
+# {
+#   "input_file": "../logs/clusters_20250814_125655.txt",
+#   "batch_size": 10,
+#   "historical_batches": 5,
+#   "min_cluster_size": 3
+# }
+
+# Open in browser
+# Navigate to http://localhost:8080
+```
+
+### Display Controls
+
+- **Play/Pause**: Auto-advance through batches every 2 seconds
+- **Previous/Next**: Manually step through batches
+- **Batch Counter**: Shows current position (e.g., "Batch 3 of 10")
+- **Grid View**: Alternative view for cluster visualization
+
+### Configuration
+
+The display component uses `display/config.yaml` for configuration:
+
+```yaml
+input_file: "/path/to/clusters.json"
+batch_size: 10
+historical_batches: 5
+min_cluster_size: 3
+recurrence_threshold: 0.4
+recurrence_strategy: "all_tweets"  # Options: "medoid_only" or "all_tweets"
+```
+
+**Recurrence Detection Settings:**
+- `recurrence_threshold`: Similarity threshold (0.0 = identical, 1.0 = completely different)
+  - `0.3` = Very strict (70% similarity required)
+  - `0.4` = Moderate (60% similarity required) 
+  - `0.6` = Relaxed (40% similarity required)
+- `recurrence_strategy`: Comparison method
+  - `"medoid_only"`: Compare current medoid to historical medoids only
+  - `"all_tweets"`: Compare current medoid to all historical tweets (more comprehensive)
+
+### File Format
+
+The display expects JSON files with one batch per line, where each line contains a JSON object with this structure:
+
+```json
+{
+  "batch_number": 1,
+  "batch_time": "2025-08-14T12:56:55Z",
+  "method": "graph",
+  "total_tweets": 25000,
+  "total_clusters": 15,
+  "clusters_above_min_size": 8,
+  "clusters": [...]
+}
+```
+
+### Display Project Structure
+
+```
+display/
+├── display_main.go        # Go HTTP server
+├── build.sh              # Build script
+├── go.mod                # Go module file
+├── README.md             # Display-specific documentation
+├── USER_MANUAL.md        # Display user manual
+├── SESSION_NOTES.md      # Display session notes
+├── templates/
+│   ├── index.html        # Main HTML template
+│   └── grid.html         # Grid view template
+├── static/
+│   ├── style.css         # CSS styling
+│   └── script.js         # JavaScript controls
+└── data/                 # Sample data files
+```
+
+### Integration with Main Pipeline
+
+The display component reads output files generated by the main Twitter processing pipeline. To use them together:
+
+1. **Run the main pipeline** to generate cluster data:
+   ```bash
+   ./main -config config/config.yaml
+   ```
+
+2. **Start the display** to view results:
+   ```bash
+   cd display
+   ./cursor-twitter-display ../logs/clusters_YYYYMMDD_HHMMSS.txt
+   ```
+
+3. **Monitor in browser** at `http://localhost:8080`
+
+# Artificial Intelligence Component
+The foregoing sections have all been related to using the Z-filters heuristic to extract the subjects from the firehose. The subjects are represented in JSON as collections of Tweets with some associated metadata and a medoid Tweet that is the Tweet most typical of the cluster.
+
+All of that functionality is free-standing and can be used without the AI portion which begins here. This additional functionality:
+- Parses the JSON output from the foregoing steps and inserts it into a Postgres relational database.
+- The database represents it a hierarchical association of Tweets, Clusters, and Batches. Batches are associated with a run, which holds the parameters that the subject analysis was performed with. This allows multiple versions of the dataset to be stored and compared.
+- A process runs against the database, reading each cluster and sending it off via HTTP to an Ollama AI for analysis of what the cluster (subject) is about. The HTTP response is then written back to Postgres. The response is associated with the cluster, batch, and run.
+- A Web service with a browser allows a user to explore the results data. 
+  - The browser allows the user to choose which run, where to start, etc.
+  - The user can use next and previous buttons to see the subjects.
 
 ## SQL Loader
 
@@ -480,6 +629,104 @@ psql -d x_twitter -f src/sql_loader/create_tables.sql
 
 ---
 
+## AI Display Server
+
+### AI Display (`ai_display/main.go`)
+
+A web-based interface for viewing AI-generated analysis of Twitter clusters, with experiment run selection and batch navigation.  This is a Web server that can be reached as localhost:8081 to view the AI generated data.
+
+**Build:**
+```bash
+make build-ai-display
+# or manually:
+cd ai_display && go build -o ai_display main.go
+```
+
+**Run:**
+```bash
+./ai_display/ai_display config/ai_display.yaml
+```
+
+**Access:**
+- Open browser to `http://localhost:8081`
+- Server runs on port 8081 by default
+
+**Key Features:**
+
+#### **Left Panel - Controls & Overview**
+- **Dataset Overview**: Total batches, clusters, time range, batch size
+- **Experiment Run Selector**: Dropdown to choose which experimental configuration to view
+- **Run Details**: Shows key parameters (window size, batch size, frequency classes, Jaccard threshold)
+- **Navigation Controls**: Next/Previous buttons, batch window slider, auto-advance toggle
+
+#### **Right Panel - AI Analysis Display**
+- **Grid Layout**: Shows analysis results in organized rows
+- **Batch Grouping**: Results grouped by batch with alternating colors
+- **Analysis Text**: Clickable AI-generated analysis with hover tooltips
+- **Push-Down Behavior**: New batches appear at top, older ones scroll down
+
+#### **Smart Navigation**
+- **Batch Window**: Configurable window size (default: 10 batches)
+- **Dynamic Expansion**: Window expands when going backward beyond normal limit
+- **Auto-Reset**: Window returns to normal size when advancing forward
+- **Status Display**: Current batch number and result count
+
+#### **Experiment Run Management**
+- **Automatic Detection**: Shows all available experiment runs from database
+- **Parameter Display**: Shows key configuration parameters for each run
+- **Run Switching**: Seamlessly switch between different experimental configurations
+- **Data Filtering**: Results automatically filtered by selected experiment run
+
+**Configuration:**
+```yaml
+# config/ai_display.yaml
+server:
+  port: 8081
+  host: "localhost"
+
+database:
+  host: "192.168.1.76"
+  port: 5432
+  name: "x_twitter"
+  user: "petercoates"
+  password: "aardvark1"
+  sslmode: "disable"
+
+display:
+  batch_window_size: 10
+  default_viewing_mode: "sequential"
+  auto_advance: false
+```
+
+**API Endpoints:**
+- `GET /` - Main web interface
+- `GET /api/batches?start_batch=X&limit=Y&run_id=Z` - Get analysis results for specific experiment run
+- `GET /api/experiment-runs` - Get all available experiment runs
+
+**Use Cases:**
+- **Research Analysis**: Compare AI insights across different pipeline configurations
+- **Parameter Tuning**: See how different settings affect cluster quality and AI analysis
+- **Historical Review**: Browse through past experimental runs and their results
+- **Quality Assessment**: Evaluate AI analysis quality across different parameter sets
+- **Collaboration**: Share results with team members through web interface
+
+**Navigation Tips:**
+- **Next Button**: Loads next chronological batch (appears at top)
+- **Previous Button**: Loads earlier batch (appears at bottom)
+- **Window Slider**: Navigate within current batch window
+- **Experiment Dropdown**: Switch between different experimental runs
+- **Hover on Analysis**: Click analysis text to see original AI prompt
+
+**Data Requirements:**
+- Requires `experiment_runs` table with pipeline configuration parameters
+- Needs `ai_analysis_results` table with AI-generated analysis
+- Batches must be properly linked to experiment runs via foreign keys
+- AI feeder must have processed clusters for the selected experiment run
+
+---
+
+# Other Software
+
 ## Additional Scripts
 
 ### Test Startup Scenarios (`test_startup_scenarios.sh`)
@@ -496,77 +743,9 @@ Tests various startup scenarios for the pipeline.
 - Validates startup behavior with various settings
 - Useful for ensuring robust startup behavior
 
----
 
-## Test Utilities
 
-### 1. RabbitMQ Test (`util_test/test_rabbitmq.go`)
-
-Tests RabbitMQ connection and message consumption.
-
-**Build:**
-```bash
-go build -o test_rabbitmq util_test/test_rabbitmq.go
-```
-
-**Usage:**
-```bash
-./test_rabbitmq
-```
-
-**Features:**
-- Tests RabbitMQ connection
-- Verifies queue declaration
-- Tests message consumption
-- Receives up to 5 test messages
-
-**Use Case:**
-- Verify RabbitMQ is running and accessible
-- Test message queue configuration
-- Debug connection issues
-
-### 2. K-Means Test (`util_test/test_kmeans.go`)
-
-Tests the K-means clustering algorithm.
-K-means is in there for subject clustering but is of dubious value. Stick with graph clustering unless you have a good reason to use K-Means.
-
-**Build:**
-```bash
-go build -o test_kmeans util_test/test_kmeans.go
-```
-
-**Usage:**
-```bash
-./test_kmeans
-```
-
-**Features:**
-- Tests K-means clustering implementation
-- Validates clustering algorithms
-- Performance testing
-
-### 3. Debug Timestamps (`util_test/debug_timestamps.go`)
-
-Debugging tool for timestamp parsing and conversion.
-
-**Build:**
-```bash
-go build -o debug_timestamps util_test/debug_timestamps.go
-```
-
-**Usage:**
-```bash
-./debug_timestamps [options]
-```
-
-**Features:**
-- Timestamp format validation
-- Time conversion debugging
-- Date/time parsing assistance
-
----
-
-## Shell Scripts
+# Shell Scripts, Utilities, Tests, etc
 
 ### 1. Tail Log (`util_shell/tail-the-log.sh`)
 
@@ -772,133 +951,221 @@ freq_classes: 24            # More = finer granularity
 cleanup_trigger_batch_size: 500  # More frequent = less memory
 ```
 
+
+
+## Parser Scripts
+
+### JSON Parser (`parser/parser.py`) - **DEPRECATED**
+
+> **⚠️ This Python parser is obsolete and has been replaced by the Go-based JSON parser.**
+> **Use the Go parser (`src/json_parser/parser.go`) for all new development.**
+
+Parses JSON tweet data and converts to CSV format for processing.
+
+**Usage:**
+```bash
+python ./parser/parser.py [options]
+```
+
+**Features:**
+- Converts JSON tweet data to CSV format
+- Handles various JSON structures and formats
+- Outputs data suitable for the main pipeline
+- Configurable parsing options
+
+**Dependencies:**
+```bash
+pip install -r parser/requirements.txt
+```
+
 ---
 
-## Display Component
+## Go Utilities
 
-The project includes a web-based display component for viewing Twitter cluster analysis results in real-time.
+### 1. Token Analyzer (`util_go/analyze_tokens.go`)
 
-### Overview
+Processes the full dataset to compute unique tokens against total Tweets 
 
-The display component provides a web interface for:
-- Viewing cluster analysis results from JSON output files
-- Navigating through batches of processed data
-- Auto-playing through results with configurable timing
-- Pretty-printed JSON display of cluster data
-- Batch information and metadata display
-
-### Building the Display
-
+**Build:**
 ```bash
-# Navigate to display directory
-cd display
-
-# Build the display component
-./build.sh
+make build-token-frequency
 ```
 
-### Running the Display
-
+**Usage:**
 ```bash
-# Navigate to display directory
-cd display
-
-# Run with default config (uses sample data)
-./cursor-twitter-display
-
-# Or run with a specific JSON clusters file by editing config.json
-# Edit display/config.json to point to your cluster file:
-# {
-#   "input_file": "../logs/clusters_20250814_125655.txt",
-#   "batch_size": 10,
-#   "historical_batches": 5,
-#   "min_cluster_size": 3
-# }
-
-# Open in browser
-# Navigate to http://localhost:8080
+./token_frequency_analyzer -input data/ -interval 10000 -filter-tokens=true
 ```
 
-### Display Controls
+**Parameters:**
+- `-input`: Directory containing CSV files (default: "data")
+- `-interval`: Report stats every N tweets (default: 10000)
+- `-filter-tokens`: Filter URLs, mentions, hashtags (default: true)
 
-- **Play/Pause**: Auto-advance through batches every 2 seconds
-- **Previous/Next**: Manually step through batches
-- **Batch Counter**: Shows current position (e.g., "Batch 3 of 10")
-- **Grid View**: Alternative view for cluster visualization
+**Output:**
+- Token frequency statistics
+- Distinct token counts over time
+- ASCII graph of token growth
 
-### Configuration
-
-The display component uses `display/config.yaml` for configuration:
-
-```yaml
-input_file: "/path/to/clusters.json"
-batch_size: 10
-historical_batches: 5
-min_cluster_size: 3
-recurrence_threshold: 0.4
-recurrence_strategy: "all_tweets"  # Options: "medoid_only" or "all_tweets"
+**Example:**
+```bash
+# Analyze all CSV files in data directory
+./token_frequency_analyzer -input /path/to/tweet/data -interval 5000
 ```
 
-**Recurrence Detection Settings:**
-- `recurrence_threshold`: Similarity threshold (0.0 = identical, 1.0 = completely different)
-  - `0.3` = Very strict (70% similarity required)
-  - `0.4` = Moderate (60% similarity required) 
-  - `0.6` = Relaxed (40% similarity required)
-- `recurrence_strategy`: Comparison method
-  - `"medoid_only"`: Compare current medoid to historical medoids only
-  - `"all_tweets"`: Compare current medoid to all historical tweets (more comprehensive)
+### 2. CSV File Finder (`util_go/find_csv_file.go`)
 
-### File Format
+Finds CSV files based on timestamp ranges. Give it a date/time and get back the CSV file that contains that date.  Optional parameter to return the name of the file N filese earlier. This allows for a startup period before the data of interest.
 
-The display expects JSON files with one batch per line, where each line contains a JSON object with this structure:
-
-```json
-{
-  "batch_number": 1,
-  "batch_time": "2025-08-14T12:56:55Z",
-  "method": "graph",
-  "total_tweets": 25000,
-  "total_clusters": 15,
-  "clusters_above_min_size": 8,
-  "clusters": [...]
-}
+**Build:**
+```bash
+make build-find-csv
 ```
 
-### Display Project Structure
-
-```
-display/
-├── display_main.go        # Go HTTP server
-├── build.sh              # Build script
-├── go.mod                # Go module file
-├── README.md             # Display-specific documentation
-├── USER_MANUAL.md        # Display user manual
-├── SESSION_NOTES.md      # Display session notes
-├── templates/
-│   ├── index.html        # Main HTML template
-│   └── grid.html         # Grid view template
-├── static/
-│   ├── style.css         # CSS styling
-│   └── script.js         # JavaScript controls
-└── data/                 # Sample data files
+**Usage:**
+```bash
+./find_csv_file -dir /path/to/csv -datetime "2012-02-14 19:35:55" -n 3
 ```
 
-### Integration with Main Pipeline
+**Parameters:**
+- `-dir`: Directory containing CSV files
+- `-datetime`: Target datetime (format: "2012-02-14 19:35:55")
+- `-n`: Number of files to go back (default: 1)
 
-The display component reads output files generated by the main Twitter processing pipeline. To use them together:
+**Output:**
+- Prints the filename of the Nth file before the target datetime
 
-1. **Run the main pipeline** to generate cluster data:
-   ```bash
-   ./main -config config/config.yaml
-   ```
+**Example:**
+```bash
+# Find the file 3 positions before the file containing 2012-02-14 19:35:55
+./find_csv_file -dir /data/tweets -datetime "2012-02-14 19:35:55" -n 3
+```
 
-2. **Start the display** to view results:
-   ```bash
-   cd display
-   ./cursor-twitter-display ../logs/clusters_YYYYMMDD_HHMMSS.txt
-   ```
+### 3. CSV Filenames to Time (`util_go/csv_file_mapping.go`)
 
-3. **Monitor in browser** at `http://localhost:8080`
+Creates mappings between CSV files and their time ranges.
+Files are five minutes. This gives the start times.
+
+**Build:**
+```bash
+make build-csv-mapping
+```
+
+**Usage:**
+```bash
+./csv_file_mapping [options]
+```
+
+**Features:**
+- Maps CSV filenames to time ranges
+- Helps with data organization and retrieval
+- Supports timestamp-based file lookup
+
+### 4. Token Frequency Analyzer (`util_go/token_frequency_analyzer.go`)
+
+Advanced token frequency analysis with detailed statistics.
+It's amazingly Zipf. 250 words comprise half of all word usage in English.
+
+**Build:**
+```bash
+make build-token-frequency
+```
+
+**Usage:**
+```bash
+./token_frequency_analyzer [options]
+```
+
+**Features:**
+- Detailed token frequency analysis
+- Statistical reporting
+- Performance metrics
+
+### 5. Token Examiner (`util_go/examine_tokens.go`)
+
+Interactive tool for examining individual tokens and their properties.
+
+**Build:**
+```bash
+go build -o examine_tokens util_go/examine_tokens.go
+```
+
+**Usage:**
+```bash
+./examine_tokens [options]
+```
+
+**Features:**
+- Token-by-token analysis
+- Pattern recognition
+- Debugging tool for token processing
+
+---
+
+## Test Utilities
+
+### 1. RabbitMQ Test (`util_test/test_rabbitmq.go`)
+
+Tests RabbitMQ connection and message consumption.
+
+**Build:**
+```bash
+go build -o test_rabbitmq util_test/test_rabbitmq.go
+```
+
+**Usage:**
+```bash
+./test_rabbitmq
+```
+
+**Features:**
+- Tests RabbitMQ connection
+- Verifies queue declaration
+- Tests message consumption
+- Receives up to 5 test messages
+
+**Use Case:**
+- Verify RabbitMQ is running and accessible
+- Test message queue configuration
+- Debug connection issues
+
+### 2. K-Means Test (`util_test/test_kmeans.go`)
+
+Tests the K-means clustering algorithm.
+K-means is in there for subject clustering but is of dubious value. Stick with graph clustering unless you have a good reason to use K-Means.
+
+**Build:**
+```bash
+go build -o test_kmeans util_test/test_kmeans.go
+```
+
+**Usage:**
+```bash
+./test_kmeans
+```
+
+**Features:**
+- Tests K-means clustering implementation
+- Validates clustering algorithms
+- Performance testing
+
+### 3. Debug Timestamps (`util_test/debug_timestamps.go`)
+
+Debugging tool for timestamp parsing and conversion.
+
+**Build:**
+```bash
+go build -o debug_timestamps util_test/debug_timestamps.go
+```
+
+**Usage:**
+```bash
+./debug_timestamps [options]
+```
+
+**Features:**
+- Timestamp format validation
+- Time conversion debugging
+- Date/time parsing assistance
 
 ---
 

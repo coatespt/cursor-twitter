@@ -9,6 +9,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"text/template"
 	"time"
 
@@ -34,16 +37,22 @@ type AIConfig struct {
 	} `yaml:"database"`
 
 	Processing struct {
-		BatchSize        int    `yaml:"batch_size"`         // Clusters to process in parallel
-		MaxRetries       int    `yaml:"max_retries"`        // Max retries per request
-		RetryDelay       int    `yaml:"retry_delay"`        // Seconds between retries
-		PromptTemplate   string `yaml:"prompt_template"`    // Path to prompt template file
-		AnalysisType     string `yaml:"analysis_type"`      // Type of analysis to perform
-		SessionName      string `yaml:"session_name"`       // Name for this analysis session
-		RunID            int    `yaml:"run_id"`             // Experiment run ID to analyze
-		MaxClusters      int    `yaml:"max_clusters"`       // Max clusters to process (0 = all)
-		StartFromCluster int    `yaml:"start_from_cluster"` // Start from specific cluster ID
+		BatchSize           int    `yaml:"batch_size"`             // Clusters to process in parallel
+		MaxRetries          int    `yaml:"max_retries"`            // Max retries per request
+		RetryDelay          int    `yaml:"retry_delay"`            // Seconds between retries
+		PromptTemplate      string `yaml:"prompt_template"`        // Path to prompt template file
+		AnalysisType        string `yaml:"analysis_type"`          // Type of analysis to perform
+		SessionName         string `yaml:"session_name"`           // Name for this analysis session
+		RunID               int    `yaml:"run_id"`                 // Experiment run ID to analyze
+		MaxClusters         int    `yaml:"max_clusters"`           // Max clusters to process (0 = all)
+		StartFromCluster    int    `yaml:"start_from_cluster"`     // Start from specific cluster ID
+		MaxTweetsPerCluster int    `yaml:"max_tweets_per_cluster"` // Max tweets to include in prompt
 	} `yaml:"processing"`
+	Logging struct {
+		LogFile       string `yaml:"log_file"`       // Path to log file
+		LogLevel      string `yaml:"log_level"`      // Log level: debug, info, warn, error
+		ConsoleOutput bool   `yaml:"console_output"` // Also output to console
+	} `yaml:"logging"`
 }
 
 // OllamaRequest represents the request to Ollama API
@@ -74,6 +83,7 @@ type OllamaResponse struct {
 
 // ClusterData represents the data extracted from database for AI analysis
 type ClusterData struct {
+	ID             int      `json:"id"` // Surrogate key from clusters table
 	ClusterID      int      `json:"cluster_id"`
 	BatchNumber    int      `json:"batch_number"`
 	BatchTime      string   `json:"batch_time"`
@@ -87,9 +97,55 @@ type ClusterData struct {
 
 // AIFeeder handles the AI analysis pipeline
 type AIFeeder struct {
-	db     *sql.DB
-	config *AIConfig
-	client *http.Client
+	db           *sql.DB
+	config       *AIConfig
+	client       *http.Client
+	clusterCount int // Track clusters processed for connection reset
+	logger       *log.Logger
+	logFile      *os.File
+}
+
+// setupLogging initializes logging based on configuration
+func setupLogging(config *AIConfig) (*log.Logger, *os.File, error) {
+	var writers []io.Writer
+
+	// Add console output if enabled
+	if config.Logging.ConsoleOutput {
+		writers = append(writers, os.Stdout)
+	}
+
+	// Add file output if log file is specified
+	if config.Logging.LogFile != "" {
+		// Create log directory if it doesn't exist
+		logDir := filepath.Dir(config.Logging.LogFile)
+		if err := os.MkdirAll(logDir, 0755); err != nil {
+			return nil, nil, fmt.Errorf("failed to create log directory: %v", err)
+		}
+
+		// Open log file for writing (append mode)
+		logFile, err := os.OpenFile(config.Logging.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to open log file: %v", err)
+		}
+
+		writers = append(writers, logFile)
+
+		// Create multi-writer logger
+		multiWriter := io.MultiWriter(writers...)
+		logger := log.New(multiWriter, "", log.LstdFlags)
+
+		return logger, logFile, nil
+	}
+
+	// If no file logging, just use console
+	if len(writers) == 0 {
+		writers = append(writers, os.Stdout)
+	}
+
+	multiWriter := io.MultiWriter(writers...)
+	logger := log.New(multiWriter, "", log.LstdFlags)
+
+	return logger, nil, nil
 }
 
 // NewAIFeeder creates a new AI feeder with database connection and HTTP client
@@ -103,6 +159,12 @@ func NewAIFeeder(configPath string) (*AIFeeder, error) {
 	var config AIConfig
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %v", err)
+	}
+
+	// Setup logging
+	logger, logFile, err := setupLogging(&config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to setup logging: %v", err)
 	}
 
 	// Connect to database
@@ -127,14 +189,19 @@ func NewAIFeeder(configPath string) (*AIFeeder, error) {
 	}
 
 	return &AIFeeder{
-		db:     db,
-		config: &config,
-		client: client,
+		db:      db,
+		config:  &config,
+		client:  client,
+		logger:  logger,
+		logFile: logFile,
 	}, nil
 }
 
-// Close closes the database connection
+// Close closes the database connection and log file
 func (af *AIFeeder) Close() error {
+	if af.logFile != nil {
+		af.logFile.Close()
+	}
 	return af.db.Close()
 }
 
@@ -146,13 +213,11 @@ func (af *AIFeeder) CreateAnalysisSession() (int, error) {
 		return 0, fmt.Errorf("failed to read prompt template: %v", err)
 	}
 
-	// Count total clusters for this run
+	// Count total clusters (for now, count all clusters since run_id doesn't exist yet)
 	var totalClusters int
 	err = af.db.QueryRow(`
-		SELECT COUNT(*) FROM clusters c
-		JOIN batches b ON c.batch_id = b.id
-		WHERE b.run_id = $1
-	`, af.config.Processing.RunID).Scan(&totalClusters)
+		SELECT COUNT(*) FROM clusters
+	`).Scan(&totalClusters)
 	if err != nil {
 		return 0, fmt.Errorf("failed to count clusters: %v", err)
 	}
@@ -165,7 +230,7 @@ func (af *AIFeeder) CreateAnalysisSession() (int, error) {
 			analysis_type, total_clusters
 		) VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING session_id
-	`, af.config.Processing.RunID, af.config.Processing.SessionName,
+	`, 1, af.config.Processing.SessionName, // Use default run_id = 1
 		af.config.AI.Model, af.config.AI.Endpoint, string(promptTemplate),
 		af.config.Processing.AnalysisType, totalClusters).Scan(&sessionID)
 
@@ -173,8 +238,8 @@ func (af *AIFeeder) CreateAnalysisSession() (int, error) {
 		return 0, fmt.Errorf("failed to create analysis session: %v", err)
 	}
 
-	fmt.Printf("Created AI analysis session %d for run %d (%d clusters)\n",
-		sessionID, af.config.Processing.RunID, totalClusters)
+	af.logger.Printf("Created AI analysis session %d for run %d (%d clusters)",
+		sessionID, 1, totalClusters)
 
 	return sessionID, nil
 }
@@ -184,17 +249,18 @@ func (af *AIFeeder) GetClustersForAnalysis(sessionID int) ([]ClusterData, error)
 	query := `
 		SELECT 
 			c.id, c.cluster_id, b.batch_number, b.batch_time, c.size, c.quality_score,
-			array_agg(t.tweet_text ORDER BY t.tweet_order) as tweets,
+			(SELECT array_agg(tweet_text ORDER BY tweet_order) FROM tweets WHERE cluster_id = c.id) as tweets,
 			(SELECT tweet_text FROM tweets WHERE cluster_id = c.id AND is_medoid = true LIMIT 1) as medoid_tweet,
-			array_agg(DISTINCT bw.word ORDER BY bw.word_order) as busy_words,
+			(SELECT array_agg(word ORDER BY word_order) FROM busy_words WHERE cluster_id = c.id) as busy_words,
 			(SELECT frequency_class FROM busy_words WHERE cluster_id = c.id LIMIT 1) as frequency_class
 		FROM clusters c
 		JOIN batches b ON c.batch_id = b.id
-		LEFT JOIN tweets t ON c.id = t.cluster_id
-		LEFT JOIN busy_words bw ON c.id = bw.cluster_id
-		WHERE b.run_id = $1
-		AND c.id >= $2
-		GROUP BY c.id, c.cluster_id, b.batch_number, b.batch_time, c.size, c.quality_score
+		WHERE c.id >= $1
+		AND c.id NOT IN (
+			SELECT DISTINCT cluster_id 
+			FROM ai_analysis_results 
+			WHERE session_id = $2
+		)
 		ORDER BY c.id
 	`
 
@@ -203,7 +269,7 @@ func (af *AIFeeder) GetClustersForAnalysis(sessionID int) ([]ClusterData, error)
 		query += fmt.Sprintf(" LIMIT %d", af.config.Processing.MaxClusters)
 	}
 
-	rows, err := af.db.Query(query, af.config.Processing.RunID, af.config.Processing.StartFromCluster)
+	rows, err := af.db.Query(query, af.config.Processing.StartFromCluster, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query clusters: %v", err)
 	}
@@ -212,22 +278,45 @@ func (af *AIFeeder) GetClustersForAnalysis(sessionID int) ([]ClusterData, error)
 	var clusters []ClusterData
 	for rows.Next() {
 		var cluster ClusterData
-		var tweets, busyWords []string
+		var tweetsStr, busyWordsStr sql.NullString
 		var medoidTweet sql.NullString
 
+		var frequencyClass sql.NullInt32
 		err := rows.Scan(
-			&cluster.ClusterID, &cluster.BatchNumber, &cluster.BatchTime,
-			&cluster.Size, &cluster.QualityScore, &tweets, &medoidTweet, &busyWords, &cluster.FrequencyClass,
+			&cluster.ID, &cluster.ClusterID, &cluster.BatchNumber, &cluster.BatchTime,
+			&cluster.Size, &cluster.QualityScore, &tweetsStr, &medoidTweet, &busyWordsStr, &frequencyClass,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan cluster: %v", err)
 		}
 
-		cluster.Tweets = tweets
+		if frequencyClass.Valid {
+			cluster.FrequencyClass = int(frequencyClass.Int32)
+		} else {
+			cluster.FrequencyClass = 0 // Default value for NULL
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan cluster: %v", err)
+		}
+
+		// Parse arrays from strings
+		if tweetsStr.Valid {
+			// Remove {} and split by comma
+			tweetsStr := strings.Trim(tweetsStr.String, "{}")
+			if tweetsStr != "" {
+				cluster.Tweets = strings.Split(tweetsStr, ",")
+			}
+		}
+		if busyWordsStr.Valid {
+			// Remove {} and split by comma
+			busyWordsStr := strings.Trim(busyWordsStr.String, "{}")
+			if busyWordsStr != "" {
+				cluster.BusyWords = strings.Split(busyWordsStr, ",")
+			}
+		}
 		if medoidTweet.Valid {
 			cluster.MedoidTweet = medoidTweet.String
 		}
-		cluster.BusyWords = busyWords
 
 		clusters = append(clusters, cluster)
 	}
@@ -237,6 +326,16 @@ func (af *AIFeeder) GetClustersForAnalysis(sessionID int) ([]ClusterData, error)
 
 // SendToAI sends a prompt to the AI service and returns the response
 func (af *AIFeeder) SendToAI(prompt string) (*OllamaResponse, error) {
+	// Reset connection every 10 clusters to clear context
+	af.clusterCount++
+	if af.clusterCount%10 == 0 {
+		timeout := time.Duration(af.config.AI.Timeout) * time.Second
+		af.client = &http.Client{
+			Timeout: timeout,
+		}
+		af.logger.Printf("Reset HTTP connection after %d clusters", af.clusterCount)
+	}
+
 	request := OllamaRequest{
 		Model:  af.config.AI.Model,
 		Prompt: prompt,
@@ -255,7 +354,7 @@ func (af *AIFeeder) SendToAI(prompt string) (*OllamaResponse, error) {
 	for attempt := 0; attempt <= af.config.Processing.MaxRetries; attempt++ {
 		if attempt > 0 {
 			time.Sleep(time.Duration(af.config.Processing.RetryDelay) * time.Second)
-			fmt.Printf("Retrying AI request (attempt %d/%d)\n", attempt+1, af.config.Processing.MaxRetries+1)
+			af.logger.Printf("Retrying AI request (attempt %d/%d)", attempt+1, af.config.Processing.MaxRetries+1)
 		}
 
 		resp, err := af.client.Post(af.config.AI.Endpoint, "application/json", bytes.NewBuffer(jsonData))
@@ -297,6 +396,43 @@ func (af *AIFeeder) SendToAI(prompt string) (*OllamaResponse, error) {
 	return response, nil
 }
 
+// cleanAIResponse removes verbose preamble and fluff from AI responses
+func cleanAIResponse(response string) string {
+	// Remove common verbose introductions
+	patterns := []string{
+		"I'd be happy to analyze",
+		"I'll analyze this Twitter cluster",
+		"Let me analyze this cluster",
+		"Here's my analysis",
+		"Based on the provided data",
+		"Looking at this Twitter cluster",
+		"After examining the tweets",
+	}
+
+	cleaned := response
+	for _, pattern := range patterns {
+		if idx := strings.Index(strings.ToLower(cleaned), strings.ToLower(pattern)); idx != -1 {
+			// Find the next line break or end of sentence
+			if newlineIdx := strings.Index(cleaned[idx:], "\n"); newlineIdx != -1 {
+				cleaned = cleaned[:idx] + cleaned[idx+newlineIdx+1:]
+			} else if periodIdx := strings.Index(cleaned[idx:], "."); periodIdx != -1 {
+				cleaned = cleaned[:idx] + cleaned[idx+periodIdx+1:]
+			}
+		}
+	}
+
+	// Trim whitespace and ensure it starts with the structured format
+	cleaned = strings.TrimSpace(cleaned)
+	if !strings.HasPrefix(cleaned, "**Main Topic:**") {
+		// Try to find where the structured format starts
+		if idx := strings.Index(cleaned, "**Main Topic:**"); idx != -1 {
+			cleaned = cleaned[idx:]
+		}
+	}
+
+	return cleaned
+}
+
 // StoreAnalysisResult stores the AI analysis result in the database
 func (af *AIFeeder) StoreAnalysisResult(sessionID int, clusterID int, prompt string, response *OllamaResponse, processingTime time.Duration) error {
 	// Convert response to metadata
@@ -315,12 +451,15 @@ func (af *AIFeeder) StoreAnalysisResult(sessionID int, clusterID int, prompt str
 		return fmt.Errorf("failed to marshal response metadata: %v", err)
 	}
 
+	// Clean the response to remove verbose preamble
+	cleanedResponse := cleanAIResponse(response.Response)
+
 	// Insert result
 	_, err = af.db.Exec(`
 		INSERT INTO ai_analysis_results (
 			session_id, cluster_id, prompt_text, response_text, response_metadata, processing_time_ms
 		) VALUES ($1, $2, $3, $4, $5, $6)
-	`, sessionID, clusterID, prompt, response.Response, responseMetadataJSON, int(processingTime.Milliseconds()))
+	`, sessionID, clusterID, prompt, cleanedResponse, responseMetadataJSON, int(processingTime.Milliseconds()))
 
 	if err != nil {
 		return fmt.Errorf("failed to insert analysis result: %v", err)
@@ -351,6 +490,24 @@ func (af *AIFeeder) CompleteSession(sessionID int) error {
 
 // ProcessCluster analyzes a single cluster
 func (af *AIFeeder) ProcessCluster(sessionID int, cluster ClusterData, promptTemplate *template.Template) error {
+	// Limit tweets to max_tweets_per_cluster
+	maxTweets := af.config.Processing.MaxTweetsPerCluster
+	if maxTweets > 0 && len(cluster.Tweets) > maxTweets {
+		// Keep medoid tweet and sample from others
+		limitedTweets := make([]string, 0, maxTweets)
+		limitedTweets = append(limitedTweets, cluster.Tweets[0]) // Keep first tweet (likely medoid)
+
+		// Add sample tweets from the rest
+		step := len(cluster.Tweets) / (maxTweets - 1)
+		if step < 1 {
+			step = 1
+		}
+		for i := 1; i < len(cluster.Tweets) && len(limitedTweets) < maxTweets; i += step {
+			limitedTweets = append(limitedTweets, cluster.Tweets[i])
+		}
+		cluster.Tweets = limitedTweets
+	}
+
 	// Generate prompt from template
 	var promptBuffer bytes.Buffer
 	if err := promptTemplate.Execute(&promptBuffer, cluster); err != nil {
@@ -367,11 +524,11 @@ func (af *AIFeeder) ProcessCluster(sessionID int, cluster ClusterData, promptTem
 	processingTime := time.Since(startTime)
 
 	// Store result
-	if err := af.StoreAnalysisResult(sessionID, cluster.ClusterID, prompt, response, processingTime); err != nil {
+	if err := af.StoreAnalysisResult(sessionID, cluster.ID, prompt, response, processingTime); err != nil {
 		return fmt.Errorf("failed to store analysis result: %v", err)
 	}
 
-	fmt.Printf("Processed cluster %d (batch %d): %d tweets, %d busy words, %dms\n",
+	af.logger.Printf("Processed cluster %d (batch %d): %d tweets, %d busy words, %dms",
 		cluster.ClusterID, cluster.BatchNumber, len(cluster.Tweets), len(cluster.BusyWords), int(processingTime.Milliseconds()))
 
 	return nil
@@ -418,23 +575,102 @@ func main() {
 
 	fmt.Printf("Starting analysis of %d clusters...\n", len(clusters))
 
-	// Process clusters
+	// Process clusters with concurrent workers
 	processed := 0
 	failed := 0
-	for i, cluster := range clusters {
-		if err := feeder.ProcessCluster(sessionID, cluster, promptTemplate); err != nil {
-			fmt.Printf("Failed to process cluster %d: %v\n", cluster.ClusterID, err)
-			failed++
-		} else {
-			processed++
-		}
+	startTime := time.Now()
 
-		// Update progress every 10 clusters
-		if (i+1)%10 == 0 {
-			feeder.UpdateSessionProgress(sessionID, processed, failed)
-			fmt.Printf("Progress: %d/%d processed, %d failed\n", processed, len(clusters), failed)
+	// Use mutex for thread-safe counters
+	var mu sync.Mutex
+	updateCounters := func(success bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if success {
+			processed++
+		} else {
+			failed++
 		}
 	}
+
+	// Worker function
+	worker := func(clusterChan <-chan ClusterData, wg *sync.WaitGroup) {
+		defer wg.Done()
+		for cluster := range clusterChan {
+			clusterStartTime := time.Now()
+
+			if err := feeder.ProcessCluster(sessionID, cluster, promptTemplate); err != nil {
+				fmt.Printf("Failed to process cluster %d: %v\n", cluster.ClusterID, err)
+				updateCounters(false)
+			} else {
+				clusterTime := time.Since(clusterStartTime)
+				updateCounters(true)
+
+				// Show individual cluster timing
+				fmt.Printf("Processed cluster %d (batch %d): %d tweets, %d busy words, %v\n",
+					cluster.ClusterID, cluster.BatchNumber, len(cluster.Tweets), len(cluster.BusyWords), clusterTime)
+			}
+		}
+	}
+
+	// Create worker pool
+	numWorkers := 1 // Reduced to 1 worker to avoid overwhelming Ollama
+	clusterChan := make(chan ClusterData, numWorkers)
+	var wg sync.WaitGroup
+
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go worker(clusterChan, &wg)
+	}
+
+	// Send clusters to workers
+	go func() {
+		for _, cluster := range clusters {
+			clusterChan <- cluster
+		}
+		close(clusterChan)
+	}()
+
+	// Progress monitoring goroutine
+	go func() {
+		ticker := time.NewTicker(30 * time.Second) // Update every 30 seconds
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				mu.Lock()
+				currentProcessed := processed
+				currentFailed := failed
+				mu.Unlock()
+
+				if currentProcessed > 0 {
+					elapsed := time.Since(startTime)
+					avgTime := elapsed / time.Duration(currentProcessed)
+					estimatedTotal := avgTime * time.Duration(len(clusters))
+					estimatedRemaining := estimatedTotal - elapsed
+
+					feeder.UpdateSessionProgress(sessionID, currentProcessed, currentFailed)
+					fmt.Printf("=== PERFORMANCE TIMING STATS ===\n")
+					fmt.Printf("Progress: %d/%d processed, %d failed (%.1f%%)\n",
+						currentProcessed, len(clusters), currentFailed, float64(currentProcessed)/float64(len(clusters))*100)
+					fmt.Printf("Total elapsed time: %v\n", elapsed)
+					fmt.Printf("Average time per cluster: %v\n", avgTime)
+					fmt.Printf("Estimated total time: %v\n", estimatedTotal)
+					fmt.Printf("Estimated remaining: %v\n", estimatedRemaining)
+					fmt.Printf("Processing rate: %.2f clusters/hour\n",
+						float64(currentProcessed)/elapsed.Hours())
+					fmt.Printf("Concurrent workers: %d\n", numWorkers)
+					fmt.Printf("Current throughput: %.2f clusters/minute\n",
+						float64(currentProcessed)/elapsed.Minutes())
+					fmt.Printf("================================\n")
+				}
+			}
+		}
+	}()
+
+	// Wait for all workers to complete
+	wg.Wait()
 
 	// Complete session
 	if err := feeder.CompleteSession(sessionID); err != nil {

@@ -60,6 +60,43 @@ type SQLLoader struct {
 	runID  int // Current experiment run ID
 }
 
+// ensureExperimentRunsTable creates the experiment_runs table if it doesn't exist
+func ensureExperimentRunsTable(db *sql.DB) error {
+	createTableSQL := `
+		CREATE TABLE IF NOT EXISTS experiment_runs (
+			run_id SERIAL PRIMARY KEY,
+			run_date_time TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			run_name TEXT NOT NULL,
+			window_size INTEGER,
+			token_persist_files INTEGER,
+			rebuild_every_files INTEGER,
+			batch_size INTEGER,
+			z_scores TEXT, -- Array stored as string
+			freq_classes INTEGER,
+			bw_array_len INTEGER,
+			busyword_classes TEXT, -- Array stored as string
+			min_busy_words_per_tweet INTEGER,
+			min_jaccard_similarity DECIMAL(3,2),
+			duplicate_similarity_threshold DECIMAL(3,2),
+			language_filter VARCHAR(10),
+			use_medoid_similarity BOOLEAN,
+			use_busy_word_similarity BOOLEAN,
+			medoid_similarity_threshold DECIMAL(3,2),
+			busy_word_similarity_threshold DECIMAL(3,2),
+			min_token_len INTEGER,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		);
+	`
+
+	_, err := db.Exec(createTableSQL)
+	if err != nil {
+		return fmt.Errorf("failed to create experiment_runs table: %v", err)
+	}
+
+	fmt.Println("✅ experiment_runs table ensured")
+	return nil
+}
+
 // NewSQLLoader creates a new SQL loader with database connection
 func NewSQLLoader(configPath string) (*SQLLoader, error) {
 	// Load database config
@@ -108,6 +145,11 @@ func NewSQLLoader(configPath string) (*SQLLoader, error) {
 		log.Printf("Warning: Could not get current database name: %v", err)
 	} else {
 		fmt.Printf("Current database: %s\n", currentDB)
+	}
+
+	// Ensure experiment_runs table exists
+	if err := ensureExperimentRunsTable(db); err != nil {
+		return nil, fmt.Errorf("failed to ensure experiment_runs table: %v", err)
 	}
 
 	return &SQLLoader{db: db, config: &config}, nil
@@ -196,12 +238,52 @@ func loadPipelineConfigWithOverride(baseConfigPath, overrideConfigPath string) (
 	return baseConfig, nil
 }
 
+// generateUniqueRunName generates a unique run name, handling duplicates
+func (sl *SQLLoader) generateUniqueRunName(baseName string) (string, error) {
+	// First, try the base name
+	var count int
+	err := sl.db.QueryRow(`
+		SELECT COUNT(*) FROM experiment_runs WHERE run_name = $1
+	`, baseName).Scan(&count)
+
+	if err != nil {
+		return "", fmt.Errorf("failed to check run name: %v", err)
+	}
+
+	if count == 0 {
+		return baseName, nil // Name is unique
+	}
+
+	// Find the highest suffix number for this base name
+	var maxSuffix int
+	pattern := baseName + " %"
+	err = sl.db.QueryRow(`
+		SELECT COALESCE(MAX(CAST(SUBSTRING(run_name FROM LENGTH($1) + 2) AS INTEGER)), 0)
+		FROM experiment_runs 
+		WHERE run_name LIKE $2
+	`, baseName, pattern).Scan(&maxSuffix)
+
+	if err != nil {
+		// If the query fails, just append " 1"
+		return fmt.Sprintf("%s 1", baseName), nil
+	}
+
+	// Return name with incremented suffix
+	return fmt.Sprintf("%s %d", baseName, maxSuffix+1), nil
+}
+
 // CreateExperimentRun creates a new experiment run record and returns the run_id
 func (sl *SQLLoader) CreateExperimentRun(runName, pipelineConfigPath, overrideConfigPath string) (int, error) {
+	// Generate unique run name
+	uniqueRunName, err := sl.generateUniqueRunName(runName)
+	if err != nil {
+		return 0, fmt.Errorf("failed to generate unique run name: %v", err)
+	}
+
+	fmt.Printf("Using run name: %s\n", uniqueRunName)
+
 	// Load pipeline config with override
 	var config *PipelineConfig
-	var err error
-
 	if overrideConfigPath != "" {
 		config, err = loadPipelineConfigWithOverride(pipelineConfigPath, overrideConfigPath)
 	} else {
@@ -220,14 +302,14 @@ func (sl *SQLLoader) CreateExperimentRun(runName, pipelineConfigPath, overrideCo
 	var runID int
 	err = sl.db.QueryRow(`
 		INSERT INTO experiment_runs (
-			run_name, window, token_persist_files, rebuild_every_files, batch,
+			run_name, window_size, token_persist_files, rebuild_every_files, batch_size,
 			z_scores, freq_classes, bw_array_len, busyword_classes,
 			min_busy_words_per_tweet, min_jaccard_similarity, duplicate_similarity_threshold,
 			language_filter, use_medoid_similarity, use_busy_word_similarity,
 			medoid_similarity_threshold, busy_word_similarity_threshold, min_token_len
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		RETURNING run_id
-	`, runName, config.WindowSize, config.TokenPersistFiles, config.RebuildEveryFiles, config.Batch,
+	`, uniqueRunName, config.WindowSize, config.TokenPersistFiles, config.RebuildEveryFiles, config.Batch,
 		zScoresStr, config.FreqClasses, config.BWArrayLen, busyWordClassesStr,
 		config.Analysis.MinBusyWordsPerTweet, config.Analysis.MinJaccardSimilarity, config.Analysis.DuplicateSimilarityThreshold,
 		config.LanguageFilter, config.Analysis.UseMedoidSimilarity, config.Analysis.UseBusyWordSimilarity,
@@ -504,6 +586,11 @@ func main() {
 	runName := os.Args[1]
 	dbConfigPath := os.Args[2]
 	pipelineConfigPath := os.Args[3]
+
+	// If no run name provided, generate a default one
+	if runName == "" || runName == "default" {
+		runName = "Run"
+	}
 
 	var overrideConfigPath, jsonFilePath string
 	if len(os.Args) > 4 {

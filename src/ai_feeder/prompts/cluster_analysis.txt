@@ -1,4 +1,4 @@
-You are an expert social media analyst. Analyze the following Twitter cluster and provide insights about the topic, sentiment, and key themes.
+SYSTEM: Clear all previous context and start fresh. You are an expert social media analyst. Analyze the following Twitter cluster independently. This cluster is completely separate from any previous analysis - treat it as a standalone dataset with no relationship to other clusters. Ignore any previous conversations or context.
 
 Cluster Information:
 - Cluster ID: {{.ClusterID}}
@@ -17,11 +17,12 @@ All Tweets in Cluster:
 {{range $index, $tweet := .Tweets}}{{$index}}: {{$tweet}}
 {{end}}
 
-Please provide a concise analysis including:
-1. Main topic or theme
-2. Overall sentiment (positive/negative/neutral)
-3. Key entities or people mentioned
-4. Any notable trends or patterns
-5. Potential significance or newsworthiness
+Provide a direct, concise analysis in this exact format:
 
-Keep your response focused and analytical. Format your response as a structured analysis.
+**Main Topic:** [One sentence describing the primary theme]
+**Sentiment:** [positive/negative/neutral]
+**Key Entities:** [List of important people, places, or organizations mentioned]
+**Trends:** [Any notable patterns or trends]
+**Significance:** [Why this cluster matters or is newsworthy]
+
+Start immediately with "**Main Topic:**" - no introduction or preamble. Each cluster analysis is completely independent.

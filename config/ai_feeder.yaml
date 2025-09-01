@@ -4,8 +4,8 @@
 
 # AI Service Configuration
 ai:
-  model: "llama3.1:8b"                    # AI model to use (Ollama model name)
-  endpoint: "http://localhost:11434/api/generate"  # Ollama API endpoint
+  model: "llama3:latest"                   # AI model to use (Ollama model name)
+  endpoint: "http://192.168.1.76:11434/api/generate"  # Ollama API endpoint
   timeout: 60                              # Request timeout in seconds
 
 # Database Configuration (same as SQL loader)
@@ -20,11 +20,19 @@ database:
 # Processing Configuration
 processing:
   batch_size: 1                           # Clusters to process in parallel (1 for sequential)
+  max_workers: 1                          # Reduce to 1 worker to avoid overwhelming Ollama
   max_retries: 3                          # Max retries per AI request
   retry_delay: 5                          # Seconds between retries
   prompt_template: "prompts/cluster_analysis.txt"  # Path to prompt template file
   analysis_type: "cluster_summary"        # Type of analysis to perform
   session_name: "Cluster Analysis Run 1"  # Name for this analysis session
   run_id: 1                               # Experiment run ID to analyze
-  max_clusters: 100                       # Max clusters to process (0 = all)
+  max_clusters: 0                         # Max clusters to process (0 = all) - process all clusters
   start_from_cluster: 1                   # Start from specific cluster ID
+  max_tweets_per_cluster: 3               # Maximum tweets to include in prompt (medoid + sample)
+
+# Logging Configuration
+logging:
+  log_file: "logs/ai_feeder.log"          # Path to log file (relative to project root)
+  log_level: "info"                       # Log level: debug, info, warn, error
+  console_output: true                    # Also output to console (in addition to file)

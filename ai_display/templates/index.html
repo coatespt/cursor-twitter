@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Analysis Display</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Left Panel - Controls -->
+        <div class="left-panel">
+            <div class="dataset-info">
+                <h2>Dataset Overview</h2>
+                <div class="info-item">
+                    <label>Total Batches:</label>
+                    <span id="total-batches">{{.DatasetInfo.TotalBatches}}</span>
+                </div>
+                <div class="info-item">
+                    <label>Total Clusters:</label>
+                    <span id="total-clusters">{{.DatasetInfo.TotalClusters}}</span>
+                </div>
+                <div class="info-item">
+                    <label>Oldest Batch:</label>
+                    <span id="oldest-batch">{{.DatasetInfo.OldestBatchTime.Format "2006-01-02 15:04:05"}}</span>
+                </div>
+                <div class="info-item">
+                    <label>Newest Batch:</label>
+                    <span id="newest-batch">{{.DatasetInfo.NewestBatchTime.Format "2006-01-02 15:04:05"}}</span>
+                </div>
+                <div class="info-item">
+                    <label>Batch Size:</label>
+                    <span id="batch-size">{{.DatasetInfo.BatchSize}}</span>
+                </div>
+            </div>
+
+            <div class="experiment-selector">
+                <h3>Experiment Run</h3>
+                <div class="control-group">
+                    <label for="experiment-run">Select Run:</label>
+                    <select id="experiment-run" onchange="changeExperimentRun()">
+                        {{range .ExperimentRuns}}
+                        <option value="{{.run_id}}" 
+                                data-window-size="{{.window_size}}" 
+                                data-batch-size="{{.batch_size}}" 
+                                data-freq-classes="{{.freq_classes}}" 
+                                data-min-jaccard="{{.min_jaccard_similarity}}">
+                            {{.run_name}} ({{.run_date_time}})
+                        </option>
+                        {{end}}
+                    </select>
+                </div>
+                <div class="run-details" id="run-details">
+                    <!-- Run details will be populated by JavaScript -->
+                </div>
+            </div>
+
+            <div class="controls">
+                <h3>Navigation Controls</h3>
+                <div class="control-group">
+                    <label for="start-time">Start Time:</label>
+                    <input type="datetime-local" id="start-time" value="{{.DatasetInfo.OldestBatchTime.Format "2006-01-02T15:04"}}">
+                </div>
+                <div class="control-group">
+                    <label for="viewing-mode">Viewing Mode:</label>
+                    <select id="viewing-mode">
+                        <option value="sequential" selected>Sequential</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="auto-advance">Auto Advance:</label>
+                    <input type="checkbox" id="auto-advance">
+                </div>
+                <div class="control-group">
+                    <button id="prev-btn" onclick="previousBatch()">Previous</button>
+                    <button id="next-btn" onclick="nextBatch()">Next</button>
+                </div>
+                <div class="control-group">
+                    <label for="window-slider">Batch Window:</label>
+                    <input type="range" id="window-slider" min="0" max="10" value="0" oninput="updateWindowPosition()">
+                    <span id="window-position">0</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel - Display -->
+        <div class="right-panel">
+            <div class="header">
+                <h1>AI Analysis Results</h1>
+                <div class="status">
+                    <span id="current-batch">Batch: 0</span>
+                    <span id="results-count">Results: 0</span>
+                </div>
+            </div>
+            <div class="results-grid" id="results-grid">
+                <!-- Results will be populated by JavaScript -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Tooltip for tweet details -->
+    <div id="tooltip" class="tooltip"></div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
