@@ -5,72 +5,100 @@ This document covers
 - What the big parts do
 - Notes on how it works
 
+
+
 # Project Goal
 The software describe here consumes the X/Twitter firehose data and identifies and analyses the new subjects as they appear in the data stream.  New is the operative word, because the firehose contains so many subjects that presenting them all would be an overwhelming flow of information.  Limiting it to new subjects produces a very manageable flow of data that human can understand and explore.
 
 There are two big pieces, each with its own display component. 
 
+## Diagram
+See ./block_diagram.pdf for a graphical overview of the components.
+
+
+Note that many of the components show disk access as a data source. Any of the disk sources can be replaced with messaging or other systems and some, such as the main component of Z-filters have that option.  However, using messaging for development and demoing is unnecessary and complicated deployment.  It also only applies to live deployment. Messaging is unnecessary for historical data applications.
+
+
 ## Finding the Subjects: Z-Filters
-The first piece identifies the new subjects in the firehose. This is the Z-filters piece. It has no natural language processing (NLP) or AI components.
+The central piece identifies the new subjects in the firehose. This is Z-filters piece. It has no natural language processing (NLP) or AI components.
 
-It operates on batches (thousands to tens of thousands) of Tweets, identifying the new subjects and clustering together the Tweets on those subjects.  The output of this process is JSON, a series of batches composed of clusters, which are composed of Tweets. A typical incoming batch might be 25,000 Tweets, with the result being one output batch with 0 to a dozen or so clusters that are the new subjects. Each subject might be from a handful to a few hundred Tweets. A maximum number to output is specified in config.yaml.  
+It operates on batches (typically thousands to tens of thousands) of Tweets, identifying the new subjects and clustering together the Tweets on those subjects.  
 
-Thus, a typical output batch might be less than 1% of the incoming volume, but most of this is the repetitive Tweets on the subject. If you look at just the subjects, 25,000 tweets typically cooks down to just a handful of new subjects that can be summarized in one line--a tiny fraction of 1%.
+The output of this process is JSON, a series of batch metadata followed by a set of clusters, which are composed of Tweets. A typical incoming batch might be 25,000 Tweets, with the result being one output batch with 0 to a dozen or so clusters that are the new subjects. Each subject might be from a handful to a few hundred Tweets The number of Tweets in a new subject is usually a single digit or low two-digit number. A maximum number to output is specified in config.yaml.  
 
-Most subjects are small--just a few Tweets, but occasionally the get much larger before they cease to be regarded by the heuristic as new.
+Thus, a typical output batch might be less than 1% of the incoming volume, but most of this is the repetitive Tweets on the subject. If you look at just the subjects, 25,000 tweets typically cooks down to just a handful of new subjects that can be summarized in one line--a small fraction of 1%.
+
 
 ### Display Web Service
-A Web server can read the JSON and display it in a variety of ways, emphasizing various properties.
-
+This component is a Web server that can read the Z-Filters output JSON and display it in a variety of ways, emphasizing various properties.
+It defaults to running from a file, but it can run from messaging.
 
 
 ## Semantic Analysis: Ollama
-The results of the first step are sets of Tweets on recognizable subjects. There is a cap specified in config.yaml on the number of Tweets that are actually output for a subject. 
+The main component of the results of the Z-Filters are sets Tweets on recognizable subjects. There is a cap specified in config.yaml on the number of Tweets that are actually includedfor a single subject (cluster.) 
+
+This data is useful as-is, as seen in the Z-Filters display service.
+
+The semantic analysis component uses an LLM to analyse the subjects and generate a description of what they are about, the entities they refer to, etc. 
+
+This is done by generating a prompt for the LLM (in the demo, Ollama) and sending it off via HTTP.
+The result is stored in Postgres.
 
 ### Loading the Z-Filters Output into Postgres
+
 The first components of the Semantic Analysis piece reads the JSON output of the Z-filters component (batches, clusters, and Tweets) and inserts the data into a Postgres relational database.  
 
+This database is the source for the data in the prompts sent to Olllama, and remains available for any destired post-processing of the Ollama results, e.g., recovering the original Tweets, etc. 
+
 ### Submitting the Clusters to the LLM
+
 The second component reads the data from Postgres, formulates AI prompts containing (for instance) a cluster, sends the prompt to Ollama via HTTP, and receives back a response, which it inserts into Postgrest. This makes all of the data on the batch as well as Ollama's take on it, available for browsing.
 
+The demo uses a single prompt, i.e., it only has one way to ask Ollama to analyse a cluster.
+
+Other prompts are possible. For instance, a time series of Ollama's responses could be sent back to look for trends over time, etc.
+
 ### Display AI Service
-The last major component of the Semantic Analysis piece is a web service that supports browser access. A user tells the web service what it wants to view and the web service queries Postgres for the data.
+
+The last major component of the Semantic Analysis piece is a web service that supports browser access to the Ollama responses. A user tells the web service what it wants to view and the web service queries Postgres for the data.
+
+The browse only has one basic function implemented, which is browsing forward and backward in time through the results.  However, all of the backing data is in Postgres, so it is available fo more complex displays.
 
 ### Limitations
-By far, the biggest time consumer in the process is the AI portion. With Ollama running on an ordinary Linux laptop, each cluster analysis takes about 15 seconds. With a 25,000 Tweet batch, and an average of 3.5 clusters per batch, it works out to about one and a half decahoses.   
 
-Note, however, that a laptop is a slow platform for AI--an inexpensive AI appliance could be expected to process prompts fast enough to easily perform semantic analysis on clusters at the full firehose rate.
-Any number could be ganged up as required.
+By far, the biggest time consumer in the process is the AI portion. With Ollama running on an ordinary Linux laptop, each cluster analysis takes about 15 seconds. With a 25,000 Tweet batch, and an average of 3.5 clusters per batch, this works out to about one and a half decahoses.   
+
+Note, however, that a laptop is a slow platform for AI--an inexpensive AI appliance could be expected to process prompts fast enough to easily perform semantic analysis on clusters at the full firehose rate. Any number could be ganged up as required.
+
+A batch (with the demo settings) is about five seconds of the firehose.  While Ollama on the laptop takes about 15 seconds to process five seconds of the firehose, the Z-Filters component, which finds the subjects, can do five seconds of the firehose in about one half a second.
+
+Thus, for Olamma to keep up, you'd need about 150x as much LLM capacity. This would be straightforward to obtain with one or more dedicated appliances.
 
 # The Data Set
 
 The input available for development purposes is a bit more than two weeks of the decahose (about 500 Tweets/second, about 6.5 billion Tweets.) It consists of JSON-formatted Tweets in files that have the file order encoded in the filenames as Unix start and end times. The files are about five minutes of Tweets at about 500 Tweets/second. 
 
-The original files are unpacked into uncompressed CSV files.  
+The original files are unpacked in advance into uncompressed CSV files.  
 
 In production the input could be either files (for historical processing) or the actual live Tweet stream (for real time processing).  
 
-For live processing, the system is entirely bottlenecked by parsing the JSON Tweets. When reading Tweets from disk, it is still I/O bound, but less so.
+For live processing, Z-Filters is entirely bottlenecked by parsing the JSON Tweets. When reading Tweets from disk, it is still I/O bound, but less so.
 
-Using files is not a "cheat" because any system would typicaly receive Tweets and feed them somehow. The actual development feed is from a process running on the same meachine and sending the Tweets in via RabbitMQ.
-
-The non-graphical output is a series of clustered sets of Tweets that are about new subjects. There is not yet a graphical front end.
- 
+Using files is not a "cheat" because any system would must receive Tweets and feed them somehow. In a non-demo environment, they could be unpacked as fast as required by dedicated a dedicated server or servers. The actual development feed is from a process running on the same meachine and sending the Tweets in via RabbitMQ. The Z-filters componenent can also read the CSV files directly, for much higher throughput.
 
 # The Major Pieces
 The following are the main components of the software.
 Instruction for running them can be found in the USER_MANUAL.md
+There is a link to a diagram at the top of this file.
 
 ## Z-Fiilters: The subjects
 ### JSON Tweet to CSV Tweet Parser
 This component parses the original compressed JSON files into a more compact and easily parsed CSV representation.
 
-This process is not included in speed numbers because every processing method confronts the same problem of unpacking the JSON, and this can be done as fast as required by applying multiple machines to the job. Therefore, we do it offline and work from equivalent CSV Tweets. 
-
 ### Language Utility
-The Twitter language field (lang:) is worthless. It apparently only reflects what the user's environment says is the user's language, so it is more often than not either empty or wrong, and people of many languages leave the default of English.
+The Twitter language field (lang:) is worthless. It apparently only reflects what the user's environment says is the user's language, so it is more often than not either empty or wrong, and users often leave the default English regardless of their actual language.
 
-The optional language utility is a Go program that reads all the CSV files and submits the text to an NLP library that figures out the language. It's quite accurate, but quite slow, so it exists as a separate program.
+The optional language utility is a Go program that reads all the CSV files and submits the text to an NLP library that figures out the language. It is quite accurate but very slow, so it exists as a optional separate program.
 
 The resulting Tweet CSV files are just like the originals, except for the language field being corrected and/or populated. You can select whether or not to use the language info in config.yaml regardless of whether the language adujstment has been made.
 
@@ -83,29 +111,49 @@ Use of the Feeder is optional.
 The RabbitMQ Feeder reads the files (there are about 5700 of them) in time-order, and puts the CSV on RabbitMQ.  It keeps a notation on disk of the last file it processed, so if it is interrupted, it will pick up more or less where it left off.
 
 ### Main Processing
-The main processor either reads the Tweet CSV from disk or picks it up line by line from RabbitMQ. It takes the input in batches of several thousand Tweets (config.yaml) figures out the unusually busy words, finds the recent Tweets that use at least M of them, (this is a very small percentage of all Tweets), runs a clustering algorithm on those Tweets to identify the clusters of usage, and writes the resulting clusters of Tweets, as well as metadata about the clusters and the bathces, to standard out as JSON.
+The main processor works the same way regardless of whether it reads the Tweet CSV from disk or picks it up line by line from RabbitMQ. It takes the input in batches of several thousand Tweets (config.yaml) figures out the unusually busy words, and finds the recent Tweets that use at least M of them, (this is a very small percentage of all Tweets). It then runs a clustering algorithm on those Tweets to identify the clusters of usage, and writes the resulting clusters of Tweets, as well as metadata about the clusters and the bathces, to standard out as JSON.
 
 This is the heart of the system because it identifies the subjects. It is very fast, operating on up to 50,000 Tweets/second even on a laptop.
+
+This makes the core algorithm is by far the fastest part of the process capable of handling multiples of the firehose, but not easily parallelized except for historical data, which can be parallelized by handing large intervals of time to multiple instances.
+
+#### Persistence of Subjects
+
+In addition to computing the new subjects, the system can give information about how long those new subjects have existed in terms of the number of recent batches the subject or similar subjects appeared in. This is given in the form of a list of the previous N batches that also match the new subject.
+
+Persistence of subjects is a bigger consumer of resources than the cost as the clustering itself.  It can be turned on and off, but the heuristic as a whole is a minor consumer of CPU compared to the unpacking of the input and maintaining the background frequency data structures. Therefore, it is not clear how far back one would have to check for this to be a significant consumer of resources. 
 
 #### Main Processing Viewer
 A Web service provides interactive browser access to several different views on the subjects, the words that characterize them, etc.  This web service is available on port 8080 wherever it is running.
 
-## AI Semantics
+Additional viewing modes are easy to add, as they all run on the same basic data structure.
+
+## AI for Subject Semantics
+
 The optional AI portion uses the Ollama LLM running locally to describe the meaning of each cluster/subject. The nature of the AI prompt can be changed programmatically. An upcoming enhancement will allow the format of the prompt to be supplied by the user.
 
+The AI portion is currently set to use a utility to feed the output of the Z-Filters portion to Postgres.  This can easily be switched to feed as the batches are processed.
+Unless true real-time analysis is required, it isn't really necessary.
+
 ### JSON Main Output to Postgres
+
 A free-standing utility reads the JSON output from main and inserts it into several tables on Postgress. One of the tables contains the name of the particular run, as well as the values of key parameters that it extracts from the config file.  
 
-This allows the output of any number of runs to exist side by side in Postgres.
+This allows the output of any number of runs to exist side by side in Postgres and identified by name, e.g., "Bob's small batch test 9/30/2025".
+
+The runs can also be dropped from the database with a query.
 
 ### AI/Ollama Service
-A second utility program reads the batch/cluster/tweet information from Postgres cluster-by-cluster, formualtes it into prompts, and sends it to Ollama via HTTP. Ollama runs locally on its own machine.
+A second utility program reads the batch/cluster/tweet information from Postgres cluster-by-cluster, formualtes it into prompts, and sends it to Ollama via HTTP POST. Ollama runs locally on its own machine.
 
-The response to the HTTP Post is inserted in Postgres, where it can be queried along with the Tweets and metadata of the cluster/subject.
+The response to the HTTP POST is inserted in Postgres, where it can be queried along with the Tweets and metadata of the cluster/subject.
+
 
 ### AI Web Service and Browser
+
 A web service exists to display the AI results in a browser. The browser is used to select and control what what the web service extracts for display.
 
+Such criteria as the name of the run, the time interval of interest, etc. can be specified.
 
 # Speed of Computation and Significant Events
 
@@ -117,12 +165,13 @@ The two-weed Tweet sample was recorded from two weeks of a Decahose. However, th
 Each CSV file is about five minutes of the decahose, i.e., about 30,000 Tweets per file, or 33 files per million Tweets, which is about 2.7 logical hours of the decahose. 
 We are actually processing 2.7 logical hours in about 10 minutes.
  
-If you are starting and stopping frequently for development purposes, the system can optionally read in the existing frequency data, for an instant start.  Beware that if you are starting at some random point, the saved frequency data will be wrong to an unpredictable degree. This means you need to either start fresh or disregard the results until you have run for long enough to completely update the background statistics.
+If you are starting and stopping frequently for development purposes, the system can optionally read in the existing frequency data, for an instant start.  Beware that if you are starting at some random point, the saved frequency data will be wrong to an unpredictable degree because background frequencies evolve as the day goes by and according to new subjects. This means you need to either start fresh or disregard the results until you have run for long enough to completely update the background statistics.
 
 ## AI Portion
 
 ## JSON to Postgres
-The JSON to Postgres step is reasonably fast, being dominated by the time to unpack the JSON. Tweets on new subjects are almost never as much as 1% of the full volume. A batch might represent five seconds of the full firehose and result in 100 to 200 rows, so moving the data into Postgres is not a heavy load on the database server. 
+
+The JSON to Postgres step is reasonably fast, being dominated by the time to unpack the JSON. Tweets on new subjects are almost never as much as 1% of the full volume. A batch might represent five seconds of the full firehose and result in 100 to 200 output rows, so moving the data into Postgres is not a heavy load on the database server. 
 
 The AI piece is bottlenecked by access to Ollama, which takes about fifteen seconds per cluster.
 This works out to about 1.5 of the decahose rate, whereas the initial load into Postgres could handle several firehose loads.  
@@ -131,29 +180,32 @@ However, this can easily be scaled to take advantage of almost any amount of ava
 
 As many such appliance as necessary could be used, so it is not clear where the next bottleneck would appear. 
 
+
 # Miscellaneous Issues and Details
 This section describes various processing details.
 
-## Persistence of Subjects
-
-In addition to computing the new subjects, the system can give information about how long those new subjects have existed in terms of the number of batches. This is given in the form of a list of the previous N batches that also match the new subject.
-
-Persistence of subjects is a significant consumer of CPU, bigger than the cost as the clustering itself.  It can be turned on and off, but the effectiveness of turning it off is still to be determined. It's not clear that it affects throughput, which may be bottlenecked elsewhere.
-
 ## The Big Token Window
 
-Word distributions change thoughout the day and week. People don't Tweet the same things at breakfast on Monday that they do at 1:00 AM on Saturday.  Also, the world turns, and while New Yorkers are getting up in the morning, people in Bejing are out for the evening.
+The refreshing of the background word-frequency data structre is key to how subjects age out. 
 
-Equally importantly, surges in usage continually adjust the current background frequencies.
+Word distributions change thoughout the day and week. People don't Tweet the same things at breakfast on Monday that they do at 1:00 AM on Saturday.  Also, the world turns, and while New Yorkers are getting up in the morning, people in Bejing are going out for the evening.
 
-Note, these issues are best thought of in terms of the logical time in the Tweets, independently of the actual time to process. In a live field, these are the same, but with stored data, processing can be considerably faster than logical time.
+Equally importantly, surges in usage continually modify the current background frequencies.
+
+These issues are best thought of in terms of the logical time in the Tweets, independently of the actual time to process. In a live field, these are the same, but with stored data, processing can be considerably faster than logical time.
+
+The background frequencies would normally be calculated more frequently than the width of the window. The window might be from twenty minutes to an hour of the feed, while the refresh interval might be every five minutes.
+
+It is not the width of the window that ages subjects out.  Consider that a sudden surge of usage of word w occurs at time t, and w is an unusual word (as is usually the case.)  The word w and some others will be noticed as busywords, and Tweets will be identified in the first batch that w was busy in.  Then the word frequency data structre gets recalculated five minutes later, and because of the surge, w in now in a higher frequency category where it no longer stands out.
+
+Or it might--if the surge is huge, it might be that in the next batch, its frequency exceeds it's new category by a wide enough margin to be noticed again.  So as long as it's frequency continues to increase, it will keep getting noticed. If the frequency plateaus at a higher frequency class, it again drops from view.
+
 
 ### Word Distribution
 
 See "Zipf Distribution" in any reference for details.
 
-Consider that 
-
+Consider that:
 - "Dog" is about the 1000th most common word, yet only 1/10,000 of words will be dog.
 - "Mirror" is the 3000th most common word, and only 3 words out of 100,000 will be mirror.  
 - "Edge" is the 5000th most common word, and it appears only once in 100,000 words
@@ -188,9 +240,11 @@ The data technically violates the assumptions of Z because a Gaussian applies to
 
 Also, we pre-suppose that only the underlying frequencies are approximately Gaussian. We are assuming that the busywords impose an explicitly non-Gaussian distribution on top of the main distribution of pseudo random values.
 
-Nevertheless, use of Z in this way is fairly common for anomalie detectio for anomaly detection, which is the case here. We are only identifying anomalies and don't really need to know exactly how anomalous they are.
+Nevertheless, use of Z in this way is fairly common for anomaly detection, which is what it is being used for here. The violations of the criteria don't really matter in part be cause we are only identifying the busy words--we don't really need to know exactly how anomalous they are.
 
-The following are excerpted from the logs. Note that the low Z scores are all quite small negative numbers most of which are between -1 and 0, as you'd expect.  
+The following are excerpted from the logs. Note that the low Z scores are all quite small negative numbers most of which are between -1 and 0, as you'd expect because we've filtered the tokens to get only words that had approximately the same frequency when the filter was created. 
+On top of that, we've not added a few words with extraordinary counts, and it's the sprinkling of counters that those words land on that have exceptional counts.
+
 The high z scores are up in the double digits. This says it's spotting anomalies effetively.
 
 "Z-score stats" class_index=20 min_z=-0.209818386948746 max_z=18.370296042703444
@@ -217,7 +271,7 @@ The high z scores are up in the double digits. This says it's spotting anomalies
 ## 3pk Collisions
 Most distinct tokens are, for practical purposes, unique on the time scale of a day. At least half of the tokens don't appear more than once in two weeks. Permanently storing the 3pk values for super-rare tokens incurs two very significant costs:
 - It wastes a ton of memory.
-  - With a token window size of three million, and fifty token files on disk, each time we age out a cached file of tokens, about 20k tokens that are in the counter map go to zero.
+  - With a token window size of three million, and fifty token files on disk, each time we age out a cached file of tokens, about 20k tokens that are in the counter map go to zero. 
   - The FCT thread removes these zero count tokens from the counter map to prevent bloat.
   - However, the main thread, which keeps a 3pk <-> token map does not know about the token counter map in the FCT and has no independent way to know which are meaningless. 
   - Those useless mappings accumulate a cost about 100MB of memory per hour to store permanently.  
@@ -227,7 +281,7 @@ Most distinct tokens are, for practical purposes, unique on the time scale of a 
 
 We solve this bloat problem by having the FCT put tokens on a queue when their counts in the counter map go down to zero. 
 
-The main thread nibbles away at these entries on the queue, taking a bunch of them every few hundred Tweets, and deleting the corresponding entries in the 3pk<->token mapping.  
+The main thread nibbles away at these entries on the queue, removing a bunch of them every few hundred Tweets, and deleting the corresponding entries in the 3pk<->token mapping.  
 
 This is mostly harmless, because if the token ever shows up again, the main thread will automatically recreate it anyway. It is possible, but unlikely, that a mapping will be removed after a set of the corresponding 3pk has been handed off to the busyword processors. This would not happen in steady-state, but can happen after a restart from stored state. If the analysis thread doesn't get back a token for a 3pk, it simply discards it. (If it has any significance, it will show up in the next batch anyway.)
 
