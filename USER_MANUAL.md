@@ -4,13 +4,22 @@
 
 This manual describes how to use all the programs and utilities in the Twitter subject detection pipeline. The project is organized into several categories:
 
+### Extraction of Subjects From the Firehose with Z-Filters
 - **Preprocessor**: Converts original Twitter JSON files to CSV format
-- **Main Application**: The core Twitter processing pipeline
+- **Main Application**: The core Twitter processing pipeline to extract subjects from the firehose with Z-Filters
+- **Main Application Display**: Explore the subjects extracted from the firehose
+
+### Semantic Interpretation of Subjects Via Ollama AI
+- **AI Application**: Organizes the output of the main application in Posgres and sends it to Ollama for analysis of the semantics of the subjects 
+- **AI Application Display**: Explore the subjects as interpretd by Ollama AI
+
+### Utilities and Ancilary Programs
 - **Go Utilities** (`util_go/`): Production utilities for data analysis and processing
 - **Test Utilities** (`util_test/`): Testing and debugging tools
 - **Shell Scripts** (`util_shell/`): Automation and convenience scripts
 
-When running the project, you have two options for configuration:
+### Not Bumping Into Others With Z-Filters
+When running the main subject extraction project, you have two options for configuration:
 
 1. **Copy and modify the main config**: Copy `config/config.yaml` and adjust it to suit, naming it something like `config/config.my-computer.yaml`
 2. **Use config overrides (recommended)**: Keep the main `config/config.yaml` unchanged and use the `-override` flag to apply custom settings from separate files
@@ -18,6 +27,13 @@ When running the project, you have two options for configuration:
 The override approach is preferred as it keeps the main config as the authoritative source and allows easy experimentation without file divergence. If you are changing the config code, make sure you ask Cursor to propagate your changes to the other config files so they don't diverge.
 
 There is no adequate writeup of the meaning of the many config parameters other than the comments in the config files.  Hopefully one is coming.
+
+### Not Bumping Into Others With AI  
+The AI portion uses a Postgres SQL Database and connects to a locally running Ollama.
+If you want to put your output in a commona database, the extraction program below allows you to name it, so that your batches, clusters, and Tweets don't collide with those of others.
+
+The process that takes your main program JSON output and puts it into Postgres will take an identifier on the command line and assoicate it with the parameters you ran with (they have to still be current!)
+If you use the same identifier, it will notice and append a number for uniquenes.
 
 ## Table of Contents
 
@@ -29,18 +45,19 @@ There is no adequate writeup of the meaning of the many config parameters other 
 6. [Display Component](#display-component)
 7. [Artificial Intelligence Component](#artificial-intelligence-component)
 8. [SQL Loader](#sql-loader)
-9. [AI Display Server](#ai-display-server)
-10. [Other Software](#other-software)
-11. [Additional Scripts](#additional-scripts)
-12. [Shell Scripts, Utilities, Tests, etc](#shell-scripts-utilities-tests-etc)
-13. [Configuration](#configuration)
-14. [Common Workflows](#common-workflows)
-15. [Parser Scripts](#parser-scripts)
-16. [Go Utilities](#go-utilities)
-17. [Test Utilities](#test-utilities)
-18. [Troubleshooting](#troubleshooting)
-19. [Performance Tips](#performance-tips)
-20. [Support](#support)
+9. [AI Feeder](#ai-feeder)
+10. [AI Display Server](#ai-display-server)
+11. [Other Software](#other-software)
+12. [Additional Scripts](#additional-scripts)
+13. [Shell Scripts, Utilities, Tests, etc](#shell-scripts-utilities-tests-etc)
+14. [Configuration](#configuration)
+15. [Common Workflows](#common-workflows)
+16. [Parser Scripts](#parser-scripts)
+17. [Go Utilities](#go-utilities)
+18. [Test Utilities](#test-utilities)
+19. [Troubleshooting](#troubleshooting)
+20. [Performance Tips](#performance-tips)
+21. [Support](#support)
 
 ---
 
@@ -626,6 +643,118 @@ psql -d x_twitter -f src/sql_loader/create_tables.sql
 - Track which configuration produced which results
 - Enable AI analysis of pipeline output
 - Historical analysis of parameter effectiveness
+
+---
+
+## AI Feeder
+
+### AI Feeder (`src/ai_feeder/main.go`)
+
+The AI Feeder is the bridge between the processed Twitter clusters and AI analysis. It reads cluster data from the PostgreSQL database, sends it to AI services (like Ollama) for analysis, and stores the results back in the database.
+
+**Build:**
+```bash
+cd src/ai_feeder
+go build -o ai_feeder main.go
+```
+
+**Run:**
+```bash
+./ai_feeder ../../config/ai_feeder.yaml
+```
+
+**Key Features:**
+- **Database Integration**: Reads cluster data from the pipeline database
+- **AI Service Support**: Interfaces with Ollama and other AI services
+- **Template-Based Prompts**: Uses customizable prompt templates
+- **Session Tracking**: Tracks analysis sessions with progress monitoring
+- **Retry Logic**: Handles AI service failures with configurable retries
+- **Batch Processing**: Configurable batch sizes and processing limits
+
+**Prerequisites:**
+1. **Ollama Running**: Start Ollama with your desired model
+   ```bash
+   ollama serve
+   ollama pull llama3.1:8b
+   ```
+
+2. **Database Setup**: Ensure the AI analysis tables are created
+   ```bash
+   psql -d x_twitter -f src/ai_feeder/schema.sql
+   ```
+
+3. **Data Available**: Ensure you have cluster data in the database from the SQL loader
+
+**Configuration:**
+```yaml
+# config/ai_feeder.yaml
+ai:
+  model: "llama3.1:8b"                    # AI model to use
+  endpoint: "http://localhost:11434/api/generate"  # Ollama API endpoint
+  timeout: 60                              # Request timeout in seconds
+
+processing:
+  batch_size: 1                           # Clusters to process in parallel
+  max_retries: 3                          # Max retries per request
+  prompt_template: "prompts/cluster_analysis.txt"  # Prompt template file
+  analysis_type: "cluster_summary"        # Type of analysis
+  session_name: "Cluster Analysis Run 1"  # Session name
+  run_id: 1                               # Experiment run ID to analyze
+  max_clusters: 100                       # Max clusters to process (0 = all)
+```
+
+**Data Flow:**
+1. **Read**: Extract cluster data from PostgreSQL
+2. **Process**: Generate prompts using templates
+3. **Analyze**: Send to AI service (Ollama)
+4. **Store**: Save results back to database
+5. **Track**: Monitor progress and session status
+
+**Prompt Templates:**
+The AI feeder uses Go templates to generate prompts. Available template variables:
+- `{{.ClusterID}}`: Cluster identifier
+- `{{.BatchNumber}}`: Batch number
+- `{{.Size}}`: Number of tweets in cluster
+- `{{.QualityScore}}`: Cluster quality score
+- `{{.BusyWords}}`: Array of busy words
+- `{{.MedoidTweet}}`: Representative tweet
+
+**Example Template:**
+```text
+Analyze this Twitter cluster:
+
+Cluster ID: {{.ClusterID}}
+Size: {{.Size}} tweets
+Busy Words: {{range .BusyWords}}{{.}} {{end}}
+
+Representative Tweet:
+{{.MedoidTweet}}
+
+Provide analysis of the main topic and sentiment.
+```
+
+**Monitoring:**
+Check analysis session status:
+```sql
+SELECT session_id, session_name, status, processed_clusters, total_clusters 
+FROM ai_analysis_sessions 
+WHERE run_id = 1;
+```
+
+View AI analysis results:
+```sql
+SELECT c.cluster_id, ar.response_text, ar.processing_time_ms
+FROM ai_analysis_results ar
+JOIN clusters c ON ar.cluster_id = c.id
+WHERE ar.session_id = 1
+ORDER BY c.cluster_id;
+```
+
+**Use Cases:**
+- **Subject Analysis**: AI-generated summaries of what each cluster is about
+- **Sentiment Analysis**: Understanding the tone and sentiment of discussions
+- **Topic Classification**: Categorizing clusters by subject matter
+- **Insight Generation**: Extracting key insights from large volumes of tweets
 
 ---
 
