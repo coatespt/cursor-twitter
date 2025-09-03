@@ -204,8 +204,17 @@ function groupResultsByBatch(results) {
 function formatAnalysisText(text) {
 	if (!text) return 'No analysis available';
 	
-	// Clean up the text, remove leading whitespace, and limit length
-	const cleaned = text.trim().replace(/^\s+/gm, ''); // Remove leading whitespace from each line
+	// Clean up the text, remove leading whitespace from each line
+	let cleaned = text.trim();
+	
+	// Split into lines, trim each line, and rejoin
+	const lines = cleaned.split('\n');
+	const trimmedLines = lines.map(line => line.trim());
+	cleaned = trimmedLines.join('\n');
+	
+	// Also remove any remaining leading whitespace patterns
+	cleaned = cleaned.replace(/^\s+/gm, '');
+	
 	const maxLength = 200;
 	
 	if (cleaned.length <= maxLength) {

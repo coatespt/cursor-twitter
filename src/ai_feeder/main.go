@@ -421,14 +421,28 @@ func cleanAIResponse(response string) string {
 		}
 	}
 
-	// Trim whitespace and ensure it starts with the structured format
-	cleaned = strings.TrimSpace(cleaned)
+	// Clean up whitespace more aggressively
+	// Split into lines, trim each line, and rejoin
+	lines := strings.Split(cleaned, "\n")
+	var cleanedLines []string
+	for _, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+		if trimmedLine != "" {
+			cleanedLines = append(cleanedLines, trimmedLine)
+		}
+	}
+	cleaned = strings.Join(cleanedLines, "\n")
+
+	// Ensure it starts with the structured format
 	if !strings.HasPrefix(cleaned, "**Main Topic:**") {
 		// Try to find where the structured format starts
 		if idx := strings.Index(cleaned, "**Main Topic:**"); idx != -1 {
 			cleaned = cleaned[idx:]
 		}
 	}
+
+	// Final trim to remove any remaining leading/trailing whitespace
+	cleaned = strings.TrimSpace(cleaned)
 
 	return cleaned
 }
