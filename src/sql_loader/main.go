@@ -445,6 +445,20 @@ func (sl *SQLLoader) InsertBusyWords(clusterID int, cluster json_parser.Cluster)
 
 // ProcessBatch processes a single batch and inserts all its data
 func (sl *SQLLoader) ProcessBatch(batch json_parser.Batch) error {
+	// Check if batch already exists first
+	var existingBatchID int
+	err := sl.db.QueryRow(`
+		SELECT id FROM batches WHERE run_id = $1 AND batch_number = $2
+	`, sl.runID, batch.Data.BatchNumber).Scan(&existingBatchID)
+
+	if err == nil {
+		// Batch already exists, skip processing entirely
+		fmt.Printf("  Batch %d already exists (ID: %d), skipping\n", batch.Data.BatchNumber, existingBatchID)
+		return nil
+	} else if err != sql.ErrNoRows {
+		return fmt.Errorf("failed to check if batch %d exists: %v", batch.Data.BatchNumber, err)
+	}
+
 	// Insert batch
 	batchID, err := sl.InsertBatch(batch)
 	if err != nil {
@@ -545,13 +559,9 @@ func (sl *SQLLoader) LoadJSONFile(jsonFilePath string) error {
 	startTime := time.Now()
 
 	for {
-		batches, err := parser.LoadNextChunk()
+		batches, err := parser.LoadNextChunkContinuous()
 		if err != nil {
 			return fmt.Errorf("failed to load chunk: %v", err)
-		}
-
-		if len(batches) == 0 {
-			break // End of file
 		}
 
 		// Process each batch in this chunk
@@ -568,11 +578,9 @@ func (sl *SQLLoader) LoadJSONFile(jsonFilePath string) error {
 			fmt.Printf("Processed %d batches in %v\n", totalBatches, elapsed)
 		}
 	}
-
-	elapsed := time.Since(startTime)
-	fmt.Printf("Completed! Processed %d batches in %v\n", totalBatches, elapsed)
-
-	return nil
+	
+	// Note: This function now runs continuously and never exits
+	// It will keep waiting for new data from the main pipeline
 }
 
 func main() {
@@ -771,19 +779,14 @@ func main() {
 	}
 
 	// If JSON file is provided, load it
-	if len(os.Args) == 3 {
-		jsonFilePath := os.Args[2]
-		if _, err := os.Stat(jsonFilePath); os.IsNotExist(err) {
-			log.Fatalf("JSON file not found: %s", jsonFilePath)
-		}
-
-		fmt.Println("Loading JSON file...")
+	if jsonFilePath != "" {
+		fmt.Printf("\nLoading JSON file: %s\n", jsonFilePath)
 		if err := loader.LoadJSONFile(jsonFilePath); err != nil {
 			log.Fatalf("Failed to load JSON file: %v", err)
 		}
 		fmt.Println("SQL loading completed successfully!")
 	} else {
-		fmt.Println("Database connection test completed successfully!")
-		fmt.Println("To load a JSON file, provide it as the second argument.")
+		fmt.Println("\nDatabase connection test completed successfully!")
+		fmt.Println("To load a JSON file, provide it as an argument.")
 	}
 }

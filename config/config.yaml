@@ -81,7 +81,7 @@ window_batches: 10
 # Whether to log to the console
 # This may be obsolete or have it's precise meaning changed because we no longer
 # log anything to the console other than the JSON output.
-verbose: true 
+verbose: false
 
 # The directory to log to. Full pathsnames are best.
 log_dir: ./logs

@@ -433,12 +433,62 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 
 # TTD and Direction
 
+## We added a delay for cleaning up 3pk's
+We used a default queue length of 250,000 before the cleanup is done. This is so you don't clean up tokens before they are used by the clustering algorithm.
+
+This should be a config value, not hard coded.
+
 ## Global configs on the graphical output. 
 
 It would be nice to see global parameters on the output screen so you could see things like:
 - How big a batch is.
 - How much clock time is represented by each batch
 - Some values we aren't yet computing or displaying like, the quality of a cluster.
+
+
+## Look back over AI results.
+Great. Don't implement yet, but I think it might be interesting to be able to select a particular result and then look back to see how long it's been around over time.  In real life, there would be many thousands or clusters, so you don't want to go all the way back to the earliest necessarily.
+
+Not sure how this would best be done. We're looking for similarity.  It's probably too big to simply submit half an hour of clusters to the LLM.  But how about an SQL query that could look for say, all the busy words in a selected subject/cluster and look back through n batches for clusters that match, i.e., share several of them?
+
+Any suggestions?
+
+I'm thinking you could select a batch on the AI Display screen and then the query could run. Actually, it could run either foreward or backward in time now that I think of it.
+
+Let's worry about how to do the computation first then the display later.
+
+Why don't we start with you implementing a query.  We'll give it one of the latest AI clusters in the DB and you can get the matching cluster from SQL, identify the busy words, and find all the earlier batches going back B batchs that have at least M of them.  Something like that.  
+
+### Browser Modifications
+The browser should get a new mode. The current screen needs a dropdown or button that shifts to a view that displays what we've been talking about.
+
+That screen should have a button to shift to the screen we now have. So two display modes.
+
+On the left vertical panel:
+- We need on dropdown that let you select the run (as in the current screen) 
+
+- With a run selected, it needs a way to pick the starting batch. If you know the batch ID, great. 
+  - If you don't perhaps it should let you scroll through the available batches, and each time you select one it shows you the clusters with the one you select at the top (similarly to the other mode.) 
+
+  - You can scroll down through those batches looking for one you want to search for.
+
+  - However you get to it, you can select a cluster as your starting point
+
+- With a starting batch/cluster selected, it should show you the critical information on the starting cluster, including the AI-generated summary and the busy-words.
+
+- You should be able to select a number of batches back to look.  It could default to a reasonable value, say, 50. That would be about 500 seconds of the firehose. 
+
+- When you indicate go, it would look through the busywords for all the clusters in those batchs for any that include M or more from the set in the cluster you selected. M would need to be setable too.
+
+- It would display the medoid Tweet for all the matching clusters. And some other data about the AI summary, metadata, etc. should also be accessible, perhaps by flyover.
+
+- The Mediods should be first so the you can see as much as possible of the text
+
+- After that you'd need batch-id, cluster-id, date/time, etc.
+
+
+
+
 
 ## Clustering Improvement By Weighting Frequency Classes
 Would clustering be improved by weighting the frequency classes?

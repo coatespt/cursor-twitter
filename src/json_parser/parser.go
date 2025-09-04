@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
 // Batch represents a single batch from the JSON data
@@ -221,4 +222,50 @@ func (p *Parser) LoadInitialData(chunkCount int) ([]Batch, error) {
 	}
 
 	return allBatches, nil
+}
+
+// LoadNextChunkContinuous reads the next chunk and waits for new data if at end of file
+func (p *Parser) LoadNextChunkContinuous() ([]Batch, error) {
+	batches, err := p.LoadNextChunk()
+	if err != nil {
+		return nil, err
+	}
+
+	// If we got batches, return them immediately
+	if len(batches) > 0 {
+		return batches, nil
+	}
+
+	// No batches means we're at end of file, wait for new data
+	fmt.Printf("Reached end of file, waiting for new data...\n")
+	
+	// Get current file size
+	currentSize, err := p.fileHandle.Seek(0, io.SeekEnd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file size: %v", err)
+	}
+
+	// Wait for file to grow
+	for {
+		time.Sleep(1 * time.Second) // Check every second
+		
+		// Check if file has grown
+		newSize, err := p.fileHandle.Seek(0, io.SeekEnd)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check file size: %v", err)
+		}
+
+		if newSize > currentSize {
+			// File has grown, reset offset and try to read new data
+			p.fileOffset = currentSize
+			p.partialJSON = "" // Reset partial JSON since we're at a new position
+			fmt.Printf("File grew from %d to %d bytes, processing new data...\n", currentSize, newSize)
+			
+			// Try to read the new data
+			return p.LoadNextChunk()
+		}
+
+		// Reset file pointer to end for next check
+		p.fileHandle.Seek(0, io.SeekEnd)
+	}
 }

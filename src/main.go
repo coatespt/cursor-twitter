@@ -1588,13 +1588,26 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 		// Process cleanup queue every N tweets to remove zero-count tokens
 		// This mitigates 3pk collisions by cleaning up tokens that are no longer active
 		if cfg.Analysis.CleanupTriggerBatchSize > 0 && TotalTweetsRead%cfg.Analysis.CleanupTriggerBatchSize == 0 && TotalTweetsRead > 0 {
+			// Get queue size before processing
+			queueSizeBefore := pipeline.GetCleanupQueueSize()
+
+			// Only process cleanup if queue is large enough (250k tokens = ~10 batches)
+			// This prevents premature cleanup of 3PKs that are still "in flight" for busy word analysis
+			if queueSizeBefore < 250000 {
+				// Queue too small - skip cleanup to avoid race conditions
+				if cfg.Verbose && TotalTweetsRead%100000 == 0 {
+					LogDebug(func() string {
+						return fmt.Sprintf("Skipping 3PK cleanup - queue size %d below threshold 250000 (tweet_count=%d)",
+							queueSizeBefore, TotalTweetsRead)
+					})
+				}
+				continue
+			}
+
 			cleanupMaxItems := cfg.Analysis.CleanupMaxItems
 			if cleanupMaxItems <= 0 {
 				cleanupMaxItems = 2000 // Default if not configured
 			}
-
-			// Get queue size before processing
-			queueSizeBefore := pipeline.GetCleanupQueueSize()
 
 			removedCount := pipeline.ProcessCleanupQueue(cleanupMaxItems)
 

@@ -538,12 +538,23 @@ Loads the JSON output from the main pipeline into a PostgreSQL database for anal
 **Build:**
 ```bash
 cd src/sql_loader
-go build -o sql_loader main.go
+go build -o sql_loader .
 ```
 
 **Basic Usage:**
 ```bash
 ./sql_loader "Run Name" ../../config/database.yaml ../../config/config.yaml
+```
+
+**Real-time Processing (Recommended):**
+```bash
+# Build and run in one command for real-time database population
+cd src/sql_loader && go build -o sql_loader . && ./sql_loader "Run Name" ../../config/database.yaml ../../config/config.yaml ../../clusters.json
+
+# Or build once, then run multiple times
+cd src/sql_loader
+go build -o sql_loader .
+./sql_loader "Run Name" ../../config/database.yaml ../../config/config.yaml ../../clusters.json
 ```
 
 **With Experimental Config:**
@@ -564,6 +575,8 @@ go build -o sql_loader main.go
 **Key Features:**
 - **Experiment Tracking**: Each run creates a record with all configuration parameters
 - **Duplicate Prevention**: Automatically skips existing batches/clusters
+- **Real-time Processing**: Can read JSON files while they're being written by the main pipeline
+- **Incremental Loading**: Efficiently processes only new data, skips existing batches
 - **Configurable Limits**: Option to cap tweets per cluster to manage database size
 - **Data Validation**: Warnings for anomalous data (clusters with no busy words)
 - **Config Override Support**: Works with experimental configurations

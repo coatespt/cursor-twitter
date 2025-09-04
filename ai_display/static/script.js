@@ -5,6 +5,13 @@ let totalBatches = 0;
 let batchWindowSize = 10; // Normal window size
 let maxWindowSize = 50;    // Maximum window size when going back
 
+// Global variables
+let currentMode = 'standard';
+let currentRunId = 1;
+let currentBatch = 0;
+let currentClusters = [];
+let selectedClusterId = null;
+
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
     // Load initial data
@@ -333,6 +340,196 @@ function updateWindowPosition() {
     console.log('Window position changed to:', position);
 }
 
+// Mode switching
+function switchMode(mode) {
+    currentMode = mode;
+    
+    // Update mode buttons
+    document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
+    document.getElementById(`mode-${mode}`).classList.add('active');
+    
+    // Show/hide controls
+    document.getElementById('standard-controls').style.display = mode === 'standard' ? 'block' : 'none';
+    document.getElementById('evolution-controls').style.display = mode === 'evolution' ? 'block' : 'none';
+    
+    // Show/hide displays
+    document.getElementById('standard-display').style.display = mode === 'standard' ? 'block' : 'none';
+    document.getElementById('evolution-display').style.display = mode === 'evolution' ? 'block' : 'none';
+    
+    // Update panel title
+    const title = mode === 'standard' ? 'AI Analysis Results' : 'Cluster Evolution Analysis';
+    document.getElementById('panel-title').textContent = title;
+    
+    // Clear evolution results when switching
+    if (mode === 'standard') {
+        clearEvolutionResults();
+        clearError();
+    } else if (mode === 'evolution') {
+        // Auto-load batches when switching to evolution mode
+        loadBatchesWithClusters();
+    }
+}
+
+// Load batches that have clusters for the current run
+async function loadBatchesWithClusters() {
+    try {
+        const response = await fetch(`/api/batches-with-clusters?run_id=${currentRunId}`);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const batches = await response.json();
+        populateBatchSelector(batches);
+        
+    } catch (error) {
+        console.error('Error loading batches:', error);
+        showError('Error loading batches. Please try again.');
+    }
+}
+
+// Populate the batch selector dropdown
+function populateBatchSelector(batches) {
+    const selector = document.getElementById('evolution-batch');
+    selector.innerHTML = '<option value="">Select a batch</option>';
+    
+    batches.forEach(batch => {
+        const option = document.createElement('option');
+        option.value = batch.batch_number;
+        option.textContent = `Batch ${batch.batch_number} (${batch.cluster_count} clusters) - ${new Date(batch.batch_time).toLocaleString()}`;
+        selector.appendChild(option);
+    });
+}
+
+// Load clusters for a specific batch
+async function loadClustersForBatch() {
+    const batchNumber = document.getElementById('evolution-batch').value;
+    if (!batchNumber) {
+        return; // No batch selected, nothing to do
+    }
+    
+    try {
+        const response = await fetch(`/api/clusters?batch_number=${batchNumber}&run_id=${currentRunId}`);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        currentClusters = await response.json();
+        populateClusterSelector();
+        
+    } catch (error) {
+        console.error('Error loading clusters:', error);
+        showError('Error loading clusters for batch. Please try again.');
+    }
+}
+
+// Populate the cluster selector dropdown
+function populateClusterSelector() {
+    const selector = document.getElementById('evolution-cluster');
+    selector.innerHTML = '<option value="">Select a cluster</option>';
+    
+    if (currentClusters.length === 0) {
+        selector.innerHTML = '<option value="">No clusters found in this batch</option>';
+        return;
+    }
+    
+    currentClusters.forEach(cluster => {
+        const option = document.createElement('option');
+        option.value = cluster.cluster_id;
+        option.textContent = `Cluster ${cluster.cluster_number} (${cluster.size} tweets) - ${cluster.busy_words.join(', ')}`;
+        selector.appendChild(option);
+    });
+}
+
+// Handle cluster selection
+function selectStartingCluster() {
+    const selector = document.getElementById('evolution-cluster');
+    selectedClusterId = selector.value;
+}
+
+// Run cluster evolution analysis
+async function runEvolutionAnalysis() {
+    if (!selectedClusterId) {
+        showError('Please select a starting cluster first.');
+        return;
+    }
+    
+    const batchesBack = document.getElementById('batches-back').value;
+    const minMatchingWords = document.getElementById('min-matching-words').value;
+    
+    // Show loading
+    document.getElementById('evolution-loading').style.display = 'block';
+    document.getElementById('evolution-results-grid').innerHTML = '';
+    
+    try {
+        const response = await fetch(`/api/cluster-evolution?cluster_id=${selectedClusterId}&batches_back=${batchesBack}&min_matching_words=${minMatchingWords}`);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const results = await response.json();
+        displayEvolutionResults(results);
+        
+    } catch (error) {
+        console.error('Error running evolution analysis:', error);
+        showError('Error running cluster evolution analysis. Please try again.');
+    } finally {
+        document.getElementById('evolution-loading').style.display = 'none';
+    }
+}
+
+// Display evolution analysis results
+function displayEvolutionResults(results) {
+    const container = document.getElementById('evolution-results-grid');
+    container.innerHTML = '';
+    
+    if (results.length === 0) {
+        container.innerHTML = '<p>No results found for the given parameters.</p>';
+        return;
+    }
+    
+    results.forEach(result => {
+        const resultDiv = document.createElement('div');
+        resultDiv.className = 'evolution-result';
+        resultDiv.classList.add(result.type.toLowerCase().replace(' ', '-'));
+        
+        const title = result.type === 'TARGET CLUSTER' ? 'Starting Cluster' : `Matching Cluster (${result.batches_back} batches back)`;
+        
+        resultDiv.innerHTML = `
+            <div class="result-header">
+                <h3>${title}</h3>
+                <div class="result-meta">
+                    <span>Batch: ${result.batch_number}</span>
+                    <span>Cluster: ${result.cluster_number}</span>
+                    <span>Size: ${result.size}</span>
+                    ${result.batches_back > 0 ? `<span>Batches Back: ${result.batches_back}</span>` : ''}
+                </div>
+            </div>
+            <div class="result-content">
+                <div class="busy-words">
+                    <strong>Busy Words:</strong> ${result.busy_words.join(', ')}
+                </div>
+                <div class="ai-summary">
+                    <strong>AI Analysis:</strong>
+                    <div class="summary-text">${formatAnalysisText(result.ai_summary)}</div>
+                </div>
+            </div>
+        `;
+        
+        container.appendChild(resultDiv);
+    });
+    
+    // Update results count
+    document.getElementById('results-count').textContent = `Results: ${results.length}`;
+}
+
+// Clear evolution results
+function clearEvolutionResults() {
+    document.getElementById('evolution-results-grid').innerHTML = '';
+    document.getElementById('evolution-loading').style.display = 'none';
+    document.getElementById('evolution-cluster').innerHTML = '<option value="">Select a cluster first</option>';
+    selectedClusterId = null;
+}
+
 // Utility functions
 function escapeHtml(text) {
     const div = document.createElement('div');
@@ -340,10 +537,32 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// Show error message without modal dialog
 function showError(message) {
-    // Simple error display - could be enhanced with a proper notification system
-    console.error(message);
-    alert(message);
+    // Create or update error display
+    let errorDiv = document.getElementById('error-message');
+    if (!errorDiv) {
+        errorDiv = document.createElement('div');
+        errorDiv.id = 'error-message';
+        errorDiv.className = 'error-message';
+        document.querySelector('.right-panel').insertBefore(errorDiv, document.querySelector('.right-panel').firstChild);
+    }
+    
+    errorDiv.textContent = message;
+    errorDiv.style.display = 'block';
+    
+    // Auto-hide after 5 seconds
+    setTimeout(() => {
+        errorDiv.style.display = 'none';
+    }, 5000);
+}
+
+// Clear error message
+function clearError() {
+    const errorDiv = document.getElementById('error-message');
+    if (errorDiv) {
+        errorDiv.style.display = 'none';
+    }
 }
 
 // Global event listeners
