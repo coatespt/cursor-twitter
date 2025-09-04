@@ -144,6 +144,32 @@ body {
     cursor: not-allowed;
 }
 
+.dropdown-with-buttons {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.dropdown-with-buttons select {
+    flex: 1;
+    min-width: 0;
+}
+
+.dropdown-with-buttons button {
+    padding: 4px 8px;
+    font-size: 14px;
+    border: 1px solid #ddd;
+    background-color: #f8f9fa;
+    border-radius: 3px;
+    cursor: pointer;
+    min-width: 30px;
+}
+
+.dropdown-with-buttons button:hover {
+    background-color: #e9ecef;
+    border-color: #adb5bd;
+}
+
 /* Right Panel */
 .right-panel {
     flex: 1;

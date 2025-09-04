@@ -280,6 +280,31 @@ func (s *Server) handleGetBatchesWithClusters(w http.ResponseWriter, r *http.Req
 	json.NewEncoder(w).Encode(batches)
 }
 
+// handleGetBatchesWithAIAnalysisForEvolution handles API request to get batches that have clusters with AI analysis for evolution mode
+func (s *Server) handleGetBatchesWithAIAnalysisForEvolution(w http.ResponseWriter, r *http.Request) {
+	runIDStr := r.URL.Query().Get("run_id")
+
+	if runIDStr == "" {
+		http.Error(w, "run_id is required", http.StatusBadRequest)
+		return
+	}
+
+	runID, err := strconv.Atoi(runIDStr)
+	if err != nil {
+		http.Error(w, "Invalid run_id", http.StatusBadRequest)
+		return
+	}
+
+	batches, err := s.getBatchesWithAIAnalysisForEvolution(runID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get batches with AI analysis: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(batches)
+}
+
 // handleGetClusterEvolution handles API request to perform cluster evolution analysis
 func (s *Server) handleGetClusterEvolution(w http.ResponseWriter, r *http.Request) {
 	clusterIDStr := r.URL.Query().Get("cluster_id")
@@ -411,15 +436,23 @@ func (s *Server) getAnalysisResults(startBatch, limit, runID int) ([]AnalysisRes
 func (s *Server) getExperimentRuns() ([]map[string]interface{}, error) {
 	query := `
 		SELECT 
-			run_id,
-			run_name,
-			run_date_time,
-			window_size,
-			batch_size,
-			freq_classes,
-			min_jaccard_similarity
-		FROM experiment_runs
-		ORDER BY run_id DESC
+			er.run_id,
+			er.run_name,
+			er.run_date_time,
+			er.window_size,
+			er.batch_size,
+			er.freq_classes,
+			er.min_jaccard_similarity,
+			COUNT(DISTINCT aar.result_id) as ai_analysis_count
+		FROM experiment_runs er
+		LEFT JOIN ai_analysis_results aar ON er.run_id = (
+			SELECT b.run_id 
+			FROM clusters c 
+			JOIN batches b ON c.batch_id = b.id 
+			WHERE c.id = aar.cluster_id
+		)
+		GROUP BY er.run_id, er.run_name, er.run_date_time, er.window_size, er.batch_size, er.freq_classes, er.min_jaccard_similarity
+		ORDER BY er.run_id DESC
 	`
 
 	rows, err := s.db.Query(query)
@@ -434,6 +467,7 @@ func (s *Server) getExperimentRuns() ([]map[string]interface{}, error) {
 		var runName, runDateTime string
 		var windowSize, batchSize, freqClasses sql.NullInt32
 		var minJaccard sql.NullFloat64
+		var aiAnalysisCount int
 
 		err := rows.Scan(
 			&runID,
@@ -443,6 +477,7 @@ func (s *Server) getExperimentRuns() ([]map[string]interface{}, error) {
 			&batchSize,
 			&freqClasses,
 			&minJaccard,
+			&aiAnalysisCount,
 		)
 		if err != nil {
 			return nil, err
@@ -456,6 +491,7 @@ func (s *Server) getExperimentRuns() ([]map[string]interface{}, error) {
 			"batch_size":             batchSize.Int32,
 			"freq_classes":           freqClasses.Int32,
 			"min_jaccard_similarity": minJaccard.Float64,
+			"ai_analysis_count":      aiAnalysisCount,
 		}
 		runs = append(runs, run)
 	}
@@ -562,6 +598,72 @@ func (s *Server) getBatchesWithClusters(runID int) ([]map[string]interface{}, er
 		batches = append(batches, batch)
 	}
 
+	return batches, nil
+}
+
+// getBatchesWithAIAnalysisForEvolution gets only batches that have clusters with AI analysis for evolution mode
+func (s *Server) getBatchesWithAIAnalysisForEvolution(runID int) ([]map[string]interface{}, error) {
+	// First, let's check if there are any AI analysis results for this run_id
+	checkQuery := `
+		SELECT COUNT(*) 
+		FROM ai_analysis_results aar
+		JOIN clusters c ON aar.cluster_id = c.id
+		JOIN batches b ON c.batch_id = b.id
+		WHERE b.run_id = $1
+	`
+	var aiResultCount int
+	err := s.db.QueryRow(checkQuery, runID).Scan(&aiResultCount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check AI analysis results: %v", err)
+	}
+
+	// Log the count for debugging
+	fmt.Printf("DEBUG: Found %d AI analysis results for run_id %d\n", aiResultCount, runID)
+
+	if aiResultCount == 0 {
+		return []map[string]interface{}{}, nil
+	}
+
+	query := `
+		SELECT DISTINCT
+			b.batch_number,
+			b.batch_time,
+			COUNT(DISTINCT c.id) as cluster_count
+		FROM batches b
+		JOIN clusters c ON b.id = c.batch_id
+		JOIN ai_analysis_results aar ON c.id = aar.cluster_id
+		WHERE b.run_id = $1
+		GROUP BY b.batch_number, b.batch_time
+		HAVING COUNT(DISTINCT c.id) > 0
+		ORDER BY b.batch_number DESC
+	`
+
+	rows, err := s.db.Query(query, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var batches []map[string]interface{}
+	for rows.Next() {
+		var batchNumber int
+		var batchTime time.Time
+		var clusterCount int
+
+		err := rows.Scan(&batchNumber, &batchTime, &clusterCount)
+		if err != nil {
+			return nil, err
+		}
+
+		batch := map[string]interface{}{
+			"batch_number":  batchNumber,
+			"batch_time":    batchTime,
+			"cluster_count": clusterCount,
+		}
+		batches = append(batches, batch)
+	}
+
+	fmt.Printf("DEBUG: Returning %d batches with AI analysis for run_id %d\n", len(batches), runID)
 	return batches, nil
 }
 
@@ -738,6 +840,7 @@ func main() {
 	http.HandleFunc("/api/clusters", server.handleGetClustersForBatch)
 	http.HandleFunc("/api/cluster-evolution", server.handleGetClusterEvolution)
 	http.HandleFunc("/api/batches-with-clusters", server.handleGetBatchesWithClusters)
+	http.HandleFunc("/api/batches-with-ai-analysis", server.handleGetBatchesWithAIAnalysisForEvolution)
 
 	// Serve static files
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))

@@ -7,13 +7,20 @@ let maxWindowSize = 50;    // Maximum window size when going back
 
 // Global variables
 let currentMode = 'standard';
-let currentRunId = 1;
+let currentRunId = null; // Will be set from the selected experiment run
 let currentBatch = 0;
 let currentClusters = [];
 let selectedClusterId = null;
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
+    // Initialize currentRunId from the selected option
+    const select = document.getElementById('experiment-run');
+    if (select && select.value) {
+        currentRunId = parseInt(select.value);
+        console.log('Initialized currentRunId to:', currentRunId);
+    }
+    
     // Load initial data
     nextBatch();
     
@@ -272,6 +279,10 @@ function changeExperimentRun() {
 	const selectedOption = select.options[select.selectedIndex];
 	const runID = select.value;
 	
+	// Update current run ID
+	currentRunId = parseInt(runID);
+	console.log('Changed to run_id:', currentRunId);
+	
 	// Update run details display
 	const runDetails = document.getElementById('run-details');
 	if (selectedOption) {
@@ -279,6 +290,7 @@ function changeExperimentRun() {
 		const batchSize = selectedOption.dataset.batchSize || 'N/A';
 		const freqClasses = selectedOption.dataset.freqClasses || 'N/A';
 		const minJaccard = selectedOption.dataset.minJaccard || 'N/A';
+		const aiAnalysisCount = selectedOption.dataset.aiAnalysisCount || 'N/A';
 		
 		runDetails.innerHTML = `
 			<div class="detail-item">
@@ -296,6 +308,10 @@ function changeExperimentRun() {
 			<div class="detail-item">
 				<span>Min Jaccard:</span>
 				<span>${minJaccard}</span>
+			</div>
+			<div class="detail-item">
+				<span>AI Analysis Count:</span>
+				<span>${aiAnalysisCount}</span>
 			</div>
 		`;
 	}
@@ -373,7 +389,7 @@ function switchMode(mode) {
 // Load batches that have clusters for the current run
 async function loadBatchesWithClusters() {
     try {
-        const response = await fetch(`/api/batches-with-clusters?run_id=${currentRunId}`);
+        const response = await fetch(`/api/batches-with-ai-analysis?run_id=${currentRunId}`);
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -398,6 +414,17 @@ function populateBatchSelector(batches) {
         option.textContent = `Batch ${batch.batch_number} (${batch.cluster_count} clusters) - ${new Date(batch.batch_time).toLocaleString()}`;
         selector.appendChild(option);
     });
+    
+    // Auto-select the latest batch (highest batch number)
+    if (batches.length > 0) {
+        const latestBatch = batches.reduce((latest, current) => 
+            current.batch_number > latest.batch_number ? current : latest
+        );
+        selector.value = latestBatch.batch_number;
+        
+        // Auto-load clusters for the latest batch
+        loadClustersForBatch();
+    }
 }
 
 // Load clusters for a specific batch
@@ -415,6 +442,11 @@ async function loadClustersForBatch() {
         
         currentClusters = await response.json();
         populateClusterSelector();
+        
+        // Auto-run analysis if a cluster is selected
+        if (selectedClusterId) {
+            runEvolutionAnalysis();
+        }
         
     } catch (error) {
         console.error('Error loading clusters:', error);
@@ -438,12 +470,75 @@ function populateClusterSelector() {
         option.textContent = `Cluster ${cluster.cluster_number} (${cluster.size} tweets) - ${cluster.busy_words.join(', ')}`;
         selector.appendChild(option);
     });
+    
+    // Auto-select the first cluster
+    if (currentClusters.length > 0) {
+        selector.value = currentClusters[0].cluster_id;
+        selectedClusterId = currentClusters[0].cluster_id;
+    }
 }
 
 // Handle cluster selection
 function selectStartingCluster() {
     const selector = document.getElementById('evolution-cluster');
     selectedClusterId = selector.value;
+}
+
+// Navigation functions for evolution mode
+function previousBatchEvolution() {
+    const selector = document.getElementById('evolution-batch');
+    const currentIndex = selector.selectedIndex;
+    if (currentIndex > 0) {
+        selector.selectedIndex = currentIndex - 1;
+        loadClustersForBatch();
+        // Auto-run analysis after loading clusters
+        setTimeout(() => {
+            if (selectedClusterId) {
+                runEvolutionAnalysis();
+            }
+        }, 100);
+    }
+}
+
+function nextBatchEvolution() {
+    const selector = document.getElementById('evolution-batch');
+    const currentIndex = selector.selectedIndex;
+    if (currentIndex < selector.options.length - 1) {
+        selector.selectedIndex = currentIndex + 1;
+        loadClustersForBatch();
+        // Auto-run analysis after loading clusters
+        setTimeout(() => {
+            if (selectedClusterId) {
+                runEvolutionAnalysis();
+            }
+        }, 100);
+    }
+}
+
+function previousClusterEvolution() {
+    const selector = document.getElementById('evolution-cluster');
+    const currentIndex = selector.selectedIndex;
+    if (currentIndex > 0) {
+        selector.selectedIndex = currentIndex - 1;
+        selectStartingCluster();
+        // Auto-run analysis
+        if (selectedClusterId) {
+            runEvolutionAnalysis();
+        }
+    }
+}
+
+function nextClusterEvolution() {
+    const selector = document.getElementById('evolution-cluster');
+    const currentIndex = selector.selectedIndex;
+    if (currentIndex < selector.options.length - 1) {
+        selector.selectedIndex = currentIndex + 1;
+        selectStartingCluster();
+        // Auto-run analysis
+        if (selectedClusterId) {
+            runEvolutionAnalysis();
+        }
+    }
 }
 
 // Run cluster evolution analysis

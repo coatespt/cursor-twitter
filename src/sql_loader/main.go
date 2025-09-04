@@ -239,8 +239,10 @@ func loadPipelineConfigWithOverride(baseConfigPath, overrideConfigPath string) (
 }
 
 // generateUniqueRunName generates a unique run name, handling duplicates
+// For resuming existing runs, it returns the original name
+// For new runs, it appends a suffix if the name already exists
 func (sl *SQLLoader) generateUniqueRunName(baseName string) (string, error) {
-	// First, try the base name
+	// First, check if the exact name exists
 	var count int
 	err := sl.db.QueryRow(`
 		SELECT COUNT(*) FROM experiment_runs WHERE run_name = $1
@@ -251,28 +253,17 @@ func (sl *SQLLoader) generateUniqueRunName(baseName string) (string, error) {
 	}
 
 	if count == 0 {
-		return baseName, nil // Name is unique
+		return baseName, nil // Name is unique, use it
 	}
 
-	// Find the highest suffix number for this base name
-	var maxSuffix int
-	pattern := baseName + " %"
-	err = sl.db.QueryRow(`
-		SELECT COALESCE(MAX(CAST(SUBSTRING(run_name FROM LENGTH($1) + 2) AS INTEGER)), 0)
-		FROM experiment_runs 
-		WHERE run_name LIKE $2
-	`, baseName, pattern).Scan(&maxSuffix)
-
-	if err != nil {
-		// If the query fails, just append " 1"
-		return fmt.Sprintf("%s 1", baseName), nil
-	}
-
-	// Return name with incremented suffix
-	return fmt.Sprintf("%s %d", baseName, maxSuffix+1), nil
+	// Name exists - for resuming, we want to reuse the same name
+	// Only append suffix if we're explicitly creating a new run
+	// For now, always reuse the existing name to enable resuming
+	return baseName, nil
 }
 
 // CreateExperimentRun creates a new experiment run record and returns the run_id
+// If the run already exists, it returns the existing run_id for resuming
 func (sl *SQLLoader) CreateExperimentRun(runName, pipelineConfigPath, overrideConfigPath string) (int, error) {
 	// Generate unique run name
 	uniqueRunName, err := sl.generateUniqueRunName(runName)
@@ -281,6 +272,23 @@ func (sl *SQLLoader) CreateExperimentRun(runName, pipelineConfigPath, overrideCo
 	}
 
 	fmt.Printf("Using run name: %s\n", uniqueRunName)
+
+	// Check if run already exists
+	var existingRunID int
+	err = sl.db.QueryRow(`
+		SELECT run_id FROM experiment_runs WHERE run_name = $1
+	`, uniqueRunName).Scan(&existingRunID)
+
+	if err == nil {
+		// Run exists, return existing run_id for resuming
+		fmt.Printf("Resuming existing run with ID: %d\n", existingRunID)
+		return existingRunID, nil
+	} else if err != sql.ErrNoRows {
+		return 0, fmt.Errorf("failed to check if run exists: %v", err)
+	}
+
+	// Run doesn't exist, create new one
+	fmt.Printf("Creating new run...\n")
 
 	// Load pipeline config with override
 	var config *PipelineConfig
@@ -319,6 +327,7 @@ func (sl *SQLLoader) CreateExperimentRun(runName, pipelineConfigPath, overrideCo
 		return 0, fmt.Errorf("failed to insert experiment run: %v", err)
 	}
 
+	fmt.Printf("Created new run with ID: %d\n", runID)
 	return runID, nil
 }
 
@@ -554,8 +563,27 @@ func (sl *SQLLoader) LoadJSONFile(jsonFilePath string) error {
 
 	fmt.Printf("Loading JSON file: %s (%.2f MB)\n", jsonFilePath, float64(totalSize)/(1024*1024))
 
+	// Check what the last processed batch was for this run
+	var lastProcessedBatch int
+	err = sl.db.QueryRow(`
+		SELECT COALESCE(MAX(batch_number), -1) 
+		FROM batches 
+		WHERE run_id = $1
+	`, sl.runID).Scan(&lastProcessedBatch)
+
+	if err != nil {
+		return fmt.Errorf("failed to check last processed batch: %v", err)
+	}
+
+	if lastProcessedBatch >= 0 {
+		fmt.Printf("Resuming from batch %d (last processed batch for run_id %d)\n", lastProcessedBatch+1, sl.runID)
+	} else {
+		fmt.Printf("Starting from beginning (no batches found for run_id %d)\n", sl.runID)
+	}
+
 	// Process batches in chunks
 	totalBatches := 0
+	skippedBatches := 0
 	startTime := time.Now()
 
 	for {
@@ -566,6 +594,15 @@ func (sl *SQLLoader) LoadJSONFile(jsonFilePath string) error {
 
 		// Process each batch in this chunk
 		for _, batch := range batches {
+			// Skip batches that have already been processed
+			if batch.Data.BatchNumber <= lastProcessedBatch {
+				skippedBatches++
+				if skippedBatches%100 == 0 {
+					fmt.Printf("Skipped %d already processed batches\n", skippedBatches)
+				}
+				continue
+			}
+
 			if err := sl.ProcessBatch(batch); err != nil {
 				return fmt.Errorf("failed to process batch %d: %v", batch.Data.BatchNumber, err)
 			}
@@ -575,10 +612,10 @@ func (sl *SQLLoader) LoadJSONFile(jsonFilePath string) error {
 		// Progress update every 100 batches
 		if totalBatches%100 == 0 {
 			elapsed := time.Since(startTime)
-			fmt.Printf("Processed %d batches in %v\n", totalBatches, elapsed)
+			fmt.Printf("Processed %d new batches in %v (skipped %d already processed)\n", totalBatches, elapsed, skippedBatches)
 		}
 	}
-	
+
 	// Note: This function now runs continuously and never exits
 	// It will keep waiting for new data from the main pipeline
 }

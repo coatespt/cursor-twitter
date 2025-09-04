@@ -439,7 +439,6 @@ We used a default queue length of 250,000 before the cleanup is done. This is so
 This should be a config value, not hard coded.
 
 ## Global configs on the graphical output. 
-
 It would be nice to see global parameters on the output screen so you could see things like:
 - How big a batch is.
 - How much clock time is represented by each batch
@@ -447,17 +446,10 @@ It would be nice to see global parameters on the output screen so you could see 
 
 
 ## Look back over AI results.
-Great. Don't implement yet, but I think it might be interesting to be able to select a particular result and then look back to see how long it's been around over time.  In real life, there would be many thousands or clusters, so you don't want to go all the way back to the earliest necessarily.
 
-Not sure how this would best be done. We're looking for similarity.  It's probably too big to simply submit half an hour of clusters to the LLM.  But how about an SQL query that could look for say, all the busy words in a selected subject/cluster and look back through n batches for clusters that match, i.e., share several of them?
+NOTE: This is pending getting a big dataset build. That is running now as of lunchtime on September 4 2025.  It should take a couple of days to get the full SQL inserts, but the AI part will take a week or to to get it all.
 
-Any suggestions?
-
-I'm thinking you could select a batch on the AI Display screen and then the query could run. Actually, it could run either foreward or backward in time now that I think of it.
-
-Let's worry about how to do the computation first then the display later.
-
-Why don't we start with you implementing a query.  We'll give it one of the latest AI clusters in the DB and you can get the matching cluster from SQL, identify the busy words, and find all the earlier batches going back B batchs that have at least M of them.  Something like that.  
+We have an AI Display for lookingn back, but it gives poor results. This may be because of a bug that was causing a lot of empty batches. That is fixed now so we shall see how the display seems to run when we get some data.
 
 ### Browser Modifications
 The browser should get a new mode. The current screen needs a dropdown or button that shifts to a view that displays what we've been talking about.

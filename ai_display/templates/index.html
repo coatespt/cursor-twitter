@@ -39,13 +39,15 @@
                 <div class="control-group">
                     <label for="experiment-run">Select Run:</label>
                     <select id="experiment-run" onchange="changeExperimentRun()">
-                        {{range .ExperimentRuns}}
-                        <option value="{{.run_id}}" 
-                                data-window-size="{{.window_size}}" 
-                                data-batch-size="{{.batch_size}}" 
-                                data-freq-classes="{{.freq_classes}}" 
-                                data-min-jaccard="{{.min_jaccard_similarity}}">
-                            {{.run_name}} ({{.run_date_time}})
+                        {{range $index, $run := .ExperimentRuns}}
+                        <option value="{{$run.run_id}}" 
+                                data-window-size="{{$run.window_size}}" 
+                                data-batch-size="{{$run.batch_size}}" 
+                                data-freq-classes="{{$run.freq_classes}}" 
+                                data-min-jaccard="{{$run.min_jaccard_similarity}}"
+                                data-ai-analysis-count="{{$run.ai_analysis_count}}"
+                                {{if eq $index 0}}selected{{end}}>
+                            {{$run.run_name}} ({{$run.run_date_time}}) - {{$run.ai_analysis_count}} AI results
                         </option>
                         {{end}}
                     </select>
@@ -97,16 +99,24 @@
                 <h3>Cluster Evolution Analysis</h3>
                 <div class="control-group">
                     <label for="evolution-batch">Starting Batch:</label>
-                    <select id="evolution-batch" onchange="loadClustersForBatch()">
-                        <option value="">Select a batch</option>
-                    </select>
-                    <button onclick="loadBatchesWithClusters()">Refresh Batches</button>
+                    <div class="dropdown-with-buttons">
+                        <select id="evolution-batch" onchange="loadClustersForBatch()">
+                            <option value="">Select a batch</option>
+                        </select>
+                        <button onclick="previousBatchEvolution()" title="Previous Batch">‹</button>
+                        <button onclick="nextBatchEvolution()" title="Next Batch">›</button>
+                        <button onclick="loadBatchesWithClusters()">Refresh</button>
+                    </div>
                 </div>
                 <div class="control-group">
                     <label for="evolution-cluster">Starting Cluster:</label>
-                    <select id="evolution-cluster" onchange="selectStartingCluster()">
-                        <option value="">Select a cluster first</option>
-                    </select>
+                    <div class="dropdown-with-buttons">
+                        <select id="evolution-cluster" onchange="selectStartingCluster()">
+                            <option value="">Select a cluster first</option>
+                        </select>
+                        <button onclick="previousClusterEvolution()" title="Previous Cluster">‹</button>
+                        <button onclick="nextClusterEvolution()" title="Next Cluster">›</button>
+                    </div>
                 </div>
                 <div class="control-group">
                     <label for="batches-back">Batches Back:</label>
