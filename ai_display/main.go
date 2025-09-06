@@ -65,6 +65,7 @@ type ClusterEvolutionResult struct {
 	BusyWords            []string  `json:"busy_words"`
 	BatchesBack          int       `json:"batches_back"`
 	AISummary            string    `json:"ai_summary"`
+	MedoidTweet          string    `json:"medoid_tweet"`
 	SimilarClustersCount int       `json:"similar_clusters_count"`
 }
 
@@ -78,6 +79,7 @@ type ClusterInfo struct {
 	Size          int       `json:"size"`
 	BusyWords     []string  `json:"busy_words"`
 	AISummary     string    `json:"ai_summary"`
+	HistoryDepth  int       `json:"history_depth"`
 }
 
 // DatasetInfo represents information about the dataset
@@ -502,6 +504,27 @@ func (s *Server) getExperimentRuns() ([]map[string]interface{}, error) {
 // getClustersForBatch gets all clusters for a specific batch
 func (s *Server) getClustersForBatch(batchNumber, runID int) ([]ClusterInfo, error) {
 	query := `
+		WITH cluster_busy_words AS (
+			SELECT c.id as cluster_id, ARRAY_AGG(bw.word ORDER BY bw.word_order) as busy_words
+			FROM clusters c
+			JOIN batches b ON c.batch_id = b.id
+			LEFT JOIN busy_words bw ON c.id = bw.cluster_id
+			WHERE b.batch_number = $1 AND b.run_id = $2
+			GROUP BY c.id
+		),
+		similar_clusters AS (
+			SELECT 
+				cbw.cluster_id,
+				COUNT(DISTINCT c2.id) as history_depth
+			FROM cluster_busy_words cbw
+			LEFT JOIN clusters c2 ON c2.id != cbw.cluster_id
+			LEFT JOIN batches b2 ON c2.batch_id = b2.id
+			LEFT JOIN busy_words bw2 ON c2.id = bw2.cluster_id
+			WHERE b2.run_id = $2 
+			  AND b2.batch_number < $1
+			  AND bw2.word = ANY(cbw.busy_words)
+			GROUP BY cbw.cluster_id
+		)
 		SELECT 
 			c.id as cluster_id,
 			c.batch_id,
@@ -510,13 +533,15 @@ func (s *Server) getClustersForBatch(batchNumber, runID int) ([]ClusterInfo, err
 			c.cluster_id as cluster_number,
 			c.size,
 			ARRAY_AGG(bw.word ORDER BY bw.word_order) as busy_words,
-			COALESCE(ar.response_text, 'No AI analysis available') as ai_summary
+			COALESCE(ar.response_text, 'No AI analysis available') as ai_summary,
+			COALESCE(sc.history_depth, 0) as history_depth
 		FROM clusters c
 		JOIN batches b ON c.batch_id = b.id
 		LEFT JOIN busy_words bw ON c.id = bw.cluster_id
 		LEFT JOIN ai_analysis_results ar ON c.id = ar.cluster_id
+		LEFT JOIN similar_clusters sc ON c.id = sc.cluster_id
 		WHERE b.batch_number = $1 AND b.run_id = $2
-		GROUP BY c.id, c.batch_id, b.batch_number, b.batch_time, c.cluster_id, c.size, ar.response_text
+		GROUP BY c.id, c.batch_id, b.batch_number, b.batch_time, c.cluster_id, c.size, ar.response_text, sc.history_depth
 		ORDER BY c.cluster_id
 	`
 
@@ -539,6 +564,7 @@ func (s *Server) getClustersForBatch(batchNumber, runID int) ([]ClusterInfo, err
 			&cluster.Size,
 			&busyWordsStr,
 			&cluster.AISummary,
+			&cluster.HistoryDepth,
 		)
 		if err != nil {
 			return nil, err
@@ -625,17 +651,50 @@ func (s *Server) getBatchesWithAIAnalysisForEvolution(runID int) ([]map[string]i
 	}
 
 	query := `
-		SELECT DISTINCT
-			b.batch_number,
-			b.batch_time,
-			COUNT(DISTINCT c.id) as cluster_count
-		FROM batches b
-		JOIN clusters c ON b.id = c.batch_id
-		JOIN ai_analysis_results aar ON c.id = aar.cluster_id
-		WHERE b.run_id = $1
-		GROUP BY b.batch_number, b.batch_time
-		HAVING COUNT(DISTINCT c.id) > 0
-		ORDER BY b.batch_number DESC
+		WITH batch_clusters AS (
+			SELECT DISTINCT
+				b.batch_number,
+				b.batch_time,
+				COUNT(DISTINCT c.id) as cluster_count
+			FROM batches b
+			JOIN clusters c ON b.id = c.batch_id
+			JOIN ai_analysis_results aar ON c.id = aar.cluster_id
+			WHERE b.run_id = $1
+			GROUP BY b.batch_number, b.batch_time
+			HAVING COUNT(DISTINCT c.id) > 0
+		),
+		persistent_clusters AS (
+			SELECT 
+				b.batch_number,
+				COUNT(DISTINCT c.id) as persistent_count
+			FROM batches b
+			JOIN clusters c ON b.id = c.batch_id
+			JOIN ai_analysis_results aar ON c.id = aar.cluster_id
+			WHERE b.run_id = $1
+			AND EXISTS (
+				SELECT 1 FROM busy_words bw1
+				JOIN clusters c1 ON bw1.cluster_id = c1.id
+				JOIN batches b1 ON c1.batch_id = b1.id
+				WHERE b1.run_id = $1
+				AND b1.batch_number < b.batch_number
+				AND b1.batch_number >= b.batch_number - 20
+				AND bw1.word IN (
+					SELECT bw2.word FROM busy_words bw2
+					WHERE bw2.cluster_id = c.id
+				)
+				GROUP BY c1.id
+				HAVING COUNT(bw1.word) >= 2
+			)
+			GROUP BY b.batch_number
+		)
+		SELECT 
+			bc.batch_number,
+			bc.batch_time,
+			bc.cluster_count,
+			COALESCE(pc.persistent_count, 0) as persistent_count
+		FROM batch_clusters bc
+		LEFT JOIN persistent_clusters pc ON bc.batch_number = pc.batch_number
+		ORDER BY bc.batch_number DESC
 	`
 
 	rows, err := s.db.Query(query, runID)
@@ -649,22 +708,88 @@ func (s *Server) getBatchesWithAIAnalysisForEvolution(runID int) ([]map[string]i
 		var batchNumber int
 		var batchTime time.Time
 		var clusterCount int
+		var persistentCount int
 
-		err := rows.Scan(&batchNumber, &batchTime, &clusterCount)
+		err := rows.Scan(&batchNumber, &batchTime, &clusterCount, &persistentCount)
 		if err != nil {
 			return nil, err
 		}
 
 		batch := map[string]interface{}{
-			"batch_number":  batchNumber,
-			"batch_time":    batchTime,
-			"cluster_count": clusterCount,
+			"batch_number":     batchNumber,
+			"batch_time":       batchTime,
+			"cluster_count":    clusterCount,
+			"persistent_count": persistentCount,
 		}
 		batches = append(batches, batch)
+
+		// Debug logging for first few batches
+		if len(batches) <= 5 {
+			fmt.Printf("DEBUG: Batch %d: %d clusters, %d persistent\n", batchNumber, clusterCount, persistentCount)
+		}
 	}
 
 	fmt.Printf("DEBUG: Returning %d batches with AI analysis for run_id %d\n", len(batches), runID)
 	return batches, nil
+}
+
+// handleBatchHasPersistentClusters checks if a batch has clusters with history depth > 0
+func (s *Server) handleBatchHasPersistentClusters(w http.ResponseWriter, r *http.Request) {
+	batchNumberStr := r.URL.Query().Get("batch_number")
+	runIDStr := r.URL.Query().Get("run_id")
+
+	if batchNumberStr == "" || runIDStr == "" {
+		http.Error(w, "batch_number and run_id are required", http.StatusBadRequest)
+		return
+	}
+
+	batchNumber, err := strconv.Atoi(batchNumberStr)
+	if err != nil {
+		http.Error(w, "Invalid batch_number", http.StatusBadRequest)
+		return
+	}
+
+	runID, err := strconv.Atoi(runIDStr)
+	if err != nil {
+		http.Error(w, "Invalid run_id", http.StatusBadRequest)
+		return
+	}
+
+	hasPersistent, err := s.batchHasPersistentClusters(runID, batchNumber)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to check persistent clusters: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"has_persistent": hasPersistent})
+}
+
+// batchHasPersistentClusters checks if a batch has any clusters with history depth > 0
+func (s *Server) batchHasPersistentClusters(runID, batchNumber int) (bool, error) {
+	query := `
+		SELECT EXISTS (
+			SELECT 1 FROM clusters c
+			JOIN batches b ON c.batch_id = b.id
+			JOIN ai_analysis_results aar ON c.id = aar.cluster_id
+			WHERE b.run_id = $1 AND b.batch_number = $2
+			AND EXISTS (
+				SELECT 1 FROM busy_words bw1
+				JOIN clusters c1 ON bw1.cluster_id = c1.id
+				JOIN batches b1 ON c1.batch_id = b1.id
+				WHERE b1.run_id = $1
+				AND b1.batch_number < $2
+				AND bw1.word IN (
+					SELECT bw2.word FROM busy_words bw2
+					WHERE bw2.cluster_id = c.id
+				)
+			)
+		)
+	`
+
+	var hasPersistent bool
+	err := s.db.QueryRow(query, runID, batchNumber).Scan(&hasPersistent)
+	return hasPersistent, err
 }
 
 // getClusterEvolution performs cluster evolution analysis
@@ -717,7 +842,8 @@ func (s *Server) getClusterEvolution(clusterID, batchesBack, minMatchingWords in
 				tc.batch_time,
 				ARRAY(SELECT word FROM target_busy_words ORDER BY word_order) as busy_words,
 				0 as batches_back,
-				COALESCE(ar.response_text, 'No AI analysis available') as ai_summary
+				COALESCE(ar.response_text, 'No AI analysis available') as ai_summary,
+				COALESCE((SELECT tweet_text FROM tweets WHERE cluster_id = tc.cluster_id AND is_medoid = true LIMIT 1), 'No medoid tweet available') as medoid_tweet
 			FROM target_cluster tc
 			LEFT JOIN ai_analysis_results ar ON tc.cluster_id = ar.cluster_id
 
@@ -733,7 +859,8 @@ func (s *Server) getClusterEvolution(clusterID, batchesBack, minMatchingWords in
 				b.batch_time,
 				bm.matching_words_list as busy_words,
 				bm.batches_back,
-				COALESCE(ar.response_text, 'No AI analysis available') as ai_summary
+				COALESCE(ar.response_text, 'No AI analysis available') as ai_summary,
+				COALESCE((SELECT tweet_text FROM tweets WHERE cluster_id = bm.cluster_id AND is_medoid = true LIMIT 1), 'No medoid tweet available') as medoid_tweet
 			FROM batch_matches bm 
 			JOIN batches b ON bm.batch_id = b.id 
 			LEFT JOIN ai_analysis_results ar ON bm.cluster_id = ar.cluster_id
@@ -748,7 +875,8 @@ func (s *Server) getClusterEvolution(clusterID, batchesBack, minMatchingWords in
 			size,
 			busy_words,
 			batches_back,
-			ai_summary
+			ai_summary,
+			medoid_tweet
 		FROM all_clusters_with_ai
 		ORDER BY batch_id DESC, type DESC
 	`
@@ -774,6 +902,7 @@ func (s *Server) getClusterEvolution(clusterID, batchesBack, minMatchingWords in
 			&busyWordsStr,
 			&result.BatchesBack,
 			&result.AISummary,
+			&result.MedoidTweet,
 		)
 		if err != nil {
 			return nil, err
@@ -841,6 +970,7 @@ func main() {
 	http.HandleFunc("/api/cluster-evolution", server.handleGetClusterEvolution)
 	http.HandleFunc("/api/batches-with-clusters", server.handleGetBatchesWithClusters)
 	http.HandleFunc("/api/batches-with-ai-analysis", server.handleGetBatchesWithAIAnalysisForEvolution)
+	http.HandleFunc("/api/batch-has-persistent-clusters", server.handleBatchHasPersistentClusters)
 
 	// Serve static files
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))

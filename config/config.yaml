@@ -212,7 +212,7 @@ analysis:
   #   is a separate language detection step that runs on the CSV output, guessing the 
   #   language and populating the language field in the CSV.
   #  
-  language_filter: "en"
+  language_filter: "all"
 
   # K-Means is probably not going to be used anymore.
   kmeans_use_all_words: false  # If true, k-means uses all words in tweets; if false, only busy words

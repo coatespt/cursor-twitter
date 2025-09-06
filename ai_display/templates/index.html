@@ -99,21 +99,32 @@
                 <h3>Cluster Evolution Analysis</h3>
                 <div class="control-group">
                     <label for="evolution-batch">Starting Batch:</label>
-                    <div class="dropdown-with-buttons">
-                        <select id="evolution-batch" onchange="loadClustersForBatch()">
-                            <option value="">Select a batch</option>
-                        </select>
+                    <select id="evolution-batch" onchange="loadClustersForBatch()">
+                        <option value="">Select a batch</option>
+                    </select>
+                    <div class="navigation-buttons">
                         <button onclick="previousBatchEvolution()" title="Previous Batch">‹</button>
                         <button onclick="nextBatchEvolution()" title="Next Batch">›</button>
                         <button onclick="loadBatchesWithClusters()">Refresh</button>
                     </div>
                 </div>
+                
                 <div class="control-group">
-                    <label for="evolution-cluster">Starting Cluster:</label>
-                    <div class="dropdown-with-buttons">
-                        <select id="evolution-cluster" onchange="selectStartingCluster()">
-                            <option value="">Select a cluster first</option>
-                        </select>
+                    <label>
+                        <input type="checkbox" id="show-persistent-only" onchange="togglePersistentFilter()">
+                        Show only batches with persistent clusters
+                    </label>
+                    <label>
+                        <input type="checkbox" id="hide-empty-batches" onchange="toggleEmptyBatchFilter()">
+                        Hide batches with no clusters
+                    </label>
+                </div>
+                <div class="control-group">
+                    <label for="evolution-cluster">C-id, num tweets, history depth, words</label>
+                    <select id="evolution-cluster" onchange="selectStartingCluster()">
+                        <option value="">Select a cluster first</option>
+                    </select>
+                    <div class="navigation-buttons">
                         <button onclick="previousClusterEvolution()" title="Previous Cluster">‹</button>
                         <button onclick="nextClusterEvolution()" title="Next Cluster">›</button>
                     </div>

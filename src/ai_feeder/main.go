@@ -206,20 +206,31 @@ func (af *AIFeeder) Close() error {
 }
 
 // CreateAnalysisSession creates a new AI analysis session
-func (af *AIFeeder) CreateAnalysisSession() (int, error) {
+func (af *AIFeeder) CreateAnalysisSession(runName string) (int, int, error) {
+	// Look up run_id from run_name
+	var runID int
+	err := af.db.QueryRow(`
+		SELECT run_id FROM experiment_runs WHERE run_name = $1
+	`, runName).Scan(&runID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to find experiment run '%s': %v", runName, err)
+	}
+
 	// Read prompt template
 	promptTemplate, err := os.ReadFile(af.config.Processing.PromptTemplate)
 	if err != nil {
-		return 0, fmt.Errorf("failed to read prompt template: %v", err)
+		return 0, 0, fmt.Errorf("failed to read prompt template: %v", err)
 	}
 
-	// Count total clusters (for now, count all clusters since run_id doesn't exist yet)
+	// Count total clusters for this run
 	var totalClusters int
 	err = af.db.QueryRow(`
-		SELECT COUNT(*) FROM clusters
-	`).Scan(&totalClusters)
+		SELECT COUNT(*) FROM clusters c
+		JOIN batches b ON c.batch_id = b.id
+		WHERE b.run_id = $1
+	`, runID).Scan(&totalClusters)
 	if err != nil {
-		return 0, fmt.Errorf("failed to count clusters: %v", err)
+		return 0, 0, fmt.Errorf("failed to count clusters: %v", err)
 	}
 
 	// Insert session
@@ -230,22 +241,22 @@ func (af *AIFeeder) CreateAnalysisSession() (int, error) {
 			analysis_type, total_clusters
 		) VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING session_id
-	`, 1, af.config.Processing.SessionName, // Use default run_id = 1
+	`, runID, af.config.Processing.SessionName,
 		af.config.AI.Model, af.config.AI.Endpoint, string(promptTemplate),
 		af.config.Processing.AnalysisType, totalClusters).Scan(&sessionID)
 
 	if err != nil {
-		return 0, fmt.Errorf("failed to create analysis session: %v", err)
+		return 0, 0, fmt.Errorf("failed to create analysis session: %v", err)
 	}
 
-	af.logger.Printf("Created AI analysis session %d for run %d (%d clusters)",
-		sessionID, 1, totalClusters)
+	af.logger.Printf("Created AI analysis session %d for run '%s' (run_id %d, %d clusters)",
+		sessionID, runName, runID, totalClusters)
 
-	return sessionID, nil
+	return sessionID, runID, nil
 }
 
 // GetClustersForAnalysis retrieves clusters to analyze
-func (af *AIFeeder) GetClustersForAnalysis(sessionID int) ([]ClusterData, error) {
+func (af *AIFeeder) GetClustersForAnalysis(sessionID int, runID int) ([]ClusterData, error) {
 	query := `
 		SELECT 
 			c.id, c.cluster_id, b.batch_number, b.batch_time, c.size, c.quality_score,
@@ -255,11 +266,11 @@ func (af *AIFeeder) GetClustersForAnalysis(sessionID int) ([]ClusterData, error)
 			(SELECT frequency_class FROM busy_words WHERE cluster_id = c.id LIMIT 1) as frequency_class
 		FROM clusters c
 		JOIN batches b ON c.batch_id = b.id
-		WHERE c.id >= $1
+		WHERE b.run_id = $1
+		AND c.id >= $2
 		AND c.id NOT IN (
 			SELECT DISTINCT cluster_id 
 			FROM ai_analysis_results 
-			WHERE session_id = $2
 		)
 		ORDER BY c.id
 	`
@@ -269,7 +280,7 @@ func (af *AIFeeder) GetClustersForAnalysis(sessionID int) ([]ClusterData, error)
 		query += fmt.Sprintf(" LIMIT %d", af.config.Processing.MaxClusters)
 	}
 
-	rows, err := af.db.Query(query, af.config.Processing.StartFromCluster, sessionID)
+	rows, err := af.db.Query(query, runID, af.config.Processing.StartFromCluster)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query clusters: %v", err)
 	}
@@ -549,13 +560,16 @@ func (af *AIFeeder) ProcessCluster(sessionID int, cluster ClusterData, promptTem
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Printf("Usage: %s <config.yaml>\n", os.Args[0])
-		fmt.Printf("Example: %s ../../config/ai_feeder.yaml\n", os.Args[0])
+	if len(os.Args) < 3 {
+		fmt.Printf("Usage: %s <run_name> <config.yaml>\n", os.Args[0])
+		fmt.Printf("  run_name: Name of the experiment run to analyze (e.g., \"sept_4_ptc\")\n")
+		fmt.Printf("  config.yaml: AI feeder configuration file\n")
+		fmt.Printf("Example: %s \"sept_4_ptc\" ../../config/ai_feeder.yaml\n", os.Args[0])
 		os.Exit(1)
 	}
 
-	configPath := os.Args[1]
+	runName := os.Args[1]
+	configPath := os.Args[2]
 
 	// Create AI feeder
 	feeder, err := NewAIFeeder(configPath)
@@ -565,7 +579,7 @@ func main() {
 	defer feeder.Close()
 
 	// Create analysis session
-	sessionID, err := feeder.CreateAnalysisSession()
+	sessionID, runID, err := feeder.CreateAnalysisSession(runName)
 	if err != nil {
 		log.Fatalf("Failed to create analysis session: %v", err)
 	}
@@ -582,7 +596,7 @@ func main() {
 	}
 
 	// Get clusters to analyze
-	clusters, err := feeder.GetClustersForAnalysis(sessionID)
+	clusters, err := feeder.GetClustersForAnalysis(sessionID, runID)
 	if err != nil {
 		log.Fatalf("Failed to get clusters: %v", err)
 	}

@@ -412,7 +412,7 @@ The display component provides a web interface for:
 cd display
 
 # Build the display component
-./build.sh
+go build -o cursor-twitter-display
 ```
 
 ### Running the Display
@@ -786,7 +786,12 @@ cd ai_display && go build -o ai_display main.go
 
 **Run:**
 ```bash
-./ai_display/ai_display config/ai_display.yaml
+./ai_display ../config/ai_display.yaml
+```
+
+**Build and Run in One Command:**
+```bash
+cd ai_display && go build -o ai_display main.go && ./ai_display ../config/ai_display.yaml
 ```
 
 **Access:**

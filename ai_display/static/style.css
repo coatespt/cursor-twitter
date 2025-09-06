@@ -144,30 +144,38 @@ body {
     cursor: not-allowed;
 }
 
-.dropdown-with-buttons {
+.navigation-buttons {
     display: flex;
-    align-items: center;
-    gap: 5px;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 8px;
 }
 
-.dropdown-with-buttons select {
-    flex: 1;
-    min-width: 0;
-}
-
-.dropdown-with-buttons button {
-    padding: 4px 8px;
-    font-size: 14px;
+.navigation-buttons button {
+    padding: 6px 12px;
+    font-size: 16px;
     border: 1px solid #ddd;
     background-color: #f8f9fa;
-    border-radius: 3px;
+    border-radius: 4px;
     cursor: pointer;
-    min-width: 30px;
+    min-width: 40px;
+    font-weight: bold;
 }
 
-.dropdown-with-buttons button:hover {
+.navigation-buttons button:hover {
     background-color: #e9ecef;
     border-color: #adb5bd;
+}
+
+.navigation-buttons button:last-child {
+    background-color: #007bff;
+    color: white;
+    border-color: #007bff;
+}
+
+.navigation-buttons button:last-child:hover {
+    background-color: #0056b3;
+    border-color: #0056b3;
 }
 
 /* Right Panel */

@@ -623,8 +623,14 @@ func (sl *SQLLoader) LoadJSONFile(jsonFilePath string) error {
 func main() {
 	if len(os.Args) < 4 {
 		fmt.Printf("Usage: %s <run_name> <database-config.yaml> <pipeline-config.yaml> [override-config.yaml] [json-file]\n", os.Args[0])
-		fmt.Printf("Example: %s \"Test Run\" ../../config/database.yaml ../../config/config.yaml\n", os.Args[0])
-		fmt.Printf("Example: %s \"High Freq Test\" ../../config/database.yaml ../../config/config.yaml ../../config/experiments/high_freq.yaml ../../august_12_clusters.json\n", os.Args[0])
+		fmt.Printf("  run_name: Name for this experiment run (e.g., \"sept_4_ptc\", \"Test Run\")\n")
+		fmt.Printf("  database-config.yaml: Database connection settings\n")
+		fmt.Printf("  pipeline-config.yaml: Pipeline processing configuration\n")
+		fmt.Printf("  override-config.yaml: Optional config overrides\n")
+		fmt.Printf("  json-file: Optional specific JSON file to load (defaults to pipeline output)\n")
+		fmt.Printf("\nExamples:\n")
+		fmt.Printf("  %s \"sept_4_ptc\" ../../config/database.yaml ../../config/config.yaml\n", os.Args[0])
+		fmt.Printf("  %s \"High Freq Test\" ../../config/database.yaml ../../config/config.yaml ../../config/experiments/high_freq.yaml ../../august_12_clusters.json\n", os.Args[0])
 		os.Exit(1)
 	}
 
