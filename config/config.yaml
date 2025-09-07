@@ -55,7 +55,7 @@ token_persist_files: 50
 # performance, as rebuilding frequency filters is a compute-intensive operation.
 # 50 files with a rebuild every 20 has worked, but a smaller number might 
 # be better.  Try 10.
-rebuild_every_files: 20
+rebuild_every_files: 10
 
 # The number of tweets to process in each busy-word process cycle. 
 # Every time batch number of tweets is read, the busy-word processors kick off
@@ -65,7 +65,7 @@ rebuild_every_files: 20
 # get harder to see, too small and you see things that aren't there.
 #
 #batch: 13000
-batch: 25000     
+batch: 30000     
 
 # Number of batches to keep in the sliding Tweet window. This window is whole
 # Tweets, not tokens. It is used for clustering recent tweets by busy words 
@@ -76,7 +76,7 @@ batch: 25000
 # thread for analysis. It is copied to minimize contention between the 
 # main thread and the analysis thread.
 # Tweets in memory are batch * window_batches.
-window_batches: 10
+window_batches: 5
 
 # Whether to log to the console
 # This may be obsolete or have it's precise meaning changed because we no longer
@@ -212,7 +212,7 @@ analysis:
   #   is a separate language detection step that runs on the CSV output, guessing the 
   #   language and populating the language field in the CSV.
   #  
-  language_filter: "all"
+  language_filter: "en"
 
   # K-Means is probably not going to be used anymore.
   kmeans_use_all_words: false  # If true, k-means uses all words in tweets; if false, only busy words
@@ -281,6 +281,7 @@ analysis:
   # This helps prevent 3PK collisions by cleaning up inactive tokens
   cleanup_trigger_batch_size: 400    # Trigger cleanup every N tweets
   cleanup_max_items: 4000            # Process up to M items per cleanup cycle
+  # cleanup_leave_at_least_items: Now dynamically calculated based on actual token obsolescence rate
 
   # Sort clusters by size: true=descending (biggest first), false=ascending (biggest last)
   # Default: false (ascending) so biggest clusters appear last (closest to console)
@@ -325,12 +326,13 @@ analysis:
 
   # Total sleep time in milliseconds when busyword queues are backlogged
   # Sleep time is distributed across backlogged threads: sleep_ms = bw_thread_slow_delay / freq_classes
-  # Default: 2000ms (2 seconds) - gives busyword processors time to catch up
-  bw_thread_slow_delay: 2000
+  # Default: 200ms (1/5 second) - gives busyword processors time to catch up
+  # It can be small. If the main wakes up it will sleep again if the queues are big.
+  bw_thread_slow_delay: 200
 
   # Sleep time in milliseconds when analytics thread falls behind
   # Default: 1000ms (1 second) - gives analytics thread time to catch up
-  analytics_lag_slow_delay: 1000
+  analytics_lag_slow_delay: 100
 
 # Set to true to enable language detection in the Python parser 
 # WARNING: slows parsing to a crawl!!! like 275/second.  We now use a Golang

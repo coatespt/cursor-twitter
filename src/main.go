@@ -307,9 +307,10 @@ var (
 	globalBatchCount    int // Track batches sent for processing (incremented when signal 3PK sent)
 	lastStatsTime       time.Time
 	lastTweetCount      int
-	freqClasses         int   // Number of frequency classes from config
-	analyticsBatchCount int   // Track which batch the analytics thread has completed
-	analyticsLagFlag    int32 // Atomic flag set by analytics thread to signal main thread to sleep
+	pipelineStartTime   time.Time // Track when pipeline started for total rate calculation
+	freqClasses         int       // Number of frequency classes from config
+	analyticsBatchCount int       // Track which batch the analytics thread has completed
+	analyticsLagFlag    int32     // Atomic flag set by analytics thread to signal main thread to sleep
 
 )
 
@@ -574,6 +575,10 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 
 // runClusteringForBatch runs clustering analysis for a batch of busy words and tweets
 func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets.Tweet, batchNumber int, cfg *Config) {
+	// Early diagnostic to see if function is called
+	slog.Info("Clustering batch start",
+		"batch", batchNumber,
+		"tweets", len(recentTweets))
 	// Print busy word summary
 	printBatchSummary(classResults, batchNumber, cfg)
 
@@ -679,11 +684,21 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 		clusteringMethod = cfg.Analysis.ClusteringMethod
 	}
 
-	LogInfo(func() string {
-		return fmt.Sprintf("Starting clustering (batch=%d, method=%s, tweets=%d, busy_words=%d)",
-			batchNumber, clusteringMethod, len(tweetsWithBusyWords), len(allBusyWords))
-	})
+	slog.Info("Starting clustering",
+		"batch", batchNumber,
+		"method", clusteringMethod,
+		"tweets", len(tweetsWithBusyWords),
+		"busy_words", len(allBusyWords))
 
+	// Diagnostic: Log clustering workload for performance analysis
+	slog.Info("Clustering workload",
+		"batch", batchNumber,
+		"tweets", len(tweetsWithBusyWords),
+		"busy_words", len(allBusyWords),
+		"method", clusteringMethod)
+
+	// Time the clustering operation
+	clusteringStart := time.Now()
 	switch clusteringMethod {
 	case "kmeans":
 		runKMeansClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber, classResults)
@@ -692,6 +707,15 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 	default:
 		runGraphClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber, classResults)
 	}
+	clusteringDuration := time.Since(clusteringStart)
+
+	// Log clustering timing to log file
+	slog.Info("Clustering timing",
+		"batch", batchNumber,
+		"duration", clusteringDuration,
+		"tweets", len(tweetsWithBusyWords),
+		"busy_words", len(allBusyWords),
+		"method", clusteringMethod)
 }
 
 // runKMeansClustering runs k-means clustering on tweets
@@ -831,10 +855,11 @@ func runKMeansClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[s
 		"clusters":                batchClusters,
 	}
 
-	LogInfo(func() string {
-		return fmt.Sprintf("K-means clustering completed (batch=%d, total_clusters=%d, clusters_above_min_size=%d, total_tweets=%d)",
-			batchNumber, totalClusters, clustersAboveMinSize, len(tweetsWithBusyWords))
-	})
+	slog.Info("K-means clustering completed",
+		"batch", batchNumber,
+		"total_clusters", totalClusters,
+		"clusters_above_min_size", clustersAboveMinSize,
+		"total_tweets", len(tweetsWithBusyWords))
 	OutputClusterWithConfig(batchData, cfg)
 }
 
@@ -976,10 +1001,11 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 		"clusters":                batchClusters,
 	}
 
-	LogInfo(func() string {
-		return fmt.Sprintf("Graph clustering completed (batch=%d, total_clusters=%d, clusters_above_min_size=%d, total_tweets=%d)",
-			batchNumber, totalClusters, clustersAboveMinSize, len(tweetsWithBusyWords))
-	})
+	slog.Info("Graph clustering completed",
+		"batch", batchNumber,
+		"total_clusters", totalClusters,
+		"clusters_above_min_size", clustersAboveMinSize,
+		"total_tweets", len(tweetsWithBusyWords))
 	OutputClusterWithConfig(batchData, cfg)
 }
 
@@ -1141,6 +1167,7 @@ func initializePipeline(cfg *Config) error {
 		cfg.RebuildEveryFiles,
 		cfg.Persistence.StateDir,
 		cfg.MinCountThreshold,
+		cfg.WindowBatches,
 	)
 	fct.Start()
 
@@ -1591,14 +1618,19 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 			// Get queue size before processing
 			queueSizeBefore := pipeline.GetCleanupQueueSize()
 
-			// Only process cleanup if queue is large enough (250k tokens = ~10 batches)
-			// This prevents premature cleanup of 3PKs that are still "in flight" for busy word analysis
-			if queueSizeBefore < 250000 {
+			// Use dynamic safety buffer - never remove the last N items from cleanup queue
+			cleanupLeaveAtLeast := int(pipeline.GetDynamicCleanupLeaveAtLeast())
+			if cleanupLeaveAtLeast <= 0 {
+				cleanupLeaveAtLeast = 100000 // Fallback default safety buffer
+			}
+
+			// Only process cleanup if queue is large enough to leave safety buffer
+			if queueSizeBefore <= cleanupLeaveAtLeast {
 				// Queue too small - skip cleanup to avoid race conditions
 				if cfg.Verbose && TotalTweetsRead%100000 == 0 {
 					LogDebug(func() string {
-						return fmt.Sprintf("Skipping 3PK cleanup - queue size %d below threshold 250000 (tweet_count=%d)",
-							queueSizeBefore, TotalTweetsRead)
+						return fmt.Sprintf("Skipping 3PK cleanup - queue size %d below safety buffer %d (tweet_count=%d)",
+							queueSizeBefore, cleanupLeaveAtLeast, TotalTweetsRead)
 					})
 				}
 				continue
@@ -1607,6 +1639,12 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 			cleanupMaxItems := cfg.Analysis.CleanupMaxItems
 			if cleanupMaxItems <= 0 {
 				cleanupMaxItems = 2000 // Default if not configured
+			}
+
+			// Don't remove more items than would leave us below the safety buffer
+			maxRemovable := queueSizeBefore - cleanupLeaveAtLeast
+			if cleanupMaxItems > maxRemovable {
+				cleanupMaxItems = maxRemovable
 			}
 
 			removedCount := pipeline.ProcessCleanupQueue(cleanupMaxItems)
@@ -1865,13 +1903,37 @@ func processCSVFile(filePath string, cfg *Config, printTweets bool) {
 		// Process cleanup queue every N tweets to remove zero-count tokens
 		// This mitigates 3pk collisions by cleaning up tokens that are no longer active
 		if cfg.Analysis.CleanupTriggerBatchSize > 0 && TotalTweetsRead%cfg.Analysis.CleanupTriggerBatchSize == 0 && TotalTweetsRead > 0 {
+			// Get queue size before processing
+			queueSizeBefore := pipeline.GetCleanupQueueSize()
+
+			// Use dynamic safety buffer - never remove the last N items from cleanup queue
+			cleanupLeaveAtLeast := int(pipeline.GetDynamicCleanupLeaveAtLeast())
+			if cleanupLeaveAtLeast <= 0 {
+				cleanupLeaveAtLeast = 100000 // Fallback default safety buffer
+			}
+
+			// Only process cleanup if queue is large enough to leave safety buffer
+			if queueSizeBefore <= cleanupLeaveAtLeast {
+				// Queue too small - skip cleanup to avoid race conditions
+				if cfg.Verbose && TotalTweetsRead%100000 == 0 {
+					LogDebug(func() string {
+						return fmt.Sprintf("Skipping 3PK cleanup - queue size %d below safety buffer %d (tweet_count=%d)",
+							queueSizeBefore, cleanupLeaveAtLeast, TotalTweetsRead)
+					})
+				}
+				continue
+			}
+
 			cleanupMaxItems := cfg.Analysis.CleanupMaxItems
 			if cleanupMaxItems <= 0 {
 				cleanupMaxItems = 2000 // Default if not configured
 			}
 
-			// Get queue size before processing
-			queueSizeBefore := pipeline.GetCleanupQueueSize()
+			// Don't remove more items than would leave us below the safety buffer
+			maxRemovable := queueSizeBefore - cleanupLeaveAtLeast
+			if cleanupMaxItems > maxRemovable {
+				cleanupMaxItems = maxRemovable
+			}
 
 			removedCount := pipeline.ProcessCleanupQueue(cleanupMaxItems)
 
@@ -2123,6 +2185,7 @@ func setupLogger(logDir string) (*slog.Logger, *os.File, error) {
 func startStatsPrinter() {
 	lastStatsTime = time.Now()
 	lastTweetCount = 0
+	pipelineStartTime = time.Now() // Initialize pipeline start time
 	ticker := time.NewTicker(5 * time.Second)
 	go func() {
 		for range ticker.C {
@@ -2156,10 +2219,14 @@ func printStats() {
 	stats := fct.GetStats()
 	distinctTokens := stats["distinct_tokens"]
 
-	// Calculate processing rate
+	// Calculate processing rate (recent period)
 	timeDiff := now.Sub(lastStatsTime).Seconds()
 	tweetDiff := totalTweets - lastTweetCount
 	processingRate := float64(tweetDiff) / timeDiff
+
+	// Calculate total rate for the whole run
+	totalTimeDiff := now.Sub(pipelineStartTime).Seconds()
+	totalRate := float64(totalTweets) / totalTimeDiff
 
 	// Get sliding window stats
 	// tweetQueueMu.RLock()
@@ -2212,13 +2279,15 @@ func printStats() {
 	LogDebug(func() string { return "----------------------" })
 
 	// Also log to slog
-	slog.Info("Pipeline stats",
+	slog.Info("Pipeline stats ",
 		"tweets", totalTweets,
 		"tokens", totalTokens,
 		"distinct", distinctTokens,
 		// "window_size", windowSize, // Removed tweet-based window size
 		"inbound_queue_size", inboundQueueSize,
-		"processing_rate_tweets_per_sec", processingRate)
+		"total_rate_tweets_per_sec", totalRate,
+		"processing_rate_tweets_per_sec", processingRate,
+		"<------")
 
 	// Update for next calculation
 	lastStatsTime = now

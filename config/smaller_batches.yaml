@@ -1,0 +1,9 @@
+
+# Overrride file for smaller batches 9/6/2025
+
+# Rebuilding background frequencies a little more often
+rebuild_every_files: 20
+
+# Smaller batch than we'd been using
+batch: 25000 
+

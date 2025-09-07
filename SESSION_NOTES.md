@@ -51,6 +51,39 @@ Using files is not a "cheat" because any system would typicaly receive Tweets an
 
 The non-graphical output is a series of clustered sets of Tweets that are about new subjects. There is not yet a graphical front end.
 
+# Lessons Learned and Etc
+## Batch Size
+Was getting good results with batch size 25000. Shifted to batch size 12500 and got terrible results. 
+- Many empty batches
+- Apparently broken batches where the were tweets but no clusters, etc. See TTD
+- Slow. Constant backups on busy word queues.
+
+I set it to 30,000 and those problems vanished and it was even faster than at 25000.
+At 25000 it was doing a little under 40,000/second and at 30,000 it's doing 44,000 and up.
+
+Therefore it seems that below a certain size batch, the time spent finding busywords and clustering lets the ingestion outrun the z-filtering, and throttling is doing its job.
+
+But it's not clear why so many empty batches, and broken batches. Empty batches might mean that the Z scores are sensitive to the density in the counters. Tool few tokens in a batch might be affecting the variance too much, which (I think) would mean that fewer words reach the busyword level of Z.
+
+Suspect that this was caused by not enough tokens in the counters, resulting.
+
+Note that reading the decahose faster isn't equivalent to reading the firehose because the relationship to wall clock time changes.  A batch size of 25,000 is fifty seconds of the decahose, but only five seconds of the firehose.  Need to quantify how this should affect the settings. 
+
+
+### To Try
+- Raising the batch size seems to be a good thing. Try raising it even more.
+  - 25,000 is 50 seconds of the decahose, 5 seconds of the firehose. So, one could probably go considerably higher with the firehose.
+- Smaller batch size means higher variance so a bigger spread from the mean would be normal. That would mean you need to lower the Z threshold, right? 
+- We're doing this with the lang=en. Try lang=all.
+
+### Heavy string operations affect throughput
+When running Cursor simultaneously witht he main, throughput went way down. Interesting question why. Could be disk contention or it could be CPU. Monitoring the backlog of the busyword queues would be revealing.
+
+If it is CPU contention, you won't should see the queues backing up, while if it's disk contention, you won't because the busyword processors are starved.
+
+Not sure what happens if the analysis thread is overwhelmed.
+
+
 # The Heuristic
 This section explains the core heuristic for finding the busywords at a minimal level to make TTD items comprehensible.
 
@@ -267,6 +300,7 @@ cd to cursor-twitter
 
 # Notes On Things That Have Been Checked/Fixed/Explored
 
+
 ## Batch Size Confusion
 We had an error where Cursor had the clustering routine working on a multiple of the batch size as set in clustering_window_batches (which is for something else.)  
 
@@ -278,13 +312,22 @@ Note, it will cause an error were the time spanned in a cluster is excessive (wh
 
 
 ## Detecting Backup on the Busy Word Processor Queues
-The main pipeline puts tokens on each of F queues for the F busyword processors.  These should be fast, but if they ever began to run more slowly than the main thread, the queues would grow without bound and eventually result in an OOM error.
+The main pipeline puts tokens on each of F queues for the F busyword processors. 
 
-Accordingly, we periodically check the queue lengths and log warnings if their length ever exceed the batch side multiplied by the  bw_queue_max. A quite small value of 0.1 for bw_queue_max was used without log messages showing up. A higher value would probably be appropriate for general use.
+Accordingly, we periodically check the queue lengths and sleep the main thread for a short time if the queue length ever exceeds a certain value. 
 
 An analogous check is made for the analytics queue. This is checked by comparing the global batch count as maintained by the main thread with the number of batches processed by the analytics thread.
 
-Neither type of slowdown has actually been seen, but both situations cause log lines to be printed both to the log files and to STDERR.
+We were seeing these slowdowns a lot. Analysis of how long clustering took revealed the problem. Occasionally, clustering takes a long time because it is quadratic in the number of Tweets to cluster. However, the Tweet count seems quite random, and only a small percentage are out of the 10ms range. However, occasionally the seemed to run as high as 400ms.
+
+The simple solution was to simply allow the threads to get 10x as long before they started sleeping the main thread.  This allowed the occasional very long batch to run overtime, a debt that the average short computation times could easily make up for.
+Simply multiplying the allowed queue length by ten almost completely stopped the slowdows.
+
+## 3pk's missing.
+We were still getting occasions on which the analystics phase would encounter a 3pk that had already gone to a zero count and been removed.  This was solved by having the FCT count the number of tokens it puts on the zero-count queue and then multiply that number by the value of 
+window_batches and atomically updating a globally accessible value that is used to know how much it is safe to remove from the obsolete keys queue.
+
+Every cleanup_trigger_batch_size Tweets, the main checks the queue and deletes up to cleanup_max_items items from the queue, but the computed value is the lower limit to the queue length that the cleanup will go to.  This ensures that any key the analysis thread uses will still be in the lookup table.
 
 ## How To Tune Meta-Clusters
 
@@ -433,6 +476,36 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 
 # TTD and Direction
 
+## The override file for config breakes the run.
+TODO Immediately!
+If you use the override file it does something that reduces peformance from the 40k/second range to the 240/second range!  WTF?
+You see the frequency queues backing up and the main gets throttled. The only things set in the override file are:
+
+rebuild_every_files: 20
+batch: 12500 
+
+And they aren't even changed. There must be something that gets overwritten or perhaps ends up getting the default in consequence of using the override file.
+ 
+ ## Wierd Output. Batches with tweets but no clusters, etc.
+  DEBUG: Batch 642 has 0 clusters but 357 total tweets. Raw data: clusters=[], total_clusters=22
+  WARNING: Cluster 0 in batch 677 has no tweets!
+
+{
+  "type": "batch",
+  "data": {
+    "batch_number": 17698,
+    "batch_time": "2012-02-17 00:21:04 UTC",
+    "method": "graph",
+    "total_tweets": 25,
+    "total_clusters": 0,
+    "clusters_above_min_size": 0,
+    "clusters": []
+  }
+}
+ALSO with batch size 12500, the majority of the batches are empty.
+
+Could it be that the size of the batch is so small that the z filters don't work?
+
 ## We added a delay for cleaning up 3pk's
 We used a default queue length of 250,000 before the cleanup is done. This is so you don't clean up tokens before they are used by the clustering algorithm.
 
@@ -443,6 +516,19 @@ It would be nice to see global parameters on the output screen so you could see 
 - How big a batch is.
 - How much clock time is represented by each batch
 - Some values we aren't yet computing or displaying like, the quality of a cluster.
+
+## AI Display
+- The cluster and batch dropdowns should be the full width of the left panel with the <, > under them.
+
+- The batch dropdown should display the batch even if you haven't opened it.
+
+- The cluster dropdown should display the cluster with the largest number of tweets, and the rest should be in the DD in sorted order, most to least tweets.  The cluster chosen should wrap around when you have run through them all.
+
+- It should do the query each time a value changes, even the first value.
+
+- The batch refresh button should be under the < and >
+
+- Using either < or > should be move in the appropriate direction and run the analysis.  This should be true for both batch and cluster.
 
 
 ## Look back over AI results.

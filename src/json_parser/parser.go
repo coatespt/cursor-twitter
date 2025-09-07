@@ -144,6 +144,11 @@ func (p *Parser) LoadNextChunk() ([]Batch, error) {
 
 // ParseClusters extracts cluster data from a batch
 func ParseClusters(batch Batch) ([]Cluster, error) {
+	// Handle null clusters (empty batches)
+	if batch.Data.Clusters == nil {
+		return []Cluster{}, nil
+	}
+
 	// Type assert clusters to []interface{} first, then to map[string]interface{}
 	clustersInterface, ok := batch.Data.Clusters.([]interface{})
 	if !ok {
@@ -238,7 +243,7 @@ func (p *Parser) LoadNextChunkContinuous() ([]Batch, error) {
 
 	// No batches means we're at end of file, wait for new data
 	fmt.Printf("Reached end of file, waiting for new data...\n")
-	
+
 	// Get current file size
 	currentSize, err := p.fileHandle.Seek(0, io.SeekEnd)
 	if err != nil {
@@ -248,7 +253,7 @@ func (p *Parser) LoadNextChunkContinuous() ([]Batch, error) {
 	// Wait for file to grow
 	for {
 		time.Sleep(1 * time.Second) // Check every second
-		
+
 		// Check if file has grown
 		newSize, err := p.fileHandle.Seek(0, io.SeekEnd)
 		if err != nil {
@@ -260,7 +265,7 @@ func (p *Parser) LoadNextChunkContinuous() ([]Batch, error) {
 			p.fileOffset = currentSize
 			p.partialJSON = "" // Reset partial JSON since we're at a new position
 			fmt.Printf("File grew from %d to %d bytes, processing new data...\n", currentSize, newSize)
-			
+
 			// Try to read the new data
 			return p.LoadNextChunk()
 		}

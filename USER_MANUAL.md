@@ -335,19 +335,20 @@ Note that there are extensive options in config/config.yaml that are covered the
 
 **Build:**
 ```bash
-go build -o main src/main.go
+cd src
+go build -o main .
 ```
 
 **Run:**
 ```bash
 # Basic run with main config
-./main -config config/config.yaml
+./main -config ../config/config.yaml
 
 # Run with config override for experiments
-./main -config config/config.yaml -override config/experiments/high_freq.yaml
+./main -config ../config/config.yaml -override ../config/experiments/high_freq.yaml
 
 # Run with custom override file
-./main -config config/config.yaml -override config/my_custom_settings.yaml
+./main -config ../config/config.yaml -override ../config/my_custom_settings.yaml
 ```
 
 **Key Features:**
@@ -375,13 +376,13 @@ The pipeline supports a flexible config override system that allows you to:
 **Example Override Usage:**
 ```bash
 # Run with high frequency experiment settings
-./main -config config/config.yaml -override config/experiments/high_freq.yaml
+./main -config ../config/config.yaml -override ../config/experiments/high_freq.yaml
 
 # Run with low threshold experiment settings  
-./main -config config/config.yaml -override config/experiments/low_threshold.yaml
+./main -config ../config/config.yaml -override ../config/experiments/low_threshold.yaml
 
 # Run with your custom settings
-./main -config config/config.yaml -override config/my_computer.yaml
+./main -config ../config/config.yaml -override ../config/my_computer.yaml
 ```
 
 **Caveats**
@@ -547,6 +548,25 @@ go build -o sql_loader .
 ```
 
 **Real-time Processing (Recommended):**
+
+The SQL loader can run simultaneously with the main Z-filters pipeline, reading data directly from the JSON file as it's being written. This enables real-time database population without waiting for the main pipeline to complete.
+
+**Simultaneous Operation (Main + SQL Loader):**
+```bash
+# Terminal 1: Start the main Z-filters pipeline
+./main -config config/config.yaml > clusters.json
+
+# Terminal 2: Start SQL loader to read the same file in real-time
+cd src/sql_loader && go build -o sql_loader . && ./sql_loader "Run Name" ../../config/database.yaml ../../config/config.yaml ../../clusters.json
+```
+
+**Key Benefits:**
+- **Real-time database population**: Data appears in PostgreSQL as soon as batches are processed
+- **No waiting**: Don't need to wait for the main pipeline to complete before loading data
+- **Live monitoring**: Can monitor database growth and cluster analysis in real-time
+- **Efficient processing**: SQL loader automatically skips existing batches on restart
+
+**Build and Run in One Command:**
 ```bash
 # Build and run in one command for real-time database population
 cd src/sql_loader && go build -o sql_loader . && ./sql_loader "Run Name" ../../config/database.yaml ../../config/config.yaml ../../clusters.json
@@ -1062,10 +1082,31 @@ make build-token-frequency
 ./util_test/test_rabbitmq
 
 # Start the main pipeline
-./main -config config/config.yaml
+cd src && go build -o main . && ./main -config ../config/config.yaml
 ```
 
-### 2. Data Analysis
+### 2. Real-time Pipeline with Database Loading
+```bash
+# Terminal 1: Start main Z-filters pipeline (outputs to clusters.json)
+cd src && go build -o main . && ./main -config ../config/config.yaml > ../clusters.json
+
+# Terminal 2: Start SQL loader to read the same file in real-time
+cd src/sql_loader && go build -o sql_loader . && ./sql_loader "Live Run" ../../config/database.yaml ../../config/config.yaml ../../clusters.json
+
+# Terminal 3: Start AI feeder to analyze clusters as they're loaded
+cd src/ai_feeder && go build -o ai_feeder main.go && ./ai_feeder ../../config/ai_feeder.yaml
+
+# Terminal 4: Start AI display to view results in real-time
+cd ai_display && go build -o ai_display main.go && ./ai_display ../config/ai_display.yaml
+```
+
+**Benefits of this approach:**
+- **Real-time data flow**: Data flows from Z-filters → Database → AI Analysis → Web Display
+- **Live monitoring**: Watch clusters and AI analysis appear in real-time
+- **No waiting**: Start analysis before the main pipeline completes
+- **Efficient restart**: Each component can be restarted independently
+
+### 3. Data Analysis
 ```bash
 # Analyze token frequencies
 ./token_frequency_analyzer -input data/ -interval 10000
@@ -1077,7 +1118,7 @@ make build-token-frequency
 ./language_detector -input raw/ -output processed/ -workers 4
 ```
 
-### 3. Monitoring and Debugging
+### 4. Monitoring and Debugging
 ```bash
 # Tail the latest log
 ./util_shell/tail-the-log.sh
@@ -1089,7 +1130,7 @@ make build-token-frequency
 ./util_shell/clean_up_old_run.sh
 ```
 
-### 4. Performance Tuning
+### 5. Performance Tuning
 ```yaml
 # In config.yaml, adjust these for performance:
 window: 3000000             # Larger = more memory, better accuracy

@@ -20,6 +20,7 @@ func TestFrequencyComputationThread(t *testing.T) {
 		5,    // rebuildEveryFiles
 		"",   // stateDir - empty for test
 		0,    // minCountThreshold - 0 for test
+		5,    // windowBatches - default for test
 	)
 
 	// Start FCT
@@ -94,6 +95,7 @@ func TestFrequencyComputationThreadConcurrency(t *testing.T) {
 		5,    // rebuildEveryFiles
 		"",   // stateDir - empty for test
 		0,    // minCountThreshold - 0 for test
+		5,    // windowBatches - default for test
 	)
 
 	fct.Start()
@@ -142,6 +144,7 @@ func TestFrequencyComputationThreadTokenProcessing(t *testing.T) {
 		5,    // rebuildEveryFiles
 		"",   // stateDir - empty for test
 		0,    // minCountThreshold - 0 for test
+		5,    // windowBatches - default for test
 	)
 
 	// Start FCT
@@ -193,6 +196,7 @@ func TestFrequencyComputationThreadFileBasedRebuild(t *testing.T) {
 		2,   // rebuildEveryFiles (rebuild every 2 files)
 		"",  // stateDir - empty for test
 		0,   // minCountThreshold - 0 for test
+		5,   // windowBatches - default for test
 	)
 
 	// Start FCT
@@ -240,6 +244,7 @@ func TestFrequencyComputationThreadRunLoop(t *testing.T) {
 		5,    // rebuildEveryFiles
 		"",   // stateDir - empty for test
 		0,    // minCountThreshold - 0 for test
+		5,    // windowBatches - default for test
 	)
 
 	// Start FCT
@@ -282,6 +287,7 @@ func TestFrequencyComputationThreadCheckAndTriggerInitialRebuild(t *testing.T) {
 		5,   // rebuildEveryFiles
 		"",  // stateDir
 		0,   // minCountThreshold
+		5,   // windowBatches - default for test
 	)
 
 	// Test 1: Token counter not populated - should not trigger rebuild

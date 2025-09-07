@@ -3,11 +3,34 @@ package pipeline
 import (
 	"encoding/gob"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 )
+
+// Global counter for tokens added to cleanup queue (for dynamic safety buffer calculation)
+var globalTokensAddedToCleanupQueue int64
+
+// Global dynamic safety buffer for cleanup queue
+var globalDynamicCleanupLeaveAtLeast int64
+
+// Initialize dynamic safety buffer with default value
+func init() {
+	atomic.StoreInt64(&globalDynamicCleanupLeaveAtLeast, 100000) // Default 100k safety buffer
+}
+
+// GetAndResetTokensAddedToCleanupQueue returns the number of tokens added to cleanup queue since last call
+// and resets the counter to zero
+func GetAndResetTokensAddedToCleanupQueue() int64 {
+	return atomic.SwapInt64(&globalTokensAddedToCleanupQueue, 0)
+}
+
+// GetDynamicCleanupLeaveAtLeast returns the current dynamic safety buffer value
+func GetDynamicCleanupLeaveAtLeast() int64 {
+	return atomic.LoadInt64(&globalDynamicCleanupLeaveAtLeast)
+}
 
 // TokenCounter keeps track of how many times each token appears in the current window.
 // Uses record-level locking for thread safety with minimal contention.
@@ -53,8 +76,15 @@ func (tc *TokenCounter) DecrementTokens(tokens []string) {
 		atomic.AddInt64(&tc.totalCount, -1)
 	}
 
-	// Note: Removed logging of tokens added to cleanup queue to reduce log noise
-	// The cleanup system is working well and processing thousands of tokens per file
+	// Log tokens added to cleanup queue for monitoring cleanup rate
+	if zeroCountTokens > 0 {
+		slog.Info("Tokens added to cleanup queue",
+			"tokens_added", zeroCountTokens,
+			"total_tokens_processed", len(tokens))
+
+		// Update global counter for dynamic safety buffer calculation
+		atomic.AddInt64(&globalTokensAddedToCleanupQueue, int64(zeroCountTokens))
+	}
 }
 
 // GetCount returns the count for a specific token.
@@ -113,6 +143,13 @@ func (tc *TokenCounter) Clear() {
 // Now uses a cached running total for O(1) performance instead of O(n) map iteration
 func (tc *TokenCounter) GetTotalTokens() int {
 	return int(atomic.LoadInt64(&tc.totalCount))
+}
+
+// GetTokensAddedToCleanupQueue returns the number of tokens added to cleanup queue since last call
+// This is used by the FCT to calculate dynamic safety buffer
+func (tc *TokenCounter) GetTokensAddedToCleanupQueue() int64 {
+	// Return the global counter and reset it
+	return atomic.SwapInt64(&globalTokensAddedToCleanupQueue, 0)
 }
 
 // SaveToFile saves the current token counts to a file using gob encoding

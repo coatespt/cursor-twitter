@@ -33,8 +33,9 @@ type FrequencyComputationThread struct {
 	wg       sync.WaitGroup
 
 	// Configuration
-	freqClasses int
-	windowSize  int // Number of tokens to process before triggering rebuild
+	freqClasses   int
+	windowSize    int // Number of tokens to process before triggering rebuild
+	windowBatches int // Number of batches in the window (for dynamic safety buffer calculation)
 
 	// Debug: Track rebuild count
 	rebuildCount int
@@ -65,6 +66,7 @@ func NewFrequencyComputationThread(
 	rebuildEveryFiles int,
 	stateDir string,
 	minCountThreshold int,
+	windowBatches int,
 ) *FrequencyComputationThread {
 	tokenBatchSize := windowSize / tokenPersistFiles
 	if tokenBatchSize < 1 {
@@ -95,6 +97,7 @@ func NewFrequencyComputationThread(
 		stopChan:          make(chan struct{}),
 		freqClasses:       freqClasses,
 		windowSize:        windowSize,
+		windowBatches:     windowBatches,
 		tokenBatchSize:    tokenBatchSize,
 		tokenPersistFiles: tokenPersistFiles,
 		rebuildEveryFiles: rebuildEveryFiles,
@@ -141,6 +144,14 @@ func (fct *FrequencyComputationThread) Stop() {
 	close(fct.stopChan)
 	fct.wg.Wait()
 	slog.Info("FrequencyComputationThread stopped")
+}
+
+// GetTokensAddedToCleanupQueue returns the number of tokens added to cleanup queue since last call
+// This is used by the main package to calculate dynamic safety buffer
+func (fct *FrequencyComputationThread) GetTokensAddedToCleanupQueue() int64 {
+	// This would need to be implemented to track tokens added during rebuilds
+	// For now, we'll use the global counter approach
+	return 0 // Placeholder - will be implemented via global counter
 }
 
 // TriggerRebuild signals that a frequency class rebuild is needed
@@ -372,6 +383,22 @@ func (fct *FrequencyComputationThread) performRebuild() {
 	}
 
 	slog.Info("FCT: BuildFrequencyClassHashSets returned", "filters_built", len(result.Filters))
+
+	// Update dynamic cleanup safety buffer based on actual token obsolescence rate
+	// Calculate tokens added to cleanup queue during this rebuild
+	tokensAdded := fct.tokenCounter.GetTokensAddedToCleanupQueue()
+	if tokensAdded > 0 {
+		// Calculate new safety buffer: tokens_added * window_batches * 1.5 safety factor
+		newSafetyBuffer := int64(float64(tokensAdded) * float64(fct.windowBatches) * 1.5)
+
+		// Update the global dynamic safety buffer
+		atomic.StoreInt64(&globalDynamicCleanupLeaveAtLeast, newSafetyBuffer)
+
+		slog.Info("Updated dynamic cleanup safety buffer",
+			"tokens_added_during_rebuild", tokensAdded,
+			"window_batches", fct.windowBatches,
+			"new_safety_buffer", newSafetyBuffer)
+	}
 
 	// Clear the token counter after frequency calculation
 	// This ensures each rebuild is based only on the current window's tokens
