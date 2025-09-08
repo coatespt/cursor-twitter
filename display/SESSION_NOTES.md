@@ -53,8 +53,18 @@ We happen to be reading from pre-prepared output, but the imac can get the subje
 The front end
 
 
-
 # TTD
+
+## Find out how fast the language gizmo works and make sure it runs multi-threaded. Put the results in the config.yaml doc and in the manual.  If it doesn't run multi-threaded, that would be an important improvement.
+
+## The config notes a number of values that should probably be removed from the config and from the code.  Populate this list here from config.yaml
+
+## Remove K-Means entirely.  
+
+## We have a variation on Levenshtein to remove duplicates.
+Verify it's functionality with some log lines to show what it removes. Document how to
+set the value that indicated a duplicate and how the duplication is resolved.
+Not obvious becuase resemblence is not transitive.
 
 
 ## Big New Functionality 

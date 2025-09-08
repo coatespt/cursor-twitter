@@ -83,7 +83,7 @@ window_batches: 5
 # log anything to the console other than the JSON output.
 verbose: false
 
-# The directory to log to. Full pathsnames are best.
+# The directory to log to. 
 log_dir: ./logs
 
 # DEBUG shows all messages including frequent operational details
@@ -125,6 +125,7 @@ skip_frequency_classes: [1]
 
 # Minimum count threshold for frequency class inclusion (0 = no threshold)
 # DO NOT CHANGE THIS FROM 0 UNLESS YOU KNOW WHAT YOU ARE DOING! 
+# TODO: Consider removing this little landmine.
 min_count_threshold: 0
 
 # Busyword classes to consider in clustering.
@@ -148,9 +149,12 @@ filter:
 # Persistence configuration
 persistence:
   # Directory for storing state files (counts, filters) for fast restarts
+  # TODO: This entire piece of functionality is probably obsolete because of the speed increases.
   state_dir: "../data/state"
 
+
 # Sender status tracking
+# This is used by the RabbitMQ sender to track where it was when it was stopped.
 sender:
   # File to track the last processed CSV file for sending. 
   status_file: "../data/sender/sender_status.txt"
@@ -166,6 +170,8 @@ sender:
 # Analysis and clustering configuration.
 analysis:
   # Clustering method: "graph" (default, Louvain/modularity) or "kmeans" 
+  # Not currently used because K-means is obsolete waiting to be removed. But we
+  # May add variations on basic graph clustering so leave it in.
   clustering_method: graph   
 
   # Output mode: "verbose" (full tweet metadata) or "human" 
@@ -173,19 +179,25 @@ analysis:
   output_mode: human   
 
   # Number of clusters for k-means (only used if clustering_method is "kmeans")
+  # TODO remove with kmeans removal.
   kmeans_k: 5
 
   # Number of batches of recent tweets to use for clustering
   # THIS IS PRIMARY CLUSTERING. YOU PROBABLY DON'T WANT ANYTHING OTHER THAN 1
+  # TODO Examination of previous clusters in the viewers does this job, so it's not clear
+  # whether this is just clutter now.
   clustering_window_batches: 1
 
   # Minimum number of busy words a tweet must contain to be included in clustering.
   #   Logs show Tweet count for each busyword count. Too low and you get spurious 
   #   clusters, too high and you get no clusters.
+  # TODO: We need some experience/data on how this value affects the output and how
+  #     to choose the right setting.
   min_busy_words_per_tweet: 2
 
   # Minimum Jaccard similarity threshold for creating edges between tweets (0.0-1.0)
   #   Set entirely by guessing. 
+  # I basically fiddled with it till it seemed to work and never changed it again.
   # TODO: Need some isolated testing to determine the most effective value.
   min_jaccard_similarity: 0.4
 
@@ -203,14 +215,15 @@ analysis:
   
   # Similarity threshold for considering tweets as duplicates (0.0-1.0)
   # TODO: Is this affecting display only or computation?
+  # The effect of this is a total unknown!
   duplicate_similarity_threshold: 0.9
 
   # Language filtering: "en" for English only, "all" for all languages, of  
   #     "en", "es", "fr", "de", "etc"
-  # IMPORTANT: language specified in the Tweets is useless. Only use if you are checking
-  #   language explicitly in the pre-processing. Setting this field is very CPU heavy. There
-  #   is a separate language detection step that runs on the CSV output, guessing the 
-  #   language and populating the language field in the CSV.
+  # IMPORTANT: language specified in the Tweets is useless. Only use if you are recomputing
+  #   if you have run the gizmo that re-processes the CSV to have a valid language field. 
+  #   See the manual for how to run that post-processor after the JSON parsing. 
+  # Note: the post-processor is slow. Hundreds a second, not tens of thousands. 
   #  
   language_filter: "en"
 
@@ -276,15 +289,22 @@ analysis:
   # Suggested: 0.1 for character distance, 0.2-0.3 for word distance
   near_duplicate_threshold: 0.2
 
-  # 3PK collision mitigation: cleanup zero-count tokens
-  # Trigger cleanup every N tweets to remove tokens with zero counts
-  # This helps prevent 3PK collisions by cleaning up inactive tokens
+  # Cleaning up the 3pk mapping helps prevent removing 3PK's that are still in use.
+  # However, you can't clean them up too soon because they may still be used downstream in 
+  # the busyword processing and the clustering.
+  #
+  # Trigger cleanup every cleanup_trigger_batch_size tweets to remove tokens with zero counts
+  # Don't remove more than cleanup_max_items items per cleanup cycle to keep it smooth.
+  #
+  # This has been augmented with a dynamic calculation of the minimum number of items to leave 
+  # on the queue. We capture the number of obsolete tokens with 0 count and leave that number
+  # multiplied by the window_batches parameter on the queue.
   cleanup_trigger_batch_size: 400    # Trigger cleanup every N tweets
   cleanup_max_items: 4000            # Process up to M items per cleanup cycle
   # cleanup_leave_at_least_items: Now dynamically calculated based on actual token obsolescence rate
 
   # Sort clusters by size: true=descending (biggest first), false=ascending (biggest last)
-  # Default: false (ascending) so biggest clusters appear last (closest to console)
+  # Default: false (ascending) so biggest clusters appear last (closest on the console)
   cluster_sort_descending: true
 
   # Suppress individual tweets in output, keep only metadata and medoid tweet
@@ -298,19 +318,22 @@ analysis:
   # Similarity threshold for merging clusters into meta-clusters (0.3-0.6)
   # Lower values = more strict (fewer meta-clusters, more individual clusters)
   # Higher values = less strict (more meta-clusters, fewer individual clusters)
+  # TODO: This was chosen by holding up a wet finger in the air. Could use a little more rigor. 
   meta_cluster_similarity_threshold: 0.25
 
   # Meta-clusters require at least 2 similar clusters to be created
   # (This parameter is no longer used - meta-clusters are created whenever 2+ similar clusters are found)
+  # TODO: I THINK THIS IS OBSOLETE.
   meta_cluster_min_size: 2
 
   # Enable/disable similarity measures for meta-clustering
+  # Seems like there are  
   use_medoid_similarity: true        # Enable medoid similarity
   use_busy_word_similarity: true    # Enable busy word similarity
-
   # Use union approach: combines results from both similarity measures
+  # TODO: Don't remember how this works or what the effect is. Resolve and document.
+  # Same for the two threshholds.
   use_union_approach: true
-
   # Separate thresholds for each similarity measure
   medoid_similarity_threshold: 0.35   # Higher threshold for quality medoid clustering
   busy_word_similarity_threshold: 0.4 # Lower threshold for broader busy word coverage
@@ -318,16 +341,26 @@ analysis:
   # Multiplier for batch size to trigger busyword queue warnings
   # If any busyword processor queue exceeds (batch_size * bw_queue_max), a warning is logged
   # Recommended: 0.3-0.5 for conservative monitoring, 1.0+ for less sensitive
+  # TODO: This might be obsolete now that we have the dynamic calculation of the minimum 
+  #number of items to leave on the queue.
   bw_queue_max: 0.01
 
   # Maximum lag between global and analytics batch counts before warning
   # Analytics thread should be 1-2 batches behind global count normally
+  # TODO: Document whether breaching this threshold causes throttling..
+  #    I think it does. If the BW queues back up, it causes sleeps in the main thread. 
+  #
   analytics_batch_lag_threshold: 2
 
-  # Total sleep time in milliseconds when busyword queues are backlogged
-  # Sleep time is distributed across backlogged threads: sleep_ms = bw_thread_slow_delay / freq_classes
+  # Total sleep time in milliseconds when busyword queues are backlogged. Sleep time is 
+  # distributed across backlogged threads: sleep_ms = bw_thread_slow_delay / freq_classes
   # Default: 200ms (1/5 second) - gives busyword processors time to catch up
-  # It can be small. If the main wakes up it will sleep again if the queues are big.
+  # This value can be small. Main thread will just sleep again if the queues are big.
+  # Note, this was accidentally set to 20,000 and it caused huge slowdowns because the
+  # length of the queues that triggered it were too short. 
+  # TODO: Problem is gone because of the longer allowed queue, but be sure it's correct that 
+  #    the total is divided among all processors. That sounds wrong because any queue
+  #    can trigger a sleep. 
   bw_thread_slow_delay: 200
 
   # Sleep time in milliseconds when analytics thread falls behind
@@ -335,19 +368,21 @@ analysis:
   analytics_lag_slow_delay: 100
 
 # Set to true to enable language detection in the Python parser 
-# WARNING: slows parsing to a crawl!!! like 275/second.  We now use a Golang
+# WARNING: slows parsing to a crawl!!! like 275/second.  We now use a multi-threaded Golang
 # language detector to post process the CSV files.
 # TODO: This should probably be removed from here and from the parser
 #     as we have a separate utility to do it.
 detect_language: false
 
 # The minimum length of a token to be considered useful. This has a huge effect as
-#   many of the most common words are one or two characters. It wouuld be nice to bump
-#   it to 4, but then you'd lose FBI, CIA, FDA, etc.
+#   many of the most common words are one or two characters. It would be nice to bump
+#   it to 4, but then you'd lose FBI, CIA, FDA, etc., etc.
 min_token_len: 3
 
 # Token filtering configuration. These items are used to dump a lot of junk tokens.
 # You can turn the entire thing off with "enabled:false"
+# Some of these are just housekeeping, but some have semantic impact that would 
+# meaningfully affect the output, e.g. hashtags or URLs.
 # TODO: All of these could be reviewd. A look at the profiler output would be good.
 # TODO: Removing @, URL's and # are particularly important to look at.
 token_filters:

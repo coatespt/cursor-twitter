@@ -51,22 +51,35 @@ Using files is not a "cheat" because any system would typicaly receive Tweets an
 
 The non-graphical output is a series of clustered sets of Tweets that are about new subjects. There is not yet a graphical front end.
 
-# Lessons Learned and Etc
+# Lessons Learned and Etc.
+This section covers issues encountered and resolved, and lessons learned.
+
 ## Batch Size
 Was getting good results with batch size 25000. Shifted to batch size 12500 and got terrible results. 
-- Many empty batches
-- Apparently broken batches where the were tweets but no clusters, etc. See TTD
-- Slow. Constant backups on busy word queues.
 
-I set it to 30,000 and those problems vanished and it was even faster than at 25000.
-At 25000 it was doing a little under 40,000/second and at 30,000 it's doing 44,000 and up.
+The problem was several things. For one, the interval between FCT recomputations of the partitioning data structure had accidentally been set to 0, so it was furiously recomputing as fast as it could.
 
-Therefore it seems that below a certain size batch, the time spent finding busywords and clustering lets the ingestion outrun the z-filtering, and throttling is doing its job.
+One symptom of this was excessive growth of the token queue. It was getting logged as something like 40m tokens.  It normally should be 0 to 400, give or take.
 
-But it's not clear why so many empty batches, and broken batches. Empty batches might mean that the Z scores are sensitive to the density in the counters. Tool few tokens in a batch might be affecting the variance too much, which (I think) would mean that fewer words reach the busyword level of Z.
+At first it seemed that below a certain size batch, the time spent finding busywords and clustering lets the ingestion outrun the z-filtering, and throttling is doing its job.
 
-Suspect that this was caused by not enough tokens in the counters, resulting.
+More investigation showed that this was not the problem.
 
+One problem was that the allowed length of the busyword processor queues was too short. Even a slight slowness could cause the queue lengths to get too big resulting in throttling. The second problem was that the throttling was set to 20,000 ms. Crazy amount. That meant every one of the 25 busyword queues would fire off a 83ms sleep. 
+
+Adjusting that value way down eliminated the problem.
+
+## 3pk's not mapped
+We were getting occasional messages that a 3pk could not be mapped to a value.
+
+The problem is, a token can qualify as a busy word and have it's count go to zero again and get removed from the mapping in the space of one batch if everthing lines up right. 
+
+Every time that FCT computes a new partitioning datastructure, it tracks the number of tokens that have zero counts and removes them from the counter map it maintains. So it knows how many tokens become obsolete each time. It takes that number, multiplies by  
+
+
+
+
+## Time v Time
 Note that reading the decahose faster isn't equivalent to reading the firehose because the relationship to wall clock time changes.  A batch size of 25,000 is fifty seconds of the decahose, but only five seconds of the firehose.  Need to quantify how this should affect the settings. 
 
 
@@ -477,39 +490,8 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 # TTD and Direction
 
 ## The override file for config breakes the run.
-TODO Immediately!
-If you use the override file it does something that reduces peformance from the 40k/second range to the 240/second range!  WTF?
-You see the frequency queues backing up and the main gets throttled. The only things set in the override file are:
 
-rebuild_every_files: 20
-batch: 12500 
-
-And they aren't even changed. There must be something that gets overwritten or perhaps ends up getting the default in consequence of using the override file.
- 
- ## Wierd Output. Batches with tweets but no clusters, etc.
-  DEBUG: Batch 642 has 0 clusters but 357 total tweets. Raw data: clusters=[], total_clusters=22
-  WARNING: Cluster 0 in batch 677 has no tweets!
-
-{
-  "type": "batch",
-  "data": {
-    "batch_number": 17698,
-    "batch_time": "2012-02-17 00:21:04 UTC",
-    "method": "graph",
-    "total_tweets": 25,
-    "total_clusters": 0,
-    "clusters_above_min_size": 0,
-    "clusters": []
-  }
-}
-ALSO with batch size 12500, the majority of the batches are empty.
-
-Could it be that the size of the batch is so small that the z filters don't work?
-
-## We added a delay for cleaning up 3pk's
-We used a default queue length of 250,000 before the cleanup is done. This is so you don't clean up tokens before they are used by the clustering algorithm.
-
-This should be a config value, not hard coded.
+## window_batches might be the wrong multiple to compute the minimum number of tokens to leave in the queue for removal from the 3pk mapping. Think it through.
 
 ## Global configs on the graphical output. 
 It would be nice to see global parameters on the output screen so you could see things like:
@@ -517,55 +499,11 @@ It would be nice to see global parameters on the output screen so you could see 
 - How much clock time is represented by each batch
 - Some values we aren't yet computing or displaying like, the quality of a cluster.
 
-## AI Display
-- The cluster and batch dropdowns should be the full width of the left panel with the <, > under them.
-
-- The batch dropdown should display the batch even if you haven't opened it.
-
-- The cluster dropdown should display the cluster with the largest number of tweets, and the rest should be in the DD in sorted order, most to least tweets.  The cluster chosen should wrap around when you have run through them all.
-
-- It should do the query each time a value changes, even the first value.
-
-- The batch refresh button should be under the < and >
-
-- Using either < or > should be move in the appropriate direction and run the analysis.  This should be true for both batch and cluster.
-
-
 ## Look back over AI results.
 
 NOTE: This is pending getting a big dataset build. That is running now as of lunchtime on September 4 2025.  It should take a couple of days to get the full SQL inserts, but the AI part will take a week or to to get it all.
 
 We have an AI Display for lookingn back, but it gives poor results. This may be because of a bug that was causing a lot of empty batches. That is fixed now so we shall see how the display seems to run when we get some data.
-
-### Browser Modifications
-The browser should get a new mode. The current screen needs a dropdown or button that shifts to a view that displays what we've been talking about.
-
-That screen should have a button to shift to the screen we now have. So two display modes.
-
-On the left vertical panel:
-- We need on dropdown that let you select the run (as in the current screen) 
-
-- With a run selected, it needs a way to pick the starting batch. If you know the batch ID, great. 
-  - If you don't perhaps it should let you scroll through the available batches, and each time you select one it shows you the clusters with the one you select at the top (similarly to the other mode.) 
-
-  - You can scroll down through those batches looking for one you want to search for.
-
-  - However you get to it, you can select a cluster as your starting point
-
-- With a starting batch/cluster selected, it should show you the critical information on the starting cluster, including the AI-generated summary and the busy-words.
-
-- You should be able to select a number of batches back to look.  It could default to a reasonable value, say, 50. That would be about 500 seconds of the firehose. 
-
-- When you indicate go, it would look through the busywords for all the clusters in those batchs for any that include M or more from the set in the cluster you selected. M would need to be setable too.
-
-- It would display the medoid Tweet for all the matching clusters. And some other data about the AI summary, metadata, etc. should also be accessible, perhaps by flyover.
-
-- The Mediods should be first so the you can see as much as possible of the text
-
-- After that you'd need batch-id, cluster-id, date/time, etc.
-
-
-
 
 
 ## Clustering Improvement By Weighting Frequency Classes
@@ -609,7 +547,7 @@ This should be almost impossible (it says so right in the warning message.) 'Sup
 Suspect this is a phenomenon of startup from token counts on disks.
 This needs to be confirmed.
  
-## Ongoing  Items
+## Ongoing Items
 
 - Comments Key areas need to be commented to keep out, don't touch, etc.
 
@@ -619,11 +557,16 @@ This needs to be confirmed.
 
 This would be a significant effort.  Interesting idea, but it's not 100% clear that it's worth doing. We need some investigation.
 
-The most important thing would be to run the profiler and see how much time is actually spent on busyword processing. It might not be much.
-
 Consider that dual sets of pipelines, or even three sets, each with different hash functions, could do a much more accurate job of filtering out the true busy words for a given set of parameters.  
  
-It is not clear how big an impact this would have on performance. All the BW processors are doing is counting and periodically computing Z on a thousand values in each of the three counter arrays. There is a tiny bit more work in the analysis to take only the words that appear in the required number of sets. It doesn't really affect the analysis phase that follows, and it's just a little more work for the main to put the tokens on more queues than before.
+It is not clear how big an impact this would have on performance. All the BW processors are doing is counting and periodically computing Z on a thousand values in each of the three counter arrays. 
+
+You'd have to 
+- Maintain 3 copies of the 3pk mappings
+- Three sets of queues
+- Three sets of busyword processors 
+- Add a piece to the analysis thread to take all three sets of sets of busywords and and decide on what the final set is. 
+- After that, it's the same.
 
 Risk. If multiplying the work in the busyword processors made them in aggregate slower than the combined main pipeline and the clustering, it would cause the queues to grow without bound and crash the program. You'd need to detect the problem and throttle the reads if this is a problem. Actually, this should probably be done anyway! Who knows if some combination of config parameters could cause this to happen.
 
@@ -636,60 +579,50 @@ Jacquard similarity for the clustering seems to be applied to all the tokens in 
   - Maybe it should be only on the busywords. 
   - Jacquard similarity might not be important. Maybe just the raw occurrences?
 
-## Major: A Graphical Front End
-This is a big one!  Not sure how to go about it with Cursor. I wrote the graphics by hand in Java last time!
-
-A busy-word fade-out like the bubbles would be great.
-- The size proportional to the number of Tweets the busy word is in. Or perhaps logarithmically proportional.
-- When the BW was last seen, fading off the left
-- Vertical axis is the frequency class
-
 ## Consider Stripping K-Means Out Entirely
 It doesn't do any harm, but we're never going to use it and it could be confusing.
    
-## Document What is Known About Tuning Performance and Accuracy
-
 # Miscelaneous Details
 
 ## Why a Big Token Window?
+Even relatively common words are rare. Most words show up at most a few times a day, and something like half show up less than once a day. This means you need a lot of words (millions) to get even a reasonably accurate estimate of a word's background frequency unless it is in one of the most frequent classes. 
+
+On the other hand, you  need the set of words to be bounded because if it is too big, the surging tweets won't age out in a reasonable amount of time.
+
+Five million is a reasonable window size because it is big enough to to get an idea of the frequencies of the top few 10's of thousands of words, yet fine enough to keep up with the time of day and age-out surges in frequency promptly. The actual size limit is controled from the config.yaml file 
+
+Millions of words take significant space in memory. A typical hash table uses a minimum of about a hundred bytes regardless of the size of the word, so five million words would be half a gigabyte of main memory.
+
+Accordingly, the tokens underlying the token counters are written to disk in batches. 
+After the number of token batch files reaches a defined limit, each time a new batch is written out, the oldest batch is read in (and deleted from disk), and the contents of the old batch are then used to decrement the global token counts.
+
+This keeps the token counts relatively up to date with the flow of Tweets.  
+
+Note that frequency calculations would typically happen multiple times in the span of time represented by an entire token window. Again, it's a matter of configuration, but three times would be reasonable.
+
+Say you have a five million word window, that would be 16.6 minutes of the full firehose. You might recompute the frequency filters five times per window span, which would be every  
+3.33 minutes of nominal Tweet time.
+
+There is also a parameter that controls how many chunks the window is broken into on disk. The larger the number, the more up to date the program is with the changing frequencies.
 
 ###  Clock Driven Changes in Background Frequency 
 
 People don't Tweet the same things at breakfast on Monday that they do at 1:00 AM on Saturday.  Also, the world turns, and while New Yorkers are getting up in the morning, people in Bejing are out for the evening.
 
 ### New and Evolving Subjects Change the Background Frequencies
-The surges in usage (that we are looking for) continually change the current prevailing frequencies.
+The surges in Tweet subjects (i.e., we are looking for) continually change the current prevailing word frequencies. Therefore, it is necessary to recompute the background frequencies fairly frequently to cause no longer new subjects that people keep Tweeting about to be forgotten. 
 
-Even relatively common words are rare. This means you 
-need a lot of words (millions) to get even a reasonably accurate estimate 
-of a word's background frequency. 
-
-Five million is a reasonable window size because it is big enough to catch the top few 10's of thousands of words, and fine enough to keep up with the time of day while aging surges in frequency out with reasonable latency.
-
-You have to age tokens out if you want a stable size window, which gets to be a lot to keep in memory. 
-
-Accordingly, the tokens underlying the token counters are written to disk in batches. 
-After the number of token batch files reaches a defined limit, each time a new batch is written out, the oldest batch is read in (and deleted from disk). 
-The contents of the old batch are then used to decrement the global token counts.
-
-This keeps the token counts relatively up to date with the flow of Tweets.  
-
-Note that frequency calculations would typically happen multiple times in the span of time represented by an entire token window.  
-These things are controlled by separate parameters. 
-Say you have a five million word window, i.e., 16 or 17 minutes, you might recompute the frequency filters every couple or three minutes.
+One aspect of this that may not be obvious is that a word in frequency class f that has surged in usage will probably be in a higher frequency class the next time relative frequencies are calculated. This is one way the words signifying major Tweet subjects can stay alive. A word can surge enough to get bumped into a different class, and if it's usage has plateaued, it may not be a busy word the next time frequencies are computed. But if it continues to surge, it may be an anomaly in its next class as well.
 
 ## The Small Window of Tweets
 
 The big token window is only of concern to the off-line frequency calculating thread.  
-The main thread keeps short window of Tweets in memory for use in the clustering algorithm, which is in the main processing line.
+The main thread keeps short window of Tweets in memory for use in the clustering algorithm, which is part of the main processing pipe line (although it runs in its own thread.)
 
-This is a conventional queue that keeps a configured number of Tweets, dropping the old ones as new ones are added.  
-This is configured to hold a few processing batches of Tweets. 
-As a batch is typically in the range of a few thousands (3k to 20k), it would be a small multiple of that size.  
+This is a conventional queue that keeps a configured number of Tweets, dropping the old ones as new ones are added. This is configured to hold a few processing batches of Tweets. 
+As a batch is typically in the range of a few thousands (10k to 30k), it would be a small multiple of that size. The multiple is a matter of configuration. 
 
-Clustering happens with respect to the latest batch.  
-However, the persistence of clusters is tracked across previous batches. 
-You can see in this way whether a subject just popped up, or has it been around a while.
+Clustering happens with respect to the latest batch. However, the persistence of clusters is tracked across previous batches. You can see in this way whether a subject just popped up, or has it been around a while.
 
 # Running the Profiler
 
