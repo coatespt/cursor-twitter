@@ -355,9 +355,6 @@ func mergeConfigs(base, override *Config) {
 	if override.Analysis.LanguageFilter != "" {
 		base.Analysis.LanguageFilter = override.Analysis.LanguageFilter
 	}
-	if override.Analysis.KmeansUseAllWords {
-		base.Analysis.KmeansUseAllWords = override.Analysis.KmeansUseAllWords
-	}
 	if override.Analysis.WindowBatchesPersistence != 0 {
 		base.Analysis.WindowBatchesPersistence = override.Analysis.WindowBatchesPersistence
 	}

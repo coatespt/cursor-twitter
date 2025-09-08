@@ -172,18 +172,14 @@ sender:
 
 # Analysis and clustering configuration.
 analysis:
-  # Clustering method: "graph" (default, Louvain/modularity) or "kmeans" 
-  # Not currently used because K-means is obsolete waiting to be removed. But we
-  # May add variations on basic graph clustering so leave it in.
-  clustering_method: graph   
+  # Clustering method: "graph" (Louvain/modularity-based clustering)
+  # Only graph clustering is currently supported. Future clustering methods may be added.
+  clustering_method: graph
 
   # Output mode: "verbose" (full tweet metadata) or "human" 
   #   (cluster metadata + tweet texts only)
   output_mode: human   
 
-  # Number of clusters for k-means (only used if clustering_method is "kmeans")
-  # TODO remove with kmeans removal.
-  kmeans_k: 5
 
   # Number of batches of recent tweets to use for clustering
   # THIS IS PRIMARY CLUSTERING. YOU PROBABLY DON'T WANT ANYTHING OTHER THAN 1
@@ -230,8 +226,6 @@ analysis:
   #  
   language_filter: "en"
 
-  # K-Means is probably not going to be used anymore.
-  kmeans_use_all_words: false  # If true, k-means uses all words in tweets; if false, only busy words
 
   # Persistence window configuration for tracking clusters across multiple batches
   # Number of batches to keep in the persistence window (M)

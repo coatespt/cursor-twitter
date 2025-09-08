@@ -811,8 +811,6 @@ func TestParseCSVToTweetExcessiveQuestions(t *testing.T) {
 			LanguageFilter                   string  `yaml:"language_filter"`
 			ClusteringMethod                 string  `yaml:"clustering_method"`
 			OutputMode                       string  `yaml:"output_mode"`
-			KmeansK                          int     `yaml:"kmeans_k"`
-			KmeansUseAllWords                bool    `yaml:"kmeans_use_all_words"`
 			MinClusterSize                   int     `yaml:"min_cluster_size"`
 			WindowBatchesPersistence         int     `yaml:"window_batches_persistence"`
 			WindowBatchesPersistenceCheck    int     `yaml:"window_batches_persistence_check"`
