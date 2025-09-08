@@ -14,6 +14,7 @@
 mode: files
 
 # RabbitMQ settings (used when mode: mqj)
+# They do nothing in mode "files".
 mq_host: localhost
 mq_port: 5672
 mq_queue: tweet_in
@@ -68,19 +69,21 @@ rebuild_every_files: 10
 batch: 30000     
 
 # Number of batches to keep in the sliding Tweet window. This window is whole
-# Tweets, not tokens. It is used for clustering recent tweets by busy words 
-# and finding the persistence of clusters.
+# Tweets for the batches, not tokens. It is used for clustering recent tweets by 
+# busy words and exposing the persistence of clusters.
 #
 # It's just what we keep, not what we necessarily use, so bigger just means 
 # more memory usage and a modest CPU hit for copying the set to another 
-# thread for analysis. It is copied to minimize contention between the 
-# main thread and the analysis thread.
-# Tweets in memory are batch * window_batches.
+# thread for analysis. Also, it affect the promptness of discarding obsolet 
+# 3pk's. It is copied to minimize contention between the main thread and the 
+# analysis thread. Tweets in memory are batch * window_batches.
 window_batches: 5
 
 # Whether to log to the console
 # This may be obsolete or have it's precise meaning changed because we no longer
 # log anything to the console other than the JSON output.
+# TODO: This might be obsolete. Only legit output goes to stdout now. All 
+# other screen output should go to stderr.
 verbose: false
 
 # The directory to log to. 
@@ -382,7 +385,7 @@ min_token_len: 3
 # Token filtering configuration. These items are used to dump a lot of junk tokens.
 # You can turn the entire thing off with "enabled:false"
 # Some of these are just housekeeping, but some have semantic impact that would 
-# meaningfully affect the output, e.g. hashtags or URLs.
+# meaningfully affect the output, e.g. hashtags or.
 # TODO: All of these could be reviewd. A look at the profiler output would be good.
 # TODO: Removing @, URL's and # are particularly important to look at.
 token_filters:

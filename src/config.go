@@ -123,16 +123,114 @@ func loadConfigWithOverride(baseConfigPath, overrideConfigPath string) (*Config,
 		return cfg, nil
 	}
 
-	// Load the override config without validation (since it's incomplete)
-	overrideCfg, err := loadConfigWithoutValidation(overrideConfigPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load override config: %v", err)
+	// Apply override values directly from the YAML file
+	if err := applyOverrideFromYAML(cfg, overrideConfigPath); err != nil {
+		return nil, fmt.Errorf("failed to apply override config: %v", err)
 	}
 
-	// Merge the override config into the base config
-	mergeConfigs(cfg, overrideCfg)
-
 	return cfg, nil
+}
+
+// applyOverrideFromYAML applies only the values that are present in the override YAML file
+func applyOverrideFromYAML(cfg *Config, overrideConfigPath string) error {
+	// Read the override config file
+	data, err := os.ReadFile(overrideConfigPath)
+	if err != nil {
+		return fmt.Errorf("failed to read override config file: %v", err)
+	}
+
+	// Parse YAML into a map to see what keys are actually present
+	var overrideMap map[string]interface{}
+	if err := yaml.Unmarshal(data, &overrideMap); err != nil {
+		return fmt.Errorf("failed to parse override YAML: %v", err)
+	}
+
+	// Apply only the values that are present in the override file
+	for key, value := range overrideMap {
+		switch key {
+		case "mode":
+			if str, ok := value.(string); ok {
+				cfg.Mode = str
+			}
+		case "batch":
+			if num, ok := value.(int); ok {
+				cfg.BatchSize = num
+			}
+		case "window":
+			if num, ok := value.(int); ok {
+				cfg.WindowSize = num
+			}
+		case "verbose":
+			if b, ok := value.(bool); ok {
+				cfg.Verbose = b
+			}
+		case "log_level":
+			if str, ok := value.(string); ok {
+				cfg.LogLevel = str
+			}
+		case "log_dir":
+			if str, ok := value.(string); ok {
+				cfg.LogDir = str
+			}
+		case "freq_classes":
+			if num, ok := value.(int); ok {
+				cfg.FreqClasses = num
+			}
+		case "bw_array_len":
+			if num, ok := value.(int); ok {
+				cfg.BWArrayLen = num
+			}
+		case "token_persist_files":
+			if num, ok := value.(int); ok {
+				cfg.TokenPersistFiles = num
+			}
+		case "rebuild_every_files":
+			if num, ok := value.(int); ok {
+				cfg.RebuildEveryFiles = num
+			}
+		case "window_batches":
+			if num, ok := value.(int); ok {
+				cfg.WindowBatches = num
+			}
+		case "min_count_threshold":
+			if num, ok := value.(int); ok {
+				cfg.MinCountThreshold = num
+			}
+		case "z_scores":
+			if scores, ok := value.([]interface{}); ok {
+				var floatScores []float64
+				for _, score := range scores {
+					if f, ok := score.(float64); ok {
+						floatScores = append(floatScores, f)
+					}
+				}
+				cfg.ZScores = floatScores
+			}
+		case "skip_frequency_classes":
+			if classes, ok := value.([]interface{}); ok {
+				var intClasses []int
+				for _, class := range classes {
+					if i, ok := class.(int); ok {
+						intClasses = append(intClasses, i)
+					}
+				}
+				cfg.SkipFrequencyClasses = intClasses
+			}
+		case "busyword_classes":
+			if classes, ok := value.([]interface{}); ok {
+				var intClasses []int
+				for _, class := range classes {
+					if i, ok := class.(int); ok {
+						intClasses = append(intClasses, i)
+					}
+				}
+				cfg.BusywordClasses = intClasses
+			}
+			// Add more cases as needed for other fields
+		}
+	}
+
+	return nil
 }
 
 // loadConfigWithoutValidation loads a config file without validation
@@ -187,7 +285,9 @@ func mergeConfigs(base, override *Config) {
 	if override.WindowBatches != 0 {
 		base.WindowBatches = override.WindowBatches
 	}
-	if override.Verbose != base.Verbose {
+	// Note: For boolean fields, we can't distinguish between "not set" and "false" in YAML
+	// So we only override if the override value is true (since false is the default)
+	if override.Verbose {
 		base.Verbose = override.Verbose
 	}
 	if override.LogDir != "" {
@@ -216,7 +316,7 @@ func mergeConfigs(base, override *Config) {
 	}
 
 	// Merge filter settings
-	if override.Filter.Enabled != base.Filter.Enabled {
+	if override.Filter.Enabled {
 		base.Filter.Enabled = override.Filter.Enabled
 	}
 	if override.Filter.FilterDir != "" {
@@ -246,7 +346,7 @@ func mergeConfigs(base, override *Config) {
 	if override.Analysis.MaxTweetsToCluster != 0 {
 		base.Analysis.MaxTweetsToCluster = override.Analysis.MaxTweetsToCluster
 	}
-	if override.Analysis.SuppressDuplicates != base.Analysis.SuppressDuplicates {
+	if override.Analysis.SuppressDuplicates {
 		base.Analysis.SuppressDuplicates = override.Analysis.SuppressDuplicates
 	}
 	if override.Analysis.DuplicateSimilarityThreshold != 0 {
@@ -255,7 +355,7 @@ func mergeConfigs(base, override *Config) {
 	if override.Analysis.LanguageFilter != "" {
 		base.Analysis.LanguageFilter = override.Analysis.LanguageFilter
 	}
-	if override.Analysis.KmeansUseAllWords != base.Analysis.KmeansUseAllWords {
+	if override.Analysis.KmeansUseAllWords {
 		base.Analysis.KmeansUseAllWords = override.Analysis.KmeansUseAllWords
 	}
 	if override.Analysis.WindowBatchesPersistence != 0 {
@@ -273,7 +373,7 @@ func mergeConfigs(base, override *Config) {
 	if override.Analysis.MaxHumanTweetsDisplayed != 0 {
 		base.Analysis.MaxHumanTweetsDisplayed = override.Analysis.MaxHumanTweetsDisplayed
 	}
-	if override.Analysis.FilterRepetitivePatterns != base.Analysis.FilterRepetitivePatterns {
+	if override.Analysis.FilterRepetitivePatterns {
 		base.Analysis.FilterRepetitivePatterns = override.Analysis.FilterRepetitivePatterns
 	}
 	if override.Analysis.BannedPhrasesDir != "" {
@@ -282,10 +382,10 @@ func mergeConfigs(base, override *Config) {
 	if override.Analysis.RepetitivePatternThreshold != 0 {
 		base.Analysis.RepetitivePatternThreshold = override.Analysis.RepetitivePatternThreshold
 	}
-	if override.Analysis.DeduplicateByUser != base.Analysis.DeduplicateByUser {
+	if override.Analysis.DeduplicateByUser {
 		base.Analysis.DeduplicateByUser = override.Analysis.DeduplicateByUser
 	}
-	if override.Analysis.UseLevenshteinDeduplication != base.Analysis.UseLevenshteinDeduplication {
+	if override.Analysis.UseLevenshteinDeduplication {
 		base.Analysis.UseLevenshteinDeduplication = override.Analysis.UseLevenshteinDeduplication
 	}
 	if override.Analysis.DistanceMethod != "" {
@@ -300,7 +400,7 @@ func mergeConfigs(base, override *Config) {
 	if override.Analysis.CleanupMaxItems != 0 {
 		base.Analysis.CleanupMaxItems = override.Analysis.CleanupMaxItems
 	}
-	if override.Analysis.ClusterSortDescending != base.Analysis.ClusterSortDescending {
+	if override.Analysis.ClusterSortDescending {
 		base.Analysis.ClusterSortDescending = override.Analysis.ClusterSortDescending
 	}
 	if override.Analysis.SuppressIndividualTweets != base.Analysis.SuppressIndividualTweets {

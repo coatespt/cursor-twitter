@@ -1,9 +1,11 @@
 
-# Overrride file for smaller batches 9/6/2025
+# Overrride file for smaller batches and bigger window 9/6/2025
 
-# Rebuilding background frequencies a little more often
-rebuild_every_files: 10
+window: 5000000
+token_persist_files: 70
 
 # Smaller batch than we'd been using
-batch: 35000 
+# 20,000 is 40 seconds of the decahose (wall clock time) but only four seconds 
+# of the firehose.
+batch: 20000 
 
