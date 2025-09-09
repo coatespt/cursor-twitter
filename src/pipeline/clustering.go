@@ -33,15 +33,17 @@ type ClusteringStats struct {
 
 // OptimizedTweetClusterer performs efficient clustering using sparse graph construction to avoid O(n²) complexity
 type OptimizedTweetClusterer struct {
-	minJaccardSimilarity float64
-	maxTweetsToCluster   int
+	minJaccardSimilarity    float64
+	maxTweetsToCluster      int
+	jaccardUseBusyWordsOnly bool
 }
 
 // NewOptimizedTweetClusterer creates a new clusterer with the given parameters
-func NewOptimizedTweetClusterer(minJaccardSimilarity float64, maxTweetsToCluster int) *OptimizedTweetClusterer {
+func NewOptimizedTweetClusterer(minJaccardSimilarity float64, maxTweetsToCluster int, jaccardUseBusyWordsOnly bool) *OptimizedTweetClusterer {
 	return &OptimizedTweetClusterer{
-		minJaccardSimilarity: minJaccardSimilarity,
-		maxTweetsToCluster:   maxTweetsToCluster,
+		minJaccardSimilarity:    minJaccardSimilarity,
+		maxTweetsToCluster:      maxTweetsToCluster,
+		jaccardUseBusyWordsOnly: jaccardUseBusyWordsOnly,
 	}
 }
 
@@ -222,19 +224,32 @@ func (c *OptimizedTweetClusterer) buildSparseGraph(tweetList []*tweets.Tweet, wo
 	return edges
 }
 
-// calculateJaccardSimilarity calculates Jaccard similarity between two tweets based on busy words
+// calculateJaccardSimilarity calculates Jaccard similarity between two tweets
 func (c *OptimizedTweetClusterer) calculateJaccardSimilarity(tweet1, tweet2 *tweets.Tweet, busyWords map[string]bool) float64 {
-	// Create sets of busy words for each tweet
+	// Create sets for each tweet
 	set1 := make(map[string]bool)
 	set2 := make(map[string]bool)
 
-	// For now, we'll use all tokens as potential busy words
-	// In practice, this should be filtered to only actual busy words
-	for _, token := range tweet1.Tokens {
-		set1[token] = true
-	}
-	for _, token := range tweet2.Tokens {
-		set2[token] = true
+	if c.jaccardUseBusyWordsOnly {
+		// Use only busy words for similarity calculation
+		for _, token := range tweet1.Tokens {
+			if busyWords[token] {
+				set1[token] = true
+			}
+		}
+		for _, token := range tweet2.Tokens {
+			if busyWords[token] {
+				set2[token] = true
+			}
+		}
+	} else {
+		// Use all tokens for similarity calculation (original behavior)
+		for _, token := range tweet1.Tokens {
+			set1[token] = true
+		}
+		for _, token := range tweet2.Tokens {
+			set2[token] = true
+		}
 	}
 
 	// Calculate intersection and union

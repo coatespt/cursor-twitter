@@ -4,7 +4,7 @@
 -- AI analysis sessions (one per experiment run)
 CREATE TABLE ai_analysis_sessions (
     session_id SERIAL PRIMARY KEY,
-    run_id INTEGER NOT NULL REFERENCES experiment_runs(run_id) ON DELETE CASCADE,
+    run_id INTEGER NOT NULL REFERENCES new_experiment_runs(run_id) ON DELETE CASCADE,
     session_name TEXT NOT NULL,
     ai_model VARCHAR(100) NOT NULL, -- e.g., "llama3.1:8b", "gpt-4"
     ai_endpoint VARCHAR(255) NOT NULL, -- e.g., "http://localhost:11434/api/generate"
@@ -24,7 +24,7 @@ CREATE TABLE ai_analysis_sessions (
 CREATE TABLE ai_analysis_results (
     result_id SERIAL PRIMARY KEY,
     session_id INTEGER NOT NULL REFERENCES ai_analysis_sessions(session_id) ON DELETE CASCADE,
-    cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+    cluster_id INTEGER NOT NULL REFERENCES new_clusters(cluster_id) ON DELETE CASCADE,
     prompt_text TEXT NOT NULL, -- The actual prompt sent to AI
     response_text TEXT NOT NULL, -- The AI's response
     response_metadata JSONB, -- Additional metadata (tokens used, timing, etc.)

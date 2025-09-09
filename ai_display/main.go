@@ -446,7 +446,7 @@ func (s *Server) getExperimentRuns() ([]map[string]interface{}, error) {
 			er.freq_classes,
 			er.min_jaccard_similarity,
 			COUNT(DISTINCT aar.result_id) as ai_analysis_count
-		FROM experiment_runs er
+		FROM new_experiment_runs er
 		LEFT JOIN ai_analysis_results aar ON er.run_id = (
 			SELECT b.run_id 
 			FROM clusters c 

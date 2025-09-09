@@ -245,7 +245,7 @@ func (sl *SQLLoader) generateUniqueRunName(baseName string) (string, error) {
 	// First, check if the exact name exists
 	var count int
 	err := sl.db.QueryRow(`
-		SELECT COUNT(*) FROM experiment_runs WHERE run_name = $1
+		SELECT COUNT(*) FROM new_experiment_runs WHERE run_name = $1
 	`, baseName).Scan(&count)
 
 	if err != nil {
@@ -276,7 +276,7 @@ func (sl *SQLLoader) CreateExperimentRun(runName, pipelineConfigPath, overrideCo
 	// Check if run already exists
 	var existingRunID int
 	err = sl.db.QueryRow(`
-		SELECT run_id FROM experiment_runs WHERE run_name = $1
+		SELECT run_id FROM new_experiment_runs WHERE run_name = $1
 	`, uniqueRunName).Scan(&existingRunID)
 
 	if err == nil {
@@ -290,38 +290,18 @@ func (sl *SQLLoader) CreateExperimentRun(runName, pipelineConfigPath, overrideCo
 	// Run doesn't exist, create new one
 	fmt.Printf("Creating new run...\n")
 
-	// Load pipeline config with override
-	var config *PipelineConfig
-	if overrideConfigPath != "" {
-		config, err = loadPipelineConfigWithOverride(pipelineConfigPath, overrideConfigPath)
-	} else {
-		config, err = loadPipelineConfig(pipelineConfigPath)
-	}
-
-	if err != nil {
-		return 0, fmt.Errorf("failed to load pipeline config: %v", err)
-	}
+	// Note: New schema doesn't store configuration details, so we don't need to load config
 
 	// Convert arrays to strings
-	zScoresStr := fmt.Sprintf("%v", config.ZScores)
-	busyWordClassesStr := fmt.Sprintf("%v", config.BusyWordClasses)
+	// Note: New schema only stores run_name, not all configuration details
 
 	// Insert experiment run
 	var runID int
 	err = sl.db.QueryRow(`
-		INSERT INTO experiment_runs (
-			run_name, window_size, token_persist_files, rebuild_every_files, batch_size,
-			z_scores, freq_classes, bw_array_len, busyword_classes,
-			min_busy_words_per_tweet, min_jaccard_similarity, duplicate_similarity_threshold,
-			language_filter, use_medoid_similarity, use_busy_word_similarity,
-			medoid_similarity_threshold, busy_word_similarity_threshold, min_token_len
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+		INSERT INTO new_experiment_runs (run_name)
+		VALUES ($1)
 		RETURNING run_id
-	`, uniqueRunName, config.WindowSize, config.TokenPersistFiles, config.RebuildEveryFiles, config.Batch,
-		zScoresStr, config.FreqClasses, config.BWArrayLen, busyWordClassesStr,
-		config.Analysis.MinBusyWordsPerTweet, config.Analysis.MinJaccardSimilarity, config.Analysis.DuplicateSimilarityThreshold,
-		config.LanguageFilter, config.Analysis.UseMedoidSimilarity, config.Analysis.UseBusyWordSimilarity,
-		config.Analysis.MedoidSimilarityThreshold, config.Analysis.BusyWordSimilarityThreshold, config.Analysis.MinTokenLen).Scan(&runID)
+	`, uniqueRunName).Scan(&runID)
 
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert experiment run: %v", err)
@@ -356,13 +336,13 @@ func (sl *SQLLoader) InsertBatch(batch json_parser.Batch) (int, error) {
 	// Check if batch already exists
 	var batchID int
 	err = sl.db.QueryRow(`
-		SELECT id FROM batches WHERE run_id = $1 AND batch_number = $2
+		SELECT id FROM new_batches WHERE run_id = $1 AND batch_number = $2
 	`, sl.runID, batch.Data.BatchNumber).Scan(&batchID)
 
 	if err == sql.ErrNoRows {
 		// Batch doesn't exist, insert it
 		err = sl.db.QueryRow(`
-			INSERT INTO batches (run_id, batch_number, batch_time, method, total_tweets, total_clusters, clusters_above_min_size)
+			INSERT INTO new_batches (run_id, batch_number, batch_time, method, total_tweets, total_clusters, clusters_above_min_size)
 			VALUES ($1, $2, $3, $4, $5, $6, $7)
 			RETURNING id
 		`, sl.runID, batch.Data.BatchNumber, batchTime, batch.Data.Method, batch.Data.TotalTweets,
@@ -386,10 +366,10 @@ func (sl *SQLLoader) InsertBatch(batch json_parser.Batch) (int, error) {
 func (sl *SQLLoader) InsertCluster(batchID int, cluster json_parser.Cluster) (int, error) {
 	var clusterID int
 	err := sl.db.QueryRow(`
-		INSERT INTO clusters (batch_id, cluster_id, size, quality_score)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id
-	`, batchID, cluster.ClusterID, cluster.Size, cluster.QualityScore).Scan(&clusterID)
+		INSERT INTO new_clusters (batch_id, size, quality_score)
+		VALUES ($1, $2, $3)
+		RETURNING cluster_id
+	`, batchID, cluster.Size, cluster.QualityScore).Scan(&clusterID)
 
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert cluster %d: %v", cluster.ClusterID, err)
@@ -398,7 +378,7 @@ func (sl *SQLLoader) InsertCluster(batchID int, cluster json_parser.Cluster) (in
 	return clusterID, nil
 }
 
-// InsertTweets inserts all tweets for a cluster
+// InsertTweets inserts all tweets for a cluster using the new schema
 func (sl *SQLLoader) InsertTweets(clusterID int, cluster json_parser.Cluster) error {
 	medoidText := cluster.GetMedoidText()
 
@@ -413,13 +393,26 @@ func (sl *SQLLoader) InsertTweets(clusterID int, cluster json_parser.Cluster) er
 		tweetText := cluster.TweetTexts[i]
 		isMedoid := (tweetText == medoidText)
 
-		_, err := sl.db.Exec(`
-			INSERT INTO tweets (cluster_id, tweet_text, tweet_order, is_medoid)
-			VALUES ($1, $2, $3, $4)
-		`, clusterID, tweetText, i+1, isMedoid)
+		// First, insert the tweet into the tweets table
+		var tweetID int
+		err := sl.db.QueryRow(`
+			INSERT INTO new_tweets (tweet_text)
+			VALUES ($1)
+			RETURNING tweet_id
+		`, tweetText).Scan(&tweetID)
 
 		if err != nil {
-			return fmt.Errorf("failed to insert tweet %d in cluster %d: %v", i+1, cluster.ClusterID, err)
+			return fmt.Errorf("failed to insert tweet %d: %v", i+1, err)
+		}
+
+		// Then, link the tweet to the cluster
+		_, err = sl.db.Exec(`
+			INSERT INTO new_tweet_clusters (tweet_id, cluster_id, tweet_order, is_medoid)
+			VALUES ($1, $2, $3, $4)
+		`, tweetID, clusterID, i+1, isMedoid)
+
+		if err != nil {
+			return fmt.Errorf("failed to link tweet %d to cluster %d: %v", tweetID, cluster.ClusterID, err)
 		}
 	}
 
@@ -440,7 +433,7 @@ func (sl *SQLLoader) InsertBusyWords(clusterID int, cluster json_parser.Cluster)
 		}
 
 		_, err := sl.db.Exec(`
-			INSERT INTO busy_words (cluster_id, word, word_order, frequency_class)
+			INSERT INTO new_busy_words (cluster_id, word, word_order, frequency_class)
 			VALUES ($1, $2, $3, $4)
 		`, clusterID, word, i+1, frequencyClass)
 
@@ -457,7 +450,7 @@ func (sl *SQLLoader) ProcessBatch(batch json_parser.Batch) error {
 	// Check if batch already exists first
 	var existingBatchID int
 	err := sl.db.QueryRow(`
-		SELECT id FROM batches WHERE run_id = $1 AND batch_number = $2
+		SELECT id FROM new_batches WHERE run_id = $1 AND batch_number = $2
 	`, sl.runID, batch.Data.BatchNumber).Scan(&existingBatchID)
 
 	if err == nil {
@@ -498,24 +491,11 @@ func (sl *SQLLoader) ProcessBatch(batch json_parser.Batch) error {
 			}
 		}
 
-		// Check if cluster already exists
-		var clusterID int
-		err = sl.db.QueryRow(`
-			SELECT id FROM clusters WHERE batch_id = $1 AND cluster_id = $2
-		`, batchID, cluster.ClusterID).Scan(&clusterID)
-
-		if err == sql.ErrNoRows {
-			// Cluster doesn't exist, insert it
-			clusterID, err = sl.InsertCluster(batchID, cluster)
-			if err != nil {
-				return err
-			}
-		} else if err != nil {
-			return fmt.Errorf("failed to check cluster %d in batch %d: %v", cluster.ClusterID, batchID, err)
-		} else {
-			// Cluster already exists, skip it
-			fmt.Printf("  Cluster %d in batch %d already exists, skipping\n", cluster.ClusterID, batchID)
-			continue
+		// In the new schema, we always insert new clusters since each gets a unique auto-incrementing cluster_id
+		// We don't need to check for existing clusters by the old cluster_id from JSON
+		clusterID, err := sl.InsertCluster(batchID, cluster)
+		if err != nil {
+			return fmt.Errorf("failed to insert cluster %d: %v", cluster.ClusterID, err)
 		}
 
 		// Insert tweets
@@ -567,7 +547,7 @@ func (sl *SQLLoader) LoadJSONFile(jsonFilePath string) error {
 	var lastProcessedBatch int
 	err = sl.db.QueryRow(`
 		SELECT COALESCE(MAX(batch_number), -1) 
-		FROM batches 
+		FROM new_batches 
 		WHERE run_id = $1
 	`, sl.runID).Scan(&lastProcessedBatch)
 
@@ -590,6 +570,12 @@ func (sl *SQLLoader) LoadJSONFile(jsonFilePath string) error {
 		batches, err := parser.LoadNextChunkContinuous()
 		if err != nil {
 			return fmt.Errorf("failed to load chunk: %v", err)
+		}
+
+		// If no batches returned, we've reached the end of the file
+		if len(batches) == 0 {
+			fmt.Printf("Reached end of file, processing complete.\n")
+			break
 		}
 
 		// Process each batch in this chunk
@@ -618,6 +604,7 @@ func (sl *SQLLoader) LoadJSONFile(jsonFilePath string) error {
 
 	// Note: This function now runs continuously and never exits
 	// It will keep waiting for new data from the main pipeline
+	return nil
 }
 
 func main() {
@@ -694,15 +681,15 @@ func main() {
 	// Test database connection with test table
 	fmt.Println("Testing database connection...")
 	var count int
-	err = loader.db.QueryRow("SELECT COUNT(*) FROM test_table").Scan(&count)
+	err = loader.db.QueryRow("SELECT COUNT(*) FROM new_experiment_runs").Scan(&count)
 	if err != nil {
-		log.Fatalf("Failed to query test_table: %v", err)
+		log.Fatalf("Failed to query new_experiment_runs: %v", err)
 	}
 	fmt.Printf("Test table has %d rows\n", count)
 
 	// Check if any pipeline data exists
 	var batchCount int
-	err = loader.db.QueryRow("SELECT COUNT(*) FROM batches").Scan(&batchCount)
+	err = loader.db.QueryRow("SELECT COUNT(*) FROM new_batches").Scan(&batchCount)
 	if err != nil {
 		fmt.Printf("Error checking batches: %v\n", err)
 	} else {

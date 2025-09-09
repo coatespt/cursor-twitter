@@ -254,6 +254,7 @@ type Config struct {
 		ClusteringWindowBatches      int     `yaml:"clustering_window_batches"`      // Number of batches of recent tweets to use for clustering
 		MinBusyWordsPerTweet         int     `yaml:"min_busy_words_per_tweet"`       // Minimum number of busy words a tweet must contain to be included in clustering
 		MinJaccardSimilarity         float64 `yaml:"min_jaccard_similarity"`         // Minimum Jaccard similarity threshold for creating edges between tweets
+		JaccardUseBusyWordsOnly      bool    `yaml:"jaccard_use_busy_words_only"`    // If true, Jaccard similarity uses only busy words; if false, uses all tokens
 		MaxTweetsToCluster           int     `yaml:"max_tweets_to_cluster"`          // Maximum number of tweets to cluster (0 = no limit)
 		SuppressDuplicates           bool    `yaml:"suppress_duplicates"`            // Suppress duplicate tweets in visualization
 		DuplicateSimilarityThreshold float64 `yaml:"duplicate_similarity_threshold"` // Similarity threshold for duplicates
@@ -713,6 +714,7 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 	clusterer := pipeline.NewOptimizedTweetClusterer(
 		cfg.Analysis.MinJaccardSimilarity,
 		cfg.Analysis.MaxTweetsToCluster,
+		cfg.Analysis.JaccardUseBusyWordsOnly,
 	)
 
 	result := clusterer.ClusterTweets(tweetsWithBusyWords, allBusyWords, batchNumber)
@@ -3031,8 +3033,22 @@ func convertBatchToHumanReadable(batchMap map[string]interface{}, cfg *Config) i
 			}
 		})
 
+		// Reassign cluster IDs to avoid gaps after filtering/deduplication and sorting
+		for i, cluster := range humanReadableClusters {
+			if clusterMap, ok := cluster.(map[string]interface{}); ok {
+				clusterMap["cluster_id"] = i + 1
+			} else if individualCluster, ok := cluster.(*IndividualCluster); ok {
+				individualCluster.ClusterID = i + 1
+			} else if metaCluster, ok := cluster.(*MetaCluster); ok {
+				metaCluster.MetaClusterID = fmt.Sprintf("meta_%d", i+1)
+			}
+		}
+
 		clustersAboveMinSize = len(humanReadableClusters)
 	}
+
+	// Always update totalClusters to match actual output
+	totalClusters = len(humanReadableClusters)
 
 	// Create batch output with guaranteed field ordering
 	batchOutput := &BatchOutput{

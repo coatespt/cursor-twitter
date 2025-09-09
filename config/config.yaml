@@ -199,6 +199,9 @@ analysis:
   # I basically fiddled with it till it seemed to work and never changed it again.
   # TODO: Need some isolated testing to determine the most effective value.
   min_jaccard_similarity: 0.4
+  
+  # Whether to use only busy words for Jaccard similarity calculation (true) or all tokens (false)
+  jaccard_use_busy_words_only: false
 
   # Maximum number of tweets to cluster (0 = no limit, for performance safety)
   # TODO: IS THIS USED? NOT SURE WHAT IT IS DOING.

@@ -488,8 +488,59 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 - "Start and internet business"
 
 # TTD and Direction
+We recently:
+- Fixed the premature EOF issue by replacing the custom JSON parsing with Go's standard json.Decoder
+- Added the Jaccard similarity config option for using busy words only vs. all tokens
+- Fixed the cluster count bug in the main program
+- Restored proper streaming support with LoadNextChunkContinuous()
+- Replaced the entire schema in Postgres
+- Did the changes to the loader that were part of that.
 
-## The override file for config breakes the run.
+## Parse Error Problem
+
+The sql_loader kept failing with some kind of parse error. 
+It seems to be related to chunks. Sometimes the next chunk seems malformed to the parser (it isn't) and it just swallows it and picks up with the next chunk.
+
+./sql_loader 2>&1 | tee -a sql_loader_output.log
+
+Running with very small chunks did not fix the problem. We have tried 
+
+Replaced the whole thign with the json.decoder. This is a perfect example of how Cursor has no brain.  I said, but surely this problem has been solved thousands of times, right?
+
+## Clustering Problems 
+
+### Batches with no tweets.
+WARNING: Cluster 0 in batch 4590 has no tweets!
+
+### Batches with Tweets but no clusters and no busy words, but have tweets
+
+DEBUG: Batch 4601 has 0 clusters but 164 total tweets. Raw data: clusters=[], total_clusters=0
+Processed batch 4601: 0 clusters, 164 tweets, 0 busy words
+
+The clustering algorithm produces batches with many tweets but no clusters.  Fiddling with the values in the override file to see it the clustering algorithm is just tuned wrong.
+
+This is not an sql_loader problem. The batches are like that in the main zfilters program.
+
+This may or may not be be correct clustering behavior but it's intuitively not what we want. If you have a bunch of tweets in a batch, they should be at least one cluster on that basis.
+
+
+
+### Clusters with not tweets. 
+Note, cluster 0 has no Tweets but there are other clusters in the batch that are fine.
+
+WARNING: Cluster 0 in batch 4830 has no tweets!
+Processed batch 4830: 10 clusters, 1929 tweets, 71 busy words
+
+If the clustering doesn't find clusters, then surely the entire batch of tweets is the cluster, right?  This case may have to be caught explicitly.   If so, it needs to be marked in the data so that we can see that is what happened.
+
+Processed batch 1280: 0 clusters, 147 tweets, 0 busy words
+  DEBUG: Batch 1281 has 0 clusters but 93 total tweets. Raw data: clusters=[], total_clusters=0
+Processed batch 1281: 0 clusters, 93 tweets, 0 busy words
+Failed to parse JSON object: invalid character '{' after top-level value
+Failed to parse JSON object: unexpected end of JSON input
+Processed batch 2154: 1 clusters, 318 tweets, 4 busy words
+Processed batch 2155: 2 clusters, 112 tweets, 5 busy words
+
 
 ## window_batches might be the wrong multiple to compute the minimum number of tokens to leave in the queue for removal from the 3pk mapping. Think it through.
 
