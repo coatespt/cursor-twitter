@@ -8,9 +8,9 @@ func TestCleanupQueue(t *testing.T) {
 	// Test basic cleanup queue functionality
 	t.Run("BasicCleanupQueue", func(t *testing.T) {
 		// First, add tokens to the 3PK mappings so they can be removed
-		GenerateThreePartKey("test1")
-		GenerateThreePartKey("test2")
-		GenerateThreePartKey("test3")
+		GenerateThreePartKey("test1", 0)
+		GenerateThreePartKey("test2", 0)
+		GenerateThreePartKey("test3", 0)
 
 		// Add some tokens to the cleanup queue
 		AddToCleanupQueue("test1")
@@ -59,7 +59,7 @@ func TestCleanupQueue(t *testing.T) {
 	t.Run("LargeQueue", func(t *testing.T) {
 		// First, add tokens to the 3PK mappings so they can be removed
 		for i := 0; i < 100; i++ {
-			GenerateThreePartKey("token" + string(rune(i)))
+			GenerateThreePartKey("token"+string(rune(i)), 0)
 		}
 
 		// Add many tokens to test batch processing

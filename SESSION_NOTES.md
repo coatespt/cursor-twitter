@@ -501,6 +501,9 @@ We recently:
 - Replaced the entire schema in Postgres
 - Did the changes to the loader that were part of that.
 
+## Cursor says the rabbit v disk modes are implemented as the entire pipeline. 
+Find out if this is true.
+
 ## Parse Error Problem
 
 The sql_loader kept failing with some kind of parse error. 

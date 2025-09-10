@@ -447,21 +447,7 @@ func (sl *SQLLoader) InsertBusyWords(clusterID int, cluster json_parser.Cluster)
 
 // ProcessBatch processes a single batch and inserts all its data
 func (sl *SQLLoader) ProcessBatch(batch json_parser.Batch) error {
-	// Check if batch already exists first
-	var existingBatchID int
-	err := sl.db.QueryRow(`
-		SELECT id FROM new_batches WHERE run_id = $1 AND batch_number = $2
-	`, sl.runID, batch.Data.BatchNumber).Scan(&existingBatchID)
-
-	if err == nil {
-		// Batch already exists, skip processing entirely
-		fmt.Printf("  Batch %d already exists (ID: %d), skipping\n", batch.Data.BatchNumber, existingBatchID)
-		return nil
-	} else if err != sql.ErrNoRows {
-		return fmt.Errorf("failed to check if batch %d exists: %v", batch.Data.BatchNumber, err)
-	}
-
-	// Insert batch
+	// Insert batch (InsertBatch handles duplicate checking)
 	batchID, err := sl.InsertBatch(batch)
 	if err != nil {
 		return err

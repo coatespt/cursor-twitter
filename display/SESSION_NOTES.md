@@ -21,6 +21,18 @@ When a test doesn't pass, we have to look at why before changing anything. No re
 If any changes seem to involve multiple threads, be sure to get my agreement before doing anything. Anytime there thread safety constructs like mutex, etc., always check. We keep getting into trouble with unnecessary and incorrect thread complexity.
 
 # TTD
+# Remove barrier time logs.
+Should I remove the barrier timing logs since they're not revealing a real problem?
+
+## Examine this log line. 
+time=2025-09-10T08:57:11.370-04:00 level=WARN msg="Large time span in cluster" cluster_id=1 time_span_seconds=384 earliest="2012-01-30 08:23:53 UTC" latest="2012-01-30 08:30:17 UTC" cluster_size=98
+
+Six minutes seems like a very long time.
+
+## Look at this log line
+time=2025-09-10T08:57:10.201-04:00 level=INFO msg="BusyWordProcessor released from barrier" class_index=15 batch=376 barrier_wait_time_ms=848
+
+The barrier_wait_time seems very long. 848ms. They all seem to be the same, so that must be cluster processing time.
 
 ## Override File
 Need a test for every single value in the override file.
@@ -84,3 +96,11 @@ Quality Score = (0.35 × Persistence) + (0.25 × Recurrence Strength) + (0.15 ×
 5. **Consistency** (5%): `recurrence_count / total_historical_batches`
    - How evenly distributed the recurrences are across batches
    - Higher score if recurrences are spread out rather than clustered
+
+
+# Some Lessons Learned
+
+## The Barrier
+There was no proper barrier construct holding the busyword processors and the analytics thread in lock step. 
+
+Both are quite fast. The BWP's usually run in under a millisecond, occasionally as long as two or three.  The clustering is slower 

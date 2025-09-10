@@ -18,7 +18,7 @@ func BenchmarkCleanupQueuePerformance(b *testing.B) {
 	b.Run("ProcessQueue", func(b *testing.B) {
 		// Pre-populate queue with tokens
 		for i := 0; i < 10000; i++ {
-			GenerateThreePartKey("token" + string(rune(i)))
+			GenerateThreePartKey("token"+string(rune(i)), 0)
 			AddToCleanupQueue("token" + string(rune(i)))
 		}
 
@@ -48,7 +48,7 @@ func BenchmarkMemoryUsage(b *testing.B) {
 		// Simulate keeping all tokens in 3PK mappings
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			GenerateThreePartKey("token" + string(rune(i)))
+			GenerateThreePartKey("token"+string(rune(i)), 0)
 		}
 	})
 
@@ -75,7 +75,7 @@ func TestMemoryEstimate(t *testing.T) {
 		}
 
 		for _, token := range tokens {
-			GenerateThreePartKey(token)
+			GenerateThreePartKey(token, 0)
 		}
 
 		// Get current mapping sizes

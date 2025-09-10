@@ -178,7 +178,7 @@ func TestThreePartKeyGeneration(t *testing.T) {
 
 	threePKs := make([]tweets.ThreePartKey, len(tokens))
 	for i, token := range tokens {
-		threePKs[i] = pipeline.GenerateThreePartKey(token)
+		threePKs[i] = pipeline.GenerateThreePartKey(token, 0)
 	}
 
 	// Verify 3PKs are within bounds

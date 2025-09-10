@@ -17,11 +17,11 @@ var cleanupQueue = NewCleanupQueue()
 // Global array length for 3PK generation (set from main.go)
 var GlobalArrayLen int = 1000 // Default, will be set from config
 
-func GenerateThreePartKey(token string) tweets.ThreePartKey {
+func GenerateThreePartKey(token string, batchID int64) tweets.ThreePartKey {
 	a := hashWithSuffix(token, "__0NE__", GlobalArrayLen)
 	b := hashWithSuffix(token, "__TW0__", GlobalArrayLen)
 	c := hashWithSuffix(token, "__THR33__", GlobalArrayLen)
-	key := tweets.ThreePartKey{Part1: a, Part2: b, Part3: c}
+	key := tweets.ThreePartKey{Part1: a, Part2: b, Part3: c, BatchID: batchID}
 	// Store in global maps if not already present
 	Token3PKMutex.RLock()
 	_, exists := TokenTo3PK[token]

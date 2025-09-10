@@ -2,9 +2,10 @@ package tweets
 
 // ThreePartKey represents a three-part key for a token
 type ThreePartKey struct {
-	Part1 int
-	Part2 int
-	Part3 int
+	Part1   int
+	Part2   int
+	Part3   int
+	BatchID int64
 }
 
 // Tweet represents a parsed tweet with all its components

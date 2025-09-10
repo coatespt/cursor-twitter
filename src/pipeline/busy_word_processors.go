@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"cursor-twitter/src/tweets"
@@ -18,7 +19,7 @@ import (
 // BusyWordResult represents the output from a busy word processor
 // Contains batch number, frequency class, list of busy word 3PKs, and z-score info
 type BusyWordResult struct {
-	BatchNumber    int
+	BatchNumber    int64
 	FrequencyClass int
 	BusyWord3PKs   []tweets.ThreePartKey
 	ZScoreInfo     string
@@ -100,12 +101,10 @@ type FrequencyClassProcessor struct {
 	csvWriter   *csv.Writer
 	logDir      string
 	startTime   time.Time
-	batchNumber int
+	batchNumber int64
 	zScoreMin   float64
 
 	// Batch results collection
-	batchResults chan BusyWordResult
-
 	// Analysis thread communication
 	resultChannel chan BusyWordResult
 
@@ -221,12 +220,12 @@ func NewFrequencyClassProcessorWithZScores(numClasses int, arrayLen int, zScores
 		processors:     processors,
 		skipClasses:    skipMap,
 		stopChan:       make(chan struct{}),
-		batchResults:   make(chan BusyWordResult, numClasses), // Buffer for all processors
 		resultChannel:  make(chan BusyWordResult, numClasses), // Buffer for analysis thread
 		releaseChannel: make(chan struct{}),                   // Coordination release channel
 		startTime:      time.Now(),
 		zScoreMin:      zScoreMin,
 		logDir:         logDir,
+		batchNumber:    1, // Start batch numbering at 1, not 0
 	}
 
 	for i := 0; i < numClasses; i++ {
@@ -288,8 +287,7 @@ func (fcp *FrequencyClassProcessor) Start() {
 		}
 	}
 
-	// Start the batch result collector
-	go fcp.collectBatchResults()
+	// No batch result collector needed - BWPs send directly to barrier
 }
 
 // Stop gracefully stops all processors
@@ -368,38 +366,14 @@ func (fcp *FrequencyClassProcessor) writeToCSV(classResults map[int][]string) {
 	fcp.csvWriter.Flush()
 }
 
-// collectBatchResults collects and merges results from all processors
-func (fcp *FrequencyClassProcessor) collectBatchResults() {
-	// Track results for current batch
-	currentBatch := make(map[int][]string)
-	resultsReceived := 0
-
-	for {
-		select {
-		case <-fcp.stopChan:
-			return
-		case result := <-fcp.batchResults:
-			slog.Debug("Received batch result", "class", result.FrequencyClass, "busy_words", len(result.BusyWord3PKs))
-
-			// Convert 3PKs to actual words
-			busyWords := fcp.convert3PKsToWords(result.BusyWord3PKs)
-
-			// Store results for this class
-			currentBatch[result.FrequencyClass] = busyWords
-			resultsReceived++
-
-			// Send result to analysis thread
-			fcp.resultChannel <- result
-
-			// Wait for barrier release before starting next batch
-			<-fcp.releaseChannel
-		}
-	}
+// GetBatchNumber returns the current batch number
+func (fcp *FrequencyClassProcessor) GetBatchNumber() int64 {
+	return atomic.LoadInt64(&fcp.batchNumber)
 }
 
 // IncrementBatchNumber increments the batch number for the next batch
 func (fcp *FrequencyClassProcessor) IncrementBatchNumber() {
-	fcp.batchNumber++
+	atomic.AddInt64(&fcp.batchNumber, 1)
 }
 
 // printBatchSummary prints a summary of all busy words found in this batch
@@ -506,6 +480,11 @@ func (fcp *FrequencyClassProcessor) GetResultChannel() <-chan BusyWordResult {
 
 // ReleaseBarrier releases the barrier to allow processors to start the next batch
 func (fcp *FrequencyClassProcessor) ReleaseBarrier() {
+	releaseTime := time.Now()
+	slog.Info("Barrier released - all classes reached barrier",
+		"batch", atomic.LoadInt64(&fcp.batchNumber),
+		"release_time", releaseTime.Format("15:04:05.000"))
+
 	close(fcp.releaseChannel)
 	fcp.releaseChannel = make(chan struct{}) // Create fresh channel for next batch
 }
@@ -538,8 +517,9 @@ func (bwp *BusyWordProcessor) run() {
 			for _, key := range keys {
 				// Check for termination signal: (-1, -1, -1)
 				if key.Part1 == -1 && key.Part2 == -1 && key.Part3 == -1 {
-					// Perform coordinated z-computation
-					bwp.performCoordinatedZComputation()
+					// Perform coordinated z-computation using batch number from termination signal
+					slog.Info("BWP received termination signal", "class", bwp.classIndex, "batch_id", key.BatchID)
+					bwp.performCoordinatedZComputation(key.BatchID)
 					continue
 				}
 
@@ -561,7 +541,7 @@ func (bwp *BusyWordProcessor) run() {
 }
 
 // performCoordinatedZComputation performs z-computation and reports results to coordinator
-func (bwp *BusyWordProcessor) performCoordinatedZComputation() {
+func (bwp *BusyWordProcessor) performCoordinatedZComputation(batchNumber int64) {
 	startTime := time.Now()
 
 	// Calculate statistics for each array
@@ -597,14 +577,24 @@ func (bwp *BusyWordProcessor) performCoordinatedZComputation() {
 
 	// Report results to coordinator
 	result := BusyWordResult{
-		BatchNumber:    bwp.freqClassProcessor.batchNumber,
+		BatchNumber:    batchNumber,
 		FrequencyClass: bwp.classIndex,
 		BusyWord3PKs:   busyWords,
 		ZScoreInfo:     zScoreInfo,
 	}
 
-	// Send result to analytics thread
+	// CRITICAL: Send result ONLY to the barrier - NEVER send to analytics thread directly
+	// The barrier is the ONLY mechanism that should communicate with the analytics thread
+	// Any other communication path is a show-stopping error
+	slog.Info("BWP sending result to barrier", "class", bwp.classIndex, "batch_number", result.BatchNumber, "busy_words", len(result.BusyWord3PKs))
 	bwp.freqClassProcessor.resultChannel <- result
+
+	// Log when this class reaches the barrier
+	barrierReachTime := time.Now()
+	slog.Debug("BusyWordProcessor reached barrier",
+		"class_index", bwp.classIndex,
+		"batch", bwp.freqClassProcessor.batchNumber,
+		"barrier_reach_time", barrierReachTime.Format("15:04:05.000"))
 
 	// Wait for barrier release before starting next batch
 	barrierWaitStart := time.Now()
