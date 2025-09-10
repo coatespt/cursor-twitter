@@ -302,7 +302,7 @@ func (c *OptimizedTweetClusterer) simpleConnectedComponents(tweetList []*tweets.
 		if !visited[tweetIdx] {
 			var component []int
 			c.dfs(tweetIdx, adjacency, visited, &component)
-			if len(component) > 1 { // Only clusters with multiple tweets
+			if len(component) >= minClusterSize { // Respect minimum cluster size
 				clusterTweets := make([]*tweets.Tweet, len(component))
 				for i, idx := range component {
 					clusterTweets[i] = tweetList[idx]
@@ -314,6 +314,21 @@ func (c *OptimizedTweetClusterer) simpleConnectedComponents(tweetList []*tweets.
 					Size:      len(component),
 				})
 			}
+		}
+	}
+
+	// Create single-tweet clusters for isolated tweets that don't meet Jaccard threshold
+	// but still have busy words (they made it through the busy word filter)
+	for tweetIdx := range tweetList {
+		if !visited[tweetIdx] && minClusterSize <= 1 {
+			// This tweet is isolated (no edges) but should still form a cluster
+			clusterTweets := []*tweets.Tweet{tweetList[tweetIdx]}
+			sharedWords := c.findSharedBusyWords(clusterTweets, busyWords)
+			clusters = append(clusters, TweetCluster{
+				Tweets:    clusterTweets,
+				BusyWords: sharedWords,
+				Size:      1,
+			})
 		}
 	}
 

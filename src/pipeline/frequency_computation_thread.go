@@ -158,7 +158,6 @@ func (fct *FrequencyComputationThread) GetTokensAddedToCleanupQueue() int64 {
 // The FCT will handle the rebuild autonomously when it's ready
 func (fct *FrequencyComputationThread) TriggerRebuild() {
 	fct.shouldRebuild = true
-	slog.Info("FCT: Rebuild flag SET - frequency boundary crossed")
 }
 
 // run is the main loop of the FCT goroutine
@@ -202,9 +201,6 @@ func (fct *FrequencyComputationThread) run() {
 
 			// ALWAYS log when rebuild flag is true (this should be rare)
 			if shouldRebuild {
-				slog.Info("FCT: REBUILD FLAG DETECTED!",
-					"loop_count", fct.loopCount,
-					"should_rebuild", shouldRebuild)
 			}
 
 			// Debug: Log the branch we're taking more frequently
@@ -222,11 +218,9 @@ func (fct *FrequencyComputationThread) run() {
 				currentRebuildCount := fct.rebuildCount
 
 				// Consume all accumulated tokens before starting computation
-				slog.Info("FCT: Consuming accumulated tokens before rebuild", "rebuild_count", currentRebuildCount)
 				fct.consumeAllAccumulatedTokens()
 
 				rebuildStartTime := time.Now()
-				slog.Info("FCT: Starting rebuild", "rebuild_count", currentRebuildCount, "start_time", rebuildStartTime.Format("15:04:05"))
 				fmt.Fprintf(os.Stderr, "*** FCT REBUILD STARTED at %s ***\n", rebuildStartTime.Format("15:04:05"))
 				// Pause token processing and do rebuild
 				fct.performRebuild()
@@ -353,7 +347,6 @@ func (fct *FrequencyComputationThread) processTokens() {
 func (fct *FrequencyComputationThread) performRebuild() {
 	// Reset the rebuild flag immediately so loop can detect new rebuild requests
 	fct.shouldRebuild = false
-	slog.Info("FCT: Rebuild flag RESET at start of performRebuild")
 
 	startTime := time.Now()
 
@@ -364,15 +357,10 @@ func (fct *FrequencyComputationThread) performRebuild() {
 		"start_time", startTime.Format("15:04:05"),
 		"token_files_written", tokenFileCount)
 
-	slog.Info("Starting frequency class rebuild",
-		"token_files_written", tokenFileCount,
-		"start_time", startTime.Format("15:04:05"))
-
 	// Get a snapshot of current token counts for frequency calculations
 	tokenCounts := fct.tokenCounter.CountsSnapshot()
 
 	// Perform the frequency class calculation
-	slog.Info("FCT: About to call BuildFrequencyClassHashSets", "token_count", len(tokenCounts), "freq_classes", fct.freqClasses)
 
 	// Use adaptive frequency class building if min count threshold is configured
 	var result FreqClassResult
@@ -473,9 +461,6 @@ func (fct *FrequencyComputationThread) consumeAllAccumulatedTokens() {
 	// Get current queue sizes (snapshot to prevent infinite catch-up)
 	inboundQueueSize := fct.inboundTokenQueue.Len()
 
-	slog.Info("FCT: Starting token consumption with queue snapshot",
-		"inbound_queue_size", inboundQueueSize)
-
 	inboundProcessed := 0
 
 	// Process exactly inboundQueueSize tokens from inbound queue
@@ -488,9 +473,6 @@ func (fct *FrequencyComputationThread) consumeAllAccumulatedTokens() {
 		inboundProcessed += len(tokens)
 	}
 
-	slog.Info("FCT: Consumed tokens using queue snapshot",
-		"inbound_processed", inboundProcessed,
-		"inbound_queue_size_after", fct.inboundTokenQueue.Len())
 }
 
 // savePersistedState saves the data structures to files

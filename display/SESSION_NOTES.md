@@ -21,6 +21,18 @@ When a test doesn't pass, we have to look at why before changing anything. No re
 If any changes seem to involve multiple threads, be sure to get my agreement before doing anything. Anytime there thread safety constructs like mutex, etc., always check. We keep getting into trouble with unnecessary and incorrect thread complexity.
 
 # TTD
+
+## Override File
+Need a test for every single value in the override file.
+
+
+## Empty Batches
+We have lots of batches that have tweets but no clusters.  If a batch had no clusters but it had not tweets, that would be find--nothing says there have to be any busy words.  But if it has tweets it should have at least one cluster.
+
+If the clustering algorithm produces no clusters, and there are tweets, we need to put in a cluster with all those tweets.
+
+The clustering algorithm seems to sometimes find no clusters even though there are tweets. Can you look at the docs and the API and see if this is a thin? And maybe there's a flag to require that it always produce at least one cluster if there are tweets.
+
 ##  Fixing the database.
 
 ### The basic insertion of zfilters data

@@ -160,10 +160,6 @@ func applyOverrideFromYAML(cfg *Config, overrideConfigPath string) error {
 			if num, ok := value.(int); ok {
 				cfg.WindowSize = num
 			}
-		case "verbose":
-			if b, ok := value.(bool); ok {
-				cfg.Verbose = b
-			}
 		case "log_level":
 			if str, ok := value.(string); ok {
 				cfg.LogLevel = str
@@ -226,6 +222,34 @@ func applyOverrideFromYAML(cfg *Config, overrideConfigPath string) error {
 				}
 				cfg.BusywordClasses = intClasses
 			}
+		case "analysis":
+			if analysisMap, ok := value.(map[interface{}]interface{}); ok {
+				// Handle analysis section overrides
+				if minClusterSize, ok := analysisMap["min_cluster_size"].(int); ok {
+					cfg.Analysis.MinClusterSize = minClusterSize
+				}
+				if jaccardUseBusyWordsOnly, ok := analysisMap["jaccard_use_busy_words_only"].(bool); ok {
+					cfg.Analysis.JaccardUseBusyWordsOnly = jaccardUseBusyWordsOnly
+				}
+				if minJaccardSimilarity, ok := analysisMap["min_jaccard_similarity"].(float64); ok {
+					cfg.Analysis.MinJaccardSimilarity = minJaccardSimilarity
+				}
+				if useLevenshteinDeduplication, ok := analysisMap["use_levenshtein_deduplication"].(bool); ok {
+					cfg.Analysis.UseLevenshteinDeduplication = useLevenshteinDeduplication
+				}
+				if filterRepetitivePatterns, ok := analysisMap["filter_repetitive_patterns"].(bool); ok {
+					cfg.Analysis.FilterRepetitivePatterns = filterRepetitivePatterns
+				}
+				if deduplicateByUser, ok := analysisMap["deduplicate_by_user"].(bool); ok {
+					cfg.Analysis.DeduplicateByUser = deduplicateByUser
+				}
+				if createFallbackClusters, ok := analysisMap["create_fallback_clusters"].(bool); ok {
+					cfg.Analysis.CreateFallbackClusters = createFallbackClusters
+				}
+				if maxTweetsToCluster, ok := analysisMap["max_tweets_to_cluster"].(int); ok {
+					cfg.Analysis.MaxTweetsToCluster = maxTweetsToCluster
+				}
+			}
 			// Add more cases as needed for other fields
 		}
 	}
@@ -285,11 +309,6 @@ func mergeConfigs(base, override *Config) {
 	if override.WindowBatches != 0 {
 		base.WindowBatches = override.WindowBatches
 	}
-	// Note: For boolean fields, we can't distinguish between "not set" and "false" in YAML
-	// So we only override if the override value is true (since false is the default)
-	if override.Verbose {
-		base.Verbose = override.Verbose
-	}
 	if override.LogDir != "" {
 		base.LogDir = override.LogDir
 	}
@@ -342,6 +361,12 @@ func mergeConfigs(base, override *Config) {
 	}
 	if override.Analysis.MinJaccardSimilarity != 0 {
 		base.Analysis.MinJaccardSimilarity = override.Analysis.MinJaccardSimilarity
+	}
+	if override.Analysis.MinClusterSize != 0 {
+		base.Analysis.MinClusterSize = override.Analysis.MinClusterSize
+	}
+	if override.Analysis.JaccardUseBusyWordsOnly {
+		base.Analysis.JaccardUseBusyWordsOnly = override.Analysis.JaccardUseBusyWordsOnly
 	}
 	if override.Analysis.MaxTweetsToCluster != 0 {
 		base.Analysis.MaxTweetsToCluster = override.Analysis.MaxTweetsToCluster
@@ -430,13 +455,7 @@ func mergeConfigs(base, override *Config) {
 	if override.Analysis.BWQueueMax != 0 {
 		base.Analysis.BWQueueMax = override.Analysis.BWQueueMax
 	}
-	if override.Analysis.AnalyticsBatchLagThreshold != 0 {
-		base.Analysis.AnalyticsBatchLagThreshold = override.Analysis.AnalyticsBatchLagThreshold
-	}
 	if override.Analysis.BWThreadSlowDelay != 0 {
 		base.Analysis.BWThreadSlowDelay = override.Analysis.BWThreadSlowDelay
-	}
-	if override.Analysis.AnalyticsLagSlowDelay != 0 {
-		base.Analysis.AnalyticsLagSlowDelay = override.Analysis.AnalyticsLagSlowDelay
 	}
 }

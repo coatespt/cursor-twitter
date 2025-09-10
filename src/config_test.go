@@ -19,7 +19,6 @@ mq_port: 5672
 mq_queue: tweet_in
 window: 15000
 batch: 5000
-verbose: true
 log_dir: ../logs
 freq_classes: 7
 bw_array_len: 1000
@@ -76,7 +75,6 @@ mq_port: 5672
 mq_queue: tweet_in
 window: 15000
 batch: 5000
-verbose: true
 freq_classes: 7
 bw_array_len: 1000
 z_score: 7
@@ -110,7 +108,6 @@ mq_port: 5672
 mq_queue: tweet_in
 window: 15000
 batch: 5000
-verbose: true
 log_dir: ""
 freq_classes: 7
 bw_array_len: 1000
@@ -145,7 +142,6 @@ mq_port: 5672
 mq_queue: tweet_in
 window: 15000
 batch: 5000
-verbose: true
 log_dir: ../logs
 freq_classes: 7
 bw_array_len: 1000
@@ -200,7 +196,6 @@ mq_port: 5672
 mq_queue: tweet_in
 window: 15000
 batch: 5000
-verbose: true
 log_dir: ../logs
 freq_classes: ` + fmt.Sprintf("%d", tc.value) + `
 bw_array_len: 1000
@@ -247,7 +242,6 @@ mq_port: 5672
 mq_queue: tweet_in
 window: ` + fmt.Sprintf("%d", tc.value) + `
 batch: 5000
-verbose: true
 log_dir: ../logs
 freq_classes: 7
 bw_array_len: 1000
@@ -288,7 +282,6 @@ mq_port: 5672
 mq_queue: tweet_in
 window: 15000
 batch: 5000
-verbose: true
 log_dir: ../logs
 freq_classes: 7
 bw_array_len: 1000
@@ -306,7 +299,6 @@ mq_port: 5672
 mq_queue: tweet_in
 window: 15000
 batch: 5000
-verbose: true
 log_dir: ../logs
 freq_classes: 7
 bw_array_len: 1000
@@ -324,7 +316,6 @@ mq_port: 5672
 mq_queue: tweet_in
 window: 15000
 batch: 5000
-verbose: true
 log_dir: ../logs
 freq_classes: 7
 bw_array_len: 1000

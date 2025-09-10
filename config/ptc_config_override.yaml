@@ -7,17 +7,15 @@ token_persist_files: 70
 # Smaller batch than we'd been using
 # 20,000 is 40 seconds of the decahose (wall clock time) but only four seconds 
 # of the firehose.
-batch: 20000 
-min_cluster_size: 1
+batch: 50000 
 
-# Test the new busy-words-only Jaccard similarity calculation
-jaccard_use_busy_words_only: true
+# Analysis settings
+analysis:
+  min_cluster_size: 3
+  jaccard_use_busy_words_only: true
+  min_jaccard_similarity: 0.1
+  use_levenshtein_deduplication: false
+  filter_repetitive_patterns: false 
+  deduplicate_by_user: false
 
-use_levenshtein_deduplication: false
-
-filter_repetitive_patterns: false 
-deduplicate_by_user: false
-
-# Line 290 in main says that if no tweets meet the jaccard similarity 
-# thresshold, you can end up with no clusters even though lots of tweets..  
-min_jaccard_similarity: 0.2
+log_level: INFO

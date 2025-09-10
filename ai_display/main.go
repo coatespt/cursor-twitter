@@ -584,7 +584,7 @@ func (s *Server) getClustersForBatch(batchNumber, runID int) ([]ClusterInfo, err
 	return clusters, nil
 }
 
-// getBatchesWithClusters gets only batches that have clusters for a specific run
+// getBatchesWithClusters gets only batches that have clusters with AI analysis results for a specific run
 func (s *Server) getBatchesWithClusters(runID int) ([]map[string]interface{}, error) {
 	query := `
 		SELECT DISTINCT
@@ -593,6 +593,7 @@ func (s *Server) getBatchesWithClusters(runID int) ([]map[string]interface{}, er
 			COUNT(c.id) as cluster_count
 		FROM batches b
 		JOIN clusters c ON b.id = c.batch_id
+		JOIN ai_analysis_results aar ON c.id = aar.cluster_id
 		WHERE b.run_id = $1
 		GROUP BY b.batch_number, b.batch_time
 		HAVING COUNT(c.id) > 0

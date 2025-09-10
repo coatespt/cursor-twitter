@@ -17,7 +17,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -28,27 +27,6 @@ import (
 	"cursor-twitter/src/pipeline"
 	"cursor-twitter/src/tweets"
 )
-
-// LogLevel represents the logging level
-type LogLevel int
-
-const (
-	DEBUG LogLevel = iota
-	INFO
-	WARN
-	ERROR
-)
-
-// Logger provides thread-safe logging with lazy evaluation
-type Logger struct {
-	level   LogLevel
-	verbose bool
-	stderr  *os.File
-	mu      sync.RWMutex
-}
-
-// Global logger instance
-var globalLogger *Logger
 
 // ========================================================================
 // CRITICAL CONCURRENCY PROTECTION - DO NOT MODIFY WITHOUT EXPLICIT APPROVAL
@@ -119,81 +97,6 @@ func getBatchWindow() []*Batch {
 	return result
 }
 
-// Log logs a message with lazy evaluation to avoid expensive string formatting when disabled
-func Log(level LogLevel, messageFn func() string) {
-	if globalLogger == nil {
-		return
-	}
-
-	globalLogger.mu.RLock()
-	defer globalLogger.mu.RUnlock()
-
-	// Check level BEFORE calling expensive function
-	if level < globalLogger.level && !globalLogger.verbose {
-		return // Exit early, messageFn never called
-	}
-
-	fmt.Fprintf(globalLogger.stderr, "%s\n", messageFn())
-}
-
-// parseLogLevel converts a string log level to LogLevel enum
-func parseLogLevel(levelStr string) LogLevel {
-	switch strings.ToUpper(levelStr) {
-	case "DEBUG":
-		return DEBUG
-	case "INFO":
-		return INFO
-	case "WARN":
-		return WARN
-	case "ERROR":
-		return ERROR
-	default:
-		return INFO // Default to INFO if invalid
-	}
-}
-
-// Convenience functions for different log levels
-func LogDebug(messageFn func() string) { Log(DEBUG, messageFn) }
-func LogInfo(messageFn func() string)  { Log(INFO, messageFn) }
-func LogWarn(messageFn func() string)  { Log(WARN, messageFn) }
-func LogError(messageFn func() string) { Log(ERROR, messageFn) }
-
-// InitializeLogger sets up the global logger
-func InitializeLogger(verbose bool, level LogLevel, logDir string) {
-	// Ensure log directory exists
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		// If we can't create the log directory, fall back to stderr
-		globalLogger = &Logger{
-			level:   level,
-			verbose: verbose,
-			stderr:  os.Stderr,
-		}
-		return
-	}
-
-	// Create log file with timestamp
-	timestamp := time.Now().Format("20060102_150405")
-	logFileName := fmt.Sprintf("pipeline_%s.log", timestamp)
-	logFilePath := filepath.Join(logDir, logFileName)
-
-	logFile, err := os.Create(logFilePath)
-	if err != nil {
-		// If we can't create the log file, fall back to stderr
-		globalLogger = &Logger{
-			level:   level,
-			verbose: verbose,
-			stderr:  os.Stderr,
-		}
-		return
-	}
-
-	globalLogger = &Logger{
-		level:   level,
-		verbose: verbose,
-		stderr:  logFile,
-	}
-}
-
 // Config struct for YAML config file (add log_dir)
 type Config struct {
 	Mode          string `yaml:"mode"`
@@ -206,7 +109,6 @@ type Config struct {
 	BatchSize     int    `yaml:"batch"`
 	WindowBatches int    `yaml:"window_batches"` // Number of batches to keep in tweet window
 
-	Verbose              bool      `yaml:"verbose"`
 	LogDir               string    `yaml:"log_dir"`
 	LogLevel             string    `yaml:"log_level"` // DEBUG, INFO, WARN, ERROR
 	FreqClasses          int       `yaml:"freq_classes"`
@@ -262,6 +164,7 @@ type Config struct {
 		ClusteringMethod             string  `yaml:"clustering_method"`              // Method for clustering: "graph" (only valid option)
 		OutputMode                   string  `yaml:"output_mode"`                    // Output mode: "verbose" or "human"
 		MinClusterSize               int     `yaml:"min_cluster_size"`               // Minimum number of tweets in a cluster for it to be included in the output
+		CreateFallbackClusters       bool    `yaml:"create_fallback_clusters"`       // Create fallback clusters when no clusters found but tweets exist
 		// Persistence window configuration for tracking clusters across multiple batches
 		WindowBatchesPersistence      int `yaml:"window_batches_persistence"`       // M
 		WindowBatchesPersistenceCheck int `yaml:"window_batches_persistence_check"` // K
@@ -293,9 +196,7 @@ type Config struct {
 		MedoidSimilarityThreshold      float64          `yaml:"medoid_similarity_threshold"`       // Separate threshold for medoid similarity
 		BusyWordSimilarityThreshold    float64          `yaml:"busy_word_similarity_threshold"`    // Separate threshold for busy word similarity
 		BWQueueMax                     float64          `yaml:"bw_queue_max"`                      // Multiplier for batch size to trigger busyword queue warnings
-		AnalyticsBatchLagThreshold     int              `yaml:"analytics_batch_lag_threshold"`     // Maximum lag between global and analytics batch counts
 		BWThreadSlowDelay              int              `yaml:"bw_thread_slow_delay"`              // Total sleep time in milliseconds when busyword queues are backlogged
-		AnalyticsLagSlowDelay          int              `yaml:"analytics_lag_slow_delay"`          // Sleep time in milliseconds when analytics thread falls behind
 	} `yaml:"analysis"`
 }
 
@@ -309,7 +210,6 @@ var (
 	pipelineStartTime   time.Time // Track when pipeline started for total rate calculation
 	freqClasses         int       // Number of frequency classes from config
 	analyticsBatchCount int       // Track which batch the analytics thread has completed
-	analyticsLagFlag    int32     // Atomic flag set by analytics thread to signal main thread to sleep
 
 )
 
@@ -407,6 +307,7 @@ func (q *TweetQueue) Len() int {
 }
 
 var globalTweetQueue *TweetQueue
+var lastClusteringTime time.Time
 
 // Analysis thread for processing busy word results and running clustering
 func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Config, loadedState map[string]int) {
@@ -432,13 +333,11 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 
 		// Handle loaded state if provided
 		if loadedState != nil {
-			LogInfo(func() string {
-				totalTokens := 0
-				for _, count := range loadedState {
-					totalTokens += count
-				}
-				return fmt.Sprintf("Informing FCT to load state with %d total tokens...", totalTokens)
-			})
+			totalTokens := 0
+			for _, count := range loadedState {
+				totalTokens += count
+			}
+			slog.Info("Informing FCT to load state", "total_tokens", totalTokens)
 
 			// Check for state consistency - verify that we have the expected number of token files
 			expectedTokenFiles := cfg.TokenPersistFiles
@@ -451,12 +350,10 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 					if actualTokenFiles != expectedTokenFiles {
 						fmt.Fprintf(os.Stderr, "⚠️  WARNING: State inconsistency detected - expected %d token files, found %d\n", expectedTokenFiles, actualTokenFiles)
 						fmt.Fprintf(os.Stderr, "   Falling back to building filters from scratch...\n")
-						LogInfo(func() string { return "State inconsistency detected - falling back to building from scratch" })
+						slog.Info("State inconsistency detected - falling back to building from scratch")
 						loadedState = nil // Treat as if no state was loaded
 					} else {
-						LogInfo(func() string {
-							return fmt.Sprintf("State consistency verified - %d token files found", actualTokenFiles)
-						})
+						slog.Info("State consistency verified", "token_files", actualTokenFiles)
 					}
 				}
 			}
@@ -473,7 +370,7 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 				fct.LoadState(stateCopy)
 
 				// Rebuild frequency class filters from the loaded token counts (using the original)
-				LogInfo(func() string { return "Rebuilding frequency class filters from loaded token counts..." })
+				slog.Info("Rebuilding frequency class filters from loaded token counts...")
 				rebuildStartTime := time.Now()
 
 				// Add panic recovery for corrupted state data
@@ -483,7 +380,7 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 							fmt.Fprintf(os.Stderr, "⚠️  ERROR: Failed to rebuild frequency class filters from loaded state: %v\n", r)
 							fmt.Fprintf(os.Stderr, "   The state files appear to be corrupted. Falling back to building from scratch.\n")
 							// Don't set any filters - let the FCT build them from scratch
-							LogInfo(func() string { return "State corruption detected - FCT will build filters from scratch" })
+							slog.Info("State corruption detected - FCT will build filters from scratch")
 						}
 					}()
 
@@ -495,14 +392,12 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 					}
 					pipeline.SetGlobalFilters(result.Filters)
 					rebuildDuration := time.Since(rebuildStartTime)
-					LogInfo(func() string {
-						return fmt.Sprintf("Frequency class filters rebuilt: %d classes in %v", len(result.Filters), rebuildDuration)
-					})
+					slog.Info("Frequency class filters rebuilt", "classes", len(result.Filters), "duration", rebuildDuration)
 				}()
 			}
 		} else {
 			// If no state loaded, don't wait for filters - let FCT build them as tokens arrive
-			LogInfo(func() string { return "No state loaded - FCT will build filters as tokens arrive" })
+			slog.Info("No state loaded - FCT will build filters as tokens arrive")
 		}
 
 		// ========================================================================
@@ -512,96 +407,82 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 		// Track results by batch
 		currentBatch := make(map[int][]string) // class -> busy words
 		currentBatchNumber := -1
+		expectedProcessors := len(cfg.BusywordClasses) // Number of frequency classes we expect results from
 
 		// Initialize analytics batch count to current global batch count to avoid artificial lag
 		analyticsBatchCount = globalBatchCount + 2 // Start 2 batches ahead to account for normal pipeline lag
 
-		for result := range resultChannel {
-			resultCount++
+		// Coordination pattern: collect exactly N results per batch, then release
+		for {
+			// Collect exactly N results for current batch
+			resultsCollected := 0
 
-			// Check if this is a new batch
-			if currentBatchNumber != result.BatchNumber {
-				// Run clustering for previous batch if it exists
-				if currentBatchNumber >= 0 {
-					// Get recent tweets from global queue for clustering (only latest batch)
-					recentTweets := globalTweetQueue.GetRecentTweets(cfg.BatchSize)
-					runClusteringForBatch(currentBatch, recentTweets, currentBatchNumber, cfg)
+			for resultsCollected < expectedProcessors {
+				result, ok := <-resultChannel
+				if !ok {
+					// Channel closed, process final batch if exists
+					if currentBatchNumber >= 0 && len(currentBatch) > 0 {
+						recentTweets := globalTweetQueue.GetRecentTweets(cfg.BatchSize)
+						runClusteringForBatch(currentBatch, recentTweets, currentBatchNumber, cfg)
+
+					}
+					return
 				}
 
-				// Start new batch - increment analytics counter when starting to process
-				currentBatch = make(map[int][]string)
-				currentBatchNumber = result.BatchNumber
-				analyticsBatchCount++
-			}
+				resultCount++
 
-			// Convert 3PKs to actual words
-			busyWords := make([]string, 0, len(result.BusyWord3PKs))
-			notFoundCount := 0
-			for _, threePK := range result.BusyWord3PKs {
-				// Convert 3PK to word using the global token mapping
-				if word, exists := pipeline.GetWordFrom3PK(threePK); exists {
-					busyWords = append(busyWords, word)
-				} else {
-					// Skip 3PKs that aren't in the mapping - they shouldn't exist
-					notFoundCount++
+				// Check if this is a new batch
+				if currentBatchNumber != result.BatchNumber {
+					// Run clustering for previous batch if it exists
+					if currentBatchNumber >= 0 {
+						recentTweets := globalTweetQueue.GetRecentTweets(cfg.BatchSize)
+						runClusteringForBatch(currentBatch, recentTweets, currentBatchNumber, cfg)
+
+					}
+
+					// Start new batch
+					currentBatch = make(map[int][]string)
+					freqClassProcessor.IncrementBatchNumber()
+					currentBatchNumber = result.BatchNumber
+					analyticsBatchCount++
 				}
+
+				// Convert 3PKs to actual words
+				busyWords := make([]string, 0, len(result.BusyWord3PKs))
+				notFoundCount := 0
+				for _, threePK := range result.BusyWord3PKs {
+					if word, exists := pipeline.GetWordFrom3PK(threePK); exists {
+						busyWords = append(busyWords, word)
+					} else {
+						notFoundCount++
+					}
+				}
+
+				if notFoundCount > 0 {
+					slog.Error("ERROR: 3PKs not found in mapping", "not_found", notFoundCount, "total", len(result.BusyWord3PKs), "class", result.FrequencyClass)
+				}
+
+				// Store results for this class
+				currentBatch[result.FrequencyClass] = busyWords
+				resultsCollected++
 			}
 
-			// Debug: Show if any 3PKs weren't found (this indicates a system problem)
-			if notFoundCount > 0 {
-				LogError(func() string {
-					return fmt.Sprintf("ERROR: %d/%d 3PKs not found in mapping for class %d - this should not happen!",
-						notFoundCount, len(result.BusyWord3PKs), result.FrequencyClass)
-				})
-			}
-
-			// Store results for this class
-			currentBatch[result.FrequencyClass] = busyWords
-		}
-
-		// Run clustering for final batch
-		if currentBatchNumber >= 0 {
-			// Get recent tweets from global queue for clustering (only latest batch)
+			// All N results collected for this batch - run clustering
 			recentTweets := globalTweetQueue.GetRecentTweets(cfg.BatchSize)
 			runClusteringForBatch(currentBatch, recentTweets, currentBatchNumber, cfg)
+
+			// Release barrier to allow processors to start next batch
+			freqClassProcessor.ReleaseBarrier()
 		}
 
-		LogInfo(func() string {
-			return fmt.Sprintf("Analysis thread stopped after processing %d results", resultCount)
-		})
+		slog.Info("Analysis thread stopped", "results", resultCount)
 	}()
 }
 
 // runClusteringForBatch runs clustering analysis for a batch of busy words and tweets
 func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets.Tweet, batchNumber int, cfg *Config) {
-	// Early diagnostic to see if function is called
-	slog.Info("Clustering batch start",
-		"batch", batchNumber,
-		"tweets", len(recentTweets))
 	// Print busy word summary
 	printBatchSummary(classResults, batchNumber, cfg)
-
-	// Monitor analytics thread batch lag (only when a batch is completed)
-	if cfg.Analysis.AnalyticsBatchLagThreshold > 0 {
-		lag := globalBatchCount - batchNumber
-
-		if lag > cfg.Analysis.AnalyticsBatchLagThreshold {
-			warningMsg := fmt.Sprintf("Analytics thread lag detected: global_batch=%d completed_batch=%d lag=%d threshold=%d",
-				globalBatchCount, batchNumber, lag, cfg.Analysis.AnalyticsBatchLagThreshold)
-
-			// Log to file using LogWarn for consistency
-			LogWarn(func() string {
-				return fmt.Sprintf("Analytics thread lag detected: global_batch=%d completed_batch=%d lag=%d threshold=%d tweet_count=%d",
-					globalBatchCount, batchNumber, lag, cfg.Analysis.AnalyticsBatchLagThreshold, TotalTweetsRead)
-			})
-
-			// Echo to stderr
-			fmt.Fprintf(os.Stderr, "*** %s ***\n", warningMsg)
-
-			// Set flag to signal main thread to slow down
-			atomic.StoreInt32(&analyticsLagFlag, 1)
-		}
-	}
 
 	// Collect all busy words from specified classes
 	allBusyWords := make(map[string]bool)
@@ -610,18 +491,14 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 	// Validate busyword_classes are within valid range
 	for _, class := range cfg.BusywordClasses {
 		if class < 1 || class > cfg.FreqClasses {
-			LogWarn(func() string {
-				return fmt.Sprintf("Invalid busyword_class %d (valid range: 1-%d) - skipping", class, cfg.FreqClasses)
-			})
+			slog.Warn("Invalid busyword_class", "class", class, "valid_range", fmt.Sprintf("1-%d", cfg.FreqClasses))
 			continue
 		}
 		allowedClasses[class] = true
 	}
 
 	if len(allowedClasses) == 0 {
-		LogError(func() string {
-			return fmt.Sprintf("No valid busyword_classes found - all classes were out of range (1-%d)", cfg.FreqClasses)
-		})
+		slog.Error("No valid busyword_classes found", "valid_range", fmt.Sprintf("1-%d", cfg.FreqClasses))
 		return
 	}
 
@@ -655,57 +532,40 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 
 	// Sanity checks before proceeding with clustering
 	if len(tweetsWithBusyWords) == 0 {
-		LogWarn(func() string {
-			return fmt.Sprintf("Clustering skipped: no tweets with busy words (batch=%d, total_tweets=%d, busy_words=%d)",
-				batchNumber, len(recentTweets), len(allBusyWords))
-		})
+		slog.Warn("Clustering skipped: no tweets with busy words", "batch", batchNumber, "total_tweets", len(recentTweets), "busy_words", len(allBusyWords))
 		return
 	}
 
 	if len(tweetsWithBusyWords) < 2 {
-		LogWarn(func() string {
-			return fmt.Sprintf("Clustering skipped: not enough tweets with busy words (batch=%d, tweets_with_busy_words=%d, min_required=2)",
-				batchNumber, len(tweetsWithBusyWords))
-		})
+		slog.Warn("Clustering skipped: not enough tweets with busy words", "batch", batchNumber, "tweets_with_busy_words", len(tweetsWithBusyWords), "min_required", 2)
 		return
 	}
 
 	if len(allBusyWords) == 0 {
-		LogWarn(func() string {
-			return fmt.Sprintf("Clustering skipped: no busy words found (batch=%d)", batchNumber)
-		})
+		slog.Warn("Clustering skipped: no busy words found", "batch", batchNumber)
 		return
 	}
 
-	// Only graph clustering is supported now
-	clusteringMethod := "graph"
-
-	slog.Info("Starting clustering",
-		"batch", batchNumber,
-		"method", clusteringMethod,
-		"tweets", len(tweetsWithBusyWords),
-		"busy_words", len(allBusyWords))
-
-	// Diagnostic: Log clustering workload for performance analysis
-	slog.Info("Clustering workload",
-		"batch", batchNumber,
-		"tweets", len(tweetsWithBusyWords),
-		"busy_words", len(allBusyWords),
-		"method", clusteringMethod)
-
 	// Time the clustering operation
 	clusteringStart := time.Now()
+	timeSinceLastClustering := clusteringStart.Sub(lastClusteringTime)
+
 	// Only graph clustering is supported now
 	runGraphClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber, classResults)
+
 	clusteringDuration := time.Since(clusteringStart)
 
-	// Log clustering timing to log file
-	slog.Info("Clustering timing",
+	// Log detailed timing information
+	slog.Info("Clustering cycle timing",
 		"batch", batchNumber,
-		"duration", clusteringDuration,
-		"tweets", len(tweetsWithBusyWords),
-		"busy_words", len(allBusyWords),
-		"method", clusteringMethod)
+		"time_since_last_clustering_ms", timeSinceLastClustering.Milliseconds(),
+		"clustering_processing_time_ms", clusteringDuration.Milliseconds(),
+		"tweets_processed", len(tweetsWithBusyWords),
+		"busy_words_count", len(allBusyWords))
+
+	// Update last clustering time
+	lastClusteringTime = time.Now()
+
 }
 
 // runGraphClustering runs graph-based clustering on tweets
@@ -717,7 +577,7 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 		cfg.Analysis.JaccardUseBusyWordsOnly,
 	)
 
-	result := clusterer.ClusterTweets(tweetsWithBusyWords, allBusyWords, batchNumber)
+	result := clusterer.ClusterTweets(tweetsWithBusyWords, allBusyWords, cfg.Analysis.MinClusterSize)
 
 	// Create a batch from the clusters and add it to the window
 	batch := &Batch{
@@ -826,8 +686,8 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 		batchClusters = append(batchClusters, clusterData)
 	}
 
-	// Create batch-level data structure
-	totalClusters := len(batchClusters)
+	// Check if we need to create a fallback cluster
+	// First count clusters above minimum size
 	clustersAboveMinSize := 0
 	for _, cluster := range batchClusters {
 		if size, ok := cluster["size"].(int); ok {
@@ -836,6 +696,69 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 			}
 		}
 	}
+
+	slog.Info("Fallback cluster check",
+		"batchClusters", len(batchClusters),
+		"clustersAboveMinSize", clustersAboveMinSize,
+		"tweetsWithBusyWords", len(tweetsWithBusyWords),
+		"CreateFallbackClusters", cfg.Analysis.CreateFallbackClusters)
+
+	if clustersAboveMinSize == 0 && len(tweetsWithBusyWords) > 0 && cfg.Analysis.CreateFallbackClusters {
+		// Create a fallback cluster with all tweets
+		// Ensure the fallback cluster meets minimum size requirement
+		fallbackSize := len(tweetsWithBusyWords)
+		if fallbackSize < cfg.Analysis.MinClusterSize {
+			fallbackSize = cfg.Analysis.MinClusterSize // Force it to meet minimum
+		}
+
+		// Convert allBusyWords from map to sorted slice for consistency with normal clusters
+		var fallbackBusyWords []string
+		for word := range allBusyWords {
+			fallbackBusyWords = append(fallbackBusyWords, word)
+		}
+		sort.Strings(fallbackBusyWords)
+
+		fallbackCluster := map[string]interface{}{
+			"type":             "fallback_cluster",
+			"cluster_id":       0,
+			"size":             fallbackSize,
+			"medoid":           tweetsWithBusyWords[0].Text,
+			"busy_words":       fallbackBusyWords,
+			"tweet_texts":      make([]string, len(tweetsWithBusyWords)),
+			"fallback_cluster": true,
+			"clustering_note":  "No clusters found - created fallback cluster",
+		}
+
+		// Add all tweet texts
+		for i, tweet := range tweetsWithBusyWords {
+			fallbackCluster["tweet_texts"].([]string)[i] = tweet.Text
+		}
+
+		batchClusters = append(batchClusters, fallbackCluster)
+		slog.Info("Fallback cluster created", "totalClusters", len(batchClusters))
+	}
+
+	// Create batch-level data structure
+	totalClusters := len(batchClusters)
+
+	// Recalculate clusters above min size after fallback cluster might have been added
+	clustersAboveMinSize = 0
+	for i, cluster := range batchClusters {
+		if size, ok := cluster["size"].(int); ok {
+			slog.Info("Cluster size check", "clusterIndex", i, "size", size, "minClusterSize", cfg.Analysis.MinClusterSize, "meetsMinSize", size >= cfg.Analysis.MinClusterSize)
+			if size >= cfg.Analysis.MinClusterSize {
+				clustersAboveMinSize++
+			}
+		} else {
+			slog.Warn("Cluster size not found or not int", "clusterIndex", i, "cluster", cluster)
+		}
+	}
+
+	slog.Info("Final batch data",
+		"batchNumber", batchNumber,
+		"totalClusters", totalClusters,
+		"clustersAboveMinSize", clustersAboveMinSize,
+		"totalTweets", len(tweetsWithBusyWords))
 
 	batchData := map[string]interface{}{
 		"batch_number":            batchNumber,
@@ -847,11 +770,6 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 		"clusters":                batchClusters,
 	}
 
-	slog.Info("Graph clustering completed",
-		"batch", batchNumber,
-		"total_clusters", totalClusters,
-		"clusters_above_min_size", clustersAboveMinSize,
-		"total_tweets", len(tweetsWithBusyWords))
 	OutputClusterWithConfig(batchData, cfg)
 }
 
@@ -888,32 +806,25 @@ func loadAndValidateConfig(path string) (*Config, error) {
 
 // Helper: Initialize logger
 func initializeLogger(cfg *Config) (*slog.Logger, *os.File, error) {
-	logger, logFile, err := setupLogger(cfg.LogDir)
-	if err != nil {
-		return nil, nil, err
-	}
-
 	// Set the slog level based on config
-	logLevel := parseLogLevel(cfg.LogLevel)
 	var slogLevel slog.Level
-	switch logLevel {
-	case DEBUG:
-		slogLevel = slog.LevelDebug
-	case INFO:
-		slogLevel = slog.LevelInfo
-	case WARN:
-		slogLevel = slog.LevelWarn
-	case ERROR:
-		slogLevel = slog.LevelError
+	switch strings.ToUpper(cfg.LogLevel) {
+	case "DEBUG":
+		slogLevel = slog.LevelDebug // DEBUG shows all messages (DEBUG, INFO, WARN, ERROR)
+	case "INFO":
+		slogLevel = slog.LevelInfo // INFO shows INFO, WARN, ERROR
+	case "WARN":
+		slogLevel = slog.LevelWarn // WARN shows WARN, ERROR
+	case "ERROR":
+		slogLevel = slog.LevelError // ERROR shows only ERROR
 	default:
 		slogLevel = slog.LevelInfo
 	}
 
-	// Create a new logger with the configured level
-	handler := slog.NewTextHandler(logFile, &slog.HandlerOptions{
-		Level: slogLevel,
-	})
-	logger = slog.New(handler)
+	logger, logFile, err := setupLogger(cfg.LogDir, slogLevel)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	return logger, logFile, nil
 }
@@ -928,18 +839,18 @@ func initializeStatsCSV(cfg *Config) string {
 // Helper: Initialize word filter
 func initializeWordFilter(cfg *Config) (*filter.WordFilter, error) {
 	if cfg.Filter.Enabled {
-		LogInfo(func() string { return "Initializing word filter..." })
+		slog.Info("Initializing word filter...")
 		globalWordFilter := filter.NewWordFilter()
 
 		// Try directory first (new approach)
 		if cfg.Filter.FilterDir != "" {
-			LogInfo(func() string { return fmt.Sprintf("Using filter directory: %s", cfg.Filter.FilterDir) })
+			slog.Info("Using filter directory", "dir", cfg.Filter.FilterDir)
 			if err := globalWordFilter.LoadFromDirectory(cfg.Filter.FilterDir); err != nil {
 				return nil, err
 			}
 		} else if cfg.Filter.FilterFile != "" {
 			// Fall back to single file (backward compatibility)
-			LogInfo(func() string { return fmt.Sprintf("Using filter file: %s", cfg.Filter.FilterFile) })
+			slog.Info("Using filter file", "file", cfg.Filter.FilterFile)
 			if err := globalWordFilter.LoadFromFile(cfg.Filter.FilterFile); err != nil {
 				return nil, err
 			}
@@ -948,7 +859,7 @@ func initializeWordFilter(cfg *Config) (*filter.WordFilter, error) {
 		}
 		return globalWordFilter, nil
 	}
-	LogInfo(func() string { return "Word filter disabled in config" })
+	slog.Info("Word filter disabled in config")
 	return nil, nil
 }
 
@@ -1053,6 +964,8 @@ func setupSignalHandling() {
 	}()
 }
 
+// meaningless comment
+
 // Helper: Setup RabbitMQ consumer
 func setupRabbitMQConsumer(ch *amqp.Channel, q amqp.Queue) (<-chan amqp.Delivery, error) {
 	msgs, err := ch.Consume(
@@ -1090,26 +1003,36 @@ func main() {
 			log.Fatalf("Failed to start CPU profile: %v", err)
 		}
 		defer pprof.StopCPUProfile()
-		LogInfo(func() string { return "CPU profiling enabled - will create cpu.prof file" })
+		slog.Info("CPU profiling enabled - will create cpu.prof file")
 	}
 
 	// Load config from YAML file with path resolution and optional override.
-	cfg, err := loadConfigWithOverride(*configPath, *overridePath)
+	var cfg *Config
+	var err error
+	if *overridePath != "" {
+		cfg, err = loadConfigWithOverride(*configPath, *overridePath)
+	} else {
+		cfg, err = loadConfig(*configPath)
+	}
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Initialize our custom logging framework
-	logLevel := parseLogLevel(cfg.LogLevel)
-	InitializeLogger(cfg.Verbose, logLevel, cfg.LogDir)
+	// Set default values for new configuration options
+	// CreateFallbackClusters defaults to true for safety (avoid losing data)
+	// Users can set it to false in their config if they want to drop batches with no clusters
+	if cfg.Analysis.CreateFallbackClusters == false {
+		cfg.Analysis.CreateFallbackClusters = true // Default to true
+	}
 
-	LogInfo(func() string { return "*** CONFIG LOADED SUCCESSFULLY ***" })
+	// Logging is now handled entirely by slog
+
+	slog.Info("*** CONFIG LOADED SUCCESSFULLY ***")
 
 	// Print key configuration values to stderr for user visibility
 	fmt.Fprintf(os.Stderr, "\n=== TWITTER SUBJECT DETECTION PIPELINE STARTUP ===\n")
 	fmt.Fprintf(os.Stderr, "Config file: %s\n", *configPath)
 	fmt.Fprintf(os.Stderr, "Log level: %s\n", cfg.LogLevel)
-	fmt.Fprintf(os.Stderr, "Verbose mode: %v\n", cfg.Verbose)
 	fmt.Fprintf(os.Stderr, "\n--- Core Pipeline Settings ---\n")
 	fmt.Fprintf(os.Stderr, "Frequency classes: %d\n", cfg.FreqClasses)
 	fmt.Fprintf(os.Stderr, "Batch size: %d tweets\n", cfg.BatchSize)
@@ -1148,81 +1071,68 @@ func main() {
 	fmt.Fprintf(os.Stderr, "Print tweets: %v\n", *printTweets)
 	fmt.Fprintf(os.Stderr, "\n--- Additional Settings ---\n")
 	fmt.Fprintf(os.Stderr, "Token filtering parameters available in config.yaml (token_filters section)\n")
-	fmt.Fprintf(os.Stderr, "\n=== STARTUP PROGRESS ===\n")
-	fmt.Fprintf(os.Stderr, "Building frequency class filters... (this may take a few minutes)\n")
-	fmt.Fprintf(os.Stderr, "Progress: ")
-
-	// Also log the same config information to the log file
-	LogInfo(func() string { return "=== TWITTER SUBJECT DETECTION PIPELINE STARTUP ===" })
-	LogInfo(func() string { return fmt.Sprintf("Config file: %s", *configPath) })
-	LogInfo(func() string { return fmt.Sprintf("Log level: %s", cfg.LogLevel) })
-	LogInfo(func() string { return fmt.Sprintf("Verbose mode: %v", cfg.Verbose) })
-	LogInfo(func() string { return "--- Core Pipeline Settings ---" })
-	LogInfo(func() string { return fmt.Sprintf("Frequency classes: %d", cfg.FreqClasses) })
-	LogInfo(func() string { return fmt.Sprintf("Batch size: %d tweets", cfg.BatchSize) })
-	LogInfo(func() string { return fmt.Sprintf("Window batches: %d", cfg.WindowBatches) })
-	LogInfo(func() string { return fmt.Sprintf("Window size: %d", cfg.WindowSize) })
-	LogInfo(func() string { return fmt.Sprintf("BW array length: %d", cfg.BWArrayLen) })
-	LogInfo(func() string { return fmt.Sprintf("Min token length: %d", cfg.MinTokenLen) })
-	LogInfo(func() string { return fmt.Sprintf("Z-scores: %v", cfg.ZScores) })
-	LogInfo(func() string { return fmt.Sprintf("Skip frequency classes: %v", cfg.SkipFrequencyClasses) })
-	LogInfo(func() string { return fmt.Sprintf("Busyword classes: %v", cfg.BusywordClasses) })
-	LogInfo(func() string { return "--- Persistence Settings ---" })
-	LogInfo(func() string { return fmt.Sprintf("Token persist files: %d", cfg.TokenPersistFiles) })
-	LogInfo(func() string { return fmt.Sprintf("Rebuild every files: %d", cfg.RebuildEveryFiles) })
-	LogInfo(func() string {
-		return fmt.Sprintf("Window batches persistence: %d", cfg.Analysis.WindowBatchesPersistence)
-	})
-	LogInfo(func() string {
-		return fmt.Sprintf("Window batches persistence check: %d", cfg.Analysis.WindowBatchesPersistenceCheck)
-	})
-	LogInfo(func() string {
-		return fmt.Sprintf("Min shared busywords for persistence: %d", cfg.Analysis.MinSharedBusyWordsForPersistence)
-	})
-	LogInfo(func() string { return "--- Clustering Settings ---" })
-	LogInfo(func() string { return fmt.Sprintf("Clustering method: %s", cfg.Analysis.ClusteringMethod) })
-	LogInfo(func() string { return fmt.Sprintf("Output mode: %s", cfg.Analysis.OutputMode) })
-	LogInfo(func() string { return fmt.Sprintf("Min busy words per tweet: %d", cfg.Analysis.MinBusyWordsPerTweet) })
-	LogInfo(func() string { return fmt.Sprintf("Min Jaccard similarity: %.3f", cfg.Analysis.MinJaccardSimilarity) })
-	LogInfo(func() string {
-		return fmt.Sprintf("Duplicate similarity threshold: %.3f", cfg.Analysis.DuplicateSimilarityThreshold)
-	})
-	LogInfo(func() string { return fmt.Sprintf("Min cluster size: %d", cfg.Analysis.MinClusterSize) })
-	LogInfo(func() string { return fmt.Sprintf("Language filter: %s", cfg.Analysis.LanguageFilter) })
-	LogInfo(func() string { return fmt.Sprintf("Cluster sort descending: %v", cfg.Analysis.ClusterSortDescending) })
-	LogInfo(func() string { return "--- Filter Settings ---" })
-	LogInfo(func() string { return fmt.Sprintf("Filter enabled: %v", cfg.Filter.Enabled) })
-	if cfg.Analysis.FilterRepetitivePatterns {
-		if cfg.Analysis.BannedPhrasesDir != "" {
-			LogInfo(func() string { return fmt.Sprintf("Banned phrases directory: %s", cfg.Analysis.BannedPhrasesDir) })
-		} else if cfg.Analysis.BannedPhrasesFile != "" {
-			LogInfo(func() string { return fmt.Sprintf("Banned phrases file: %s", cfg.Analysis.BannedPhrasesFile) })
-		}
-		LogInfo(func() string {
-			return fmt.Sprintf("Repetitive pattern threshold: %.2f", cfg.Analysis.RepetitivePatternThreshold)
-		})
-	}
-	LogInfo(func() string { return fmt.Sprintf("RabbitMQ: %s:%d/%s", cfg.MQHost, cfg.MQPort, cfg.MQQueue) })
-	LogInfo(func() string { return fmt.Sprintf("Load state: %v", *loadState) })
-	LogInfo(func() string { return fmt.Sprintf("Print tweets: %v", *printTweets) })
-	LogInfo(func() string { return "--- Additional Settings ---" })
-	LogInfo(func() string { return "Token filtering parameters available in config.yaml (token_filters section)" })
-
-	LogInfo(func() string { return "=== STARTUP PROGRESS ===" })
-	LogInfo(func() string { return "Building frequency class filters... (this may take a few minutes)" })
-
-	// Verbose mode test message and z-score array print
-	if cfg.Verbose {
-		LogInfo(func() string { return "*** VERBOSE MODE ENABLED (config.yaml) ***" })
-		LogInfo(func() string { return fmt.Sprintf("Z-scores per frequency class: %v", cfg.ZScores) })
-	}
-
+	// Initialize logger first, before any slog calls
 	logger, logFile, err := initializeLogger(cfg)
 	if err != nil {
 		log.Fatalf("Failed to set up logger: %v", err)
 	}
 	defer logFile.Close()
 	slog.SetDefault(logger)
+
+	fmt.Fprintf(os.Stderr, "\n=== STARTUP PROGRESS ===\n")
+	fmt.Fprintf(os.Stderr, "Building frequency class filters... (this may take a few minutes)\n")
+	fmt.Fprintf(os.Stderr, "Progress: ")
+
+	// Also log the same config information to the log file
+	slog.Info("=== TWITTER SUBJECT DETECTION PIPELINE STARTUP ===")
+	slog.Info("Config file", "path", *configPath)
+	slog.Info("Log level", "level", cfg.LogLevel)
+	slog.Info("--- Core Pipeline Settings ---")
+	slog.Info("Frequency classes", "count", cfg.FreqClasses)
+	slog.Info("Batch size", "tweets", cfg.BatchSize)
+	slog.Info("Window batches", "count", cfg.WindowBatches)
+	slog.Info("Window size", "size", cfg.WindowSize)
+	slog.Info("BW array length", "length", cfg.BWArrayLen)
+	slog.Info("Min token length", "length", cfg.MinTokenLen)
+	slog.Info("Z-scores", "scores", cfg.ZScores)
+	slog.Info("Skip frequency classes", "classes", cfg.SkipFrequencyClasses)
+	slog.Info("Busyword classes", "classes", cfg.BusywordClasses)
+	slog.Info("--- Persistence Settings ---")
+	slog.Info("Token persist files", "count", cfg.TokenPersistFiles)
+	slog.Info("Rebuild every files", "count", cfg.RebuildEveryFiles)
+	slog.Info("Window batches persistence", "count", cfg.Analysis.WindowBatchesPersistence)
+	slog.Info("Window batches persistence check", "count", cfg.Analysis.WindowBatchesPersistenceCheck)
+	slog.Info("Min shared busywords for persistence", "count", cfg.Analysis.MinSharedBusyWordsForPersistence)
+	slog.Info("--- Clustering Settings ---")
+	slog.Info("Clustering method", "method", cfg.Analysis.ClusteringMethod)
+	slog.Info("Output mode", "mode", cfg.Analysis.OutputMode)
+	slog.Info("Min busy words per tweet", "count", cfg.Analysis.MinBusyWordsPerTweet)
+	slog.Info("Min Jaccard similarity", "similarity", cfg.Analysis.MinJaccardSimilarity)
+	slog.Info("Duplicate similarity threshold", "threshold", cfg.Analysis.DuplicateSimilarityThreshold)
+	slog.Info("Min cluster size", "size", cfg.Analysis.MinClusterSize)
+	slog.Info("Language filter", "filter", cfg.Analysis.LanguageFilter)
+	slog.Info("Cluster sort descending", "descending", cfg.Analysis.ClusterSortDescending)
+	slog.Info("--- Filter Settings ---")
+	slog.Info("Filter enabled", "enabled", cfg.Filter.Enabled)
+	if cfg.Analysis.FilterRepetitivePatterns {
+		if cfg.Analysis.BannedPhrasesDir != "" {
+			slog.Info("Banned phrases directory", "dir", cfg.Analysis.BannedPhrasesDir)
+		} else if cfg.Analysis.BannedPhrasesFile != "" {
+			slog.Info("Banned phrases file", "file", cfg.Analysis.BannedPhrasesFile)
+		}
+		slog.Info("Repetitive pattern threshold", "threshold", cfg.Analysis.RepetitivePatternThreshold)
+	}
+	slog.Info("RabbitMQ", "host", cfg.MQHost, "port", cfg.MQPort, "queue", cfg.MQQueue)
+	slog.Info("Load state", "enabled", *loadState)
+	slog.Info("Print tweets", "enabled", *printTweets)
+	slog.Info("--- Additional Settings ---")
+	slog.Info("Token filtering parameters available in config.yaml (token_filters section)")
+
+	slog.Info("=== STARTUP PROGRESS ===")
+	slog.Info("Building frequency class filters... (this may take a few minutes)")
+
+	// Log z-score array
+	slog.Info("Z-scores per frequency class", "scores", cfg.ZScores)
 
 	// Log startup information
 	slog.Info("Application started",
@@ -1237,11 +1147,9 @@ func main() {
 		log.Fatalf("Failed to load word filter: %v", err)
 	}
 	if globalWordFilter != nil {
-		LogInfo(func() string {
-			return fmt.Sprintf("Word filter initialized with %d words", globalWordFilter.GetFilteredCount())
-		})
+		slog.Info("Word filter initialized", "words", globalWordFilter.GetFilteredCount())
 	} else {
-		LogInfo(func() string { return "Word filter is nil (disabled)" })
+		slog.Info("Word filter is nil (disabled)")
 	}
 
 	// Initialize pre-compiled regexes for tokenization
@@ -1272,13 +1180,16 @@ func main() {
 	// Initialize global tweet queue for clustering
 	globalTweetQueue = NewTweetQueue(cfg.WindowBatches * cfg.BatchSize)
 
+	// Initialize last clustering time
+	lastClusteringTime = time.Now()
+
 	// Start the analysis thread to process busy word results and run clustering
 	startAnalysisThread(freqClassProcessor.GetResultChannel(), cfg, loadedState)
 
 	timestamp := time.Now().Format("20060102_150405")
 	clusterFileName := fmt.Sprintf("clusters_%s.txt", timestamp)
 	clusterOutputFilePath = filepath.Join(cfg.LogDir, clusterFileName)
-	LogInfo(func() string { return fmt.Sprintf("Cluster output will be saved to: %s", clusterOutputFilePath) })
+	slog.Info("Cluster output will be saved to", "file", clusterOutputFilePath)
 
 	fmt.Fprintf(os.Stderr, "✓ Pipeline ready!\n")
 	fmt.Fprintf(os.Stderr, "✓ Clustering output will be printed to stdout\n")
@@ -1286,16 +1197,16 @@ func main() {
 	fmt.Fprintf(os.Stderr, "=== STARTUP COMPLETE ===\n\n")
 
 	// Also log the completion messages to the log file
-	LogInfo(func() string { return "✓ Pipeline ready!" })
-	LogInfo(func() string { return "✓ Clustering output will be printed to stdout" })
-	LogInfo(func() string { return fmt.Sprintf("✓ Logs saved to: %s", cfg.LogDir) })
-	LogInfo(func() string { return "=== STARTUP COMPLETE ===" })
+	slog.Info("✓ Pipeline ready!")
+	slog.Info("✓ Clustering output will be printed to stdout")
+	slog.Info("✓ Logs saved to", "dir", cfg.LogDir)
+	slog.Info("=== STARTUP COMPLETE ===")
 
 	setupSignalHandling()
 
 	// Process based on input mode
 	fmt.Fprintf(os.Stderr, "DEBUG: Config mode = '%s'\n", cfg.Mode)
-	LogInfo(func() string { return fmt.Sprintf("DEBUG: Config mode = '%s'", cfg.Mode) })
+	slog.Info("DEBUG: Config mode", "mode", cfg.Mode)
 
 	switch cfg.Mode {
 	case "mqj":
@@ -1313,7 +1224,7 @@ func main() {
 // processFromRabbitMQ handles RabbitMQ input mode
 func processFromRabbitMQ(cfg *Config, printTweets bool) {
 	fmt.Fprintf(os.Stderr, "Consuming tweets from RabbitMQ...\n")
-	LogInfo(func() string { return "Consuming tweets from RabbitMQ..." })
+	slog.Info("Consuming tweets from RabbitMQ...")
 
 	conn, ch, q, err := setupRabbitMQ(cfg)
 	if err != nil {
@@ -1352,7 +1263,7 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 		}
 		if printTweets {
 			// Log to file instead of stdout
-			LogDebug(func() string { return fmt.Sprintf("Parsed Tweet: %+v", tweet) })
+			slog.Debug("Parsed Tweet", "tweet", tweet)
 		}
 
 		// Add tweet to global queue for clustering
@@ -1392,12 +1303,6 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 
 				// Route tokens to frequency classes only if filters are available
 				if pipeline.HasGlobalFilters() {
-					// Debug: Log when filters are available (verbose only)
-					if cfg.Verbose && TotalTweetsRead%10000 == 0 {
-						slog.Debug("Filters are available for token routing",
-							"tweet_count", TotalTweetsRead,
-							"num_filters", pipeline.GetGlobalFiltersCount())
-					}
 
 					// Enqueue to appropriate frequency class (skip if class is in skip list)
 					if !freqClassProcessor.IsClassActive(freqClass) {
@@ -1408,11 +1313,6 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 				} else {
 					// No filters available yet - this is normal during startup
 					// The FCT will build filters as tokens arrive via the inboundTokenQueue
-					// Log occasionally (verbose only) to show progress
-					if cfg.Verbose && TotalTweetsRead%500000 == 0 {
-						slog.Info("No frequency class filters available yet - FCT building from scratch",
-							"tweet_count", TotalTweetsRead)
-					}
 				}
 			}
 		}
@@ -1439,22 +1339,9 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 				// Increment global batch count when signal 3PK is sent (this represents actual batches sent for processing)
 				globalBatchCount++
 
-				if cfg.Verbose {
-					slog.Debug("Main: Sent termination signals to busy word processors",
-						"tweet_count", TotalTweetsRead,
-						"batch_size", cfg.BatchSize,
-						"total_freq_classes", freqClasses,
-						"active_freq_classes", activeCount)
-				}
 			} else {
 				// No filters available yet - this is normal during startup
 				// Skip batch termination until filters are built
-				if cfg.Verbose && TotalTweetsRead%10000 == 0 {
-					LogDebug(func() string {
-						return fmt.Sprintf("Skipping batch termination - no frequency class filters available yet: tweet_count=%d batch_size=%d",
-							TotalTweetsRead, cfg.BatchSize)
-					})
-				}
 			}
 		}
 
@@ -1473,12 +1360,6 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 			// Only process cleanup if queue is large enough to leave safety buffer
 			if queueSizeBefore <= cleanupLeaveAtLeast {
 				// Queue too small - skip cleanup to avoid race conditions
-				if cfg.Verbose && TotalTweetsRead%100000 == 0 {
-					LogDebug(func() string {
-						return fmt.Sprintf("Skipping 3PK cleanup - queue size %d below safety buffer %d (tweet_count=%d)",
-							queueSizeBefore, cleanupLeaveAtLeast, TotalTweetsRead)
-					})
-				}
 				continue
 			}
 
@@ -1501,10 +1382,7 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 			// Log cleanup performance (debug level - only shows in verbose mode)
 			// Only log when items were actually processed (queue wasn't empty)
 			if removedCount > 0 {
-				LogDebug(func() string {
-					return fmt.Sprintf("3PK cleanup performance: tweet_count=%d queue_size_before=%d queue_size_after=%d items_processed=%d max_items_per_cycle=%d cleanup_trigger_batch_size=%d",
-						TotalTweetsRead, queueSizeBefore, queueSizeAfter, removedCount, cleanupMaxItems, cfg.Analysis.CleanupTriggerBatchSize)
-				})
+				slog.Debug("3PK cleanup performance", "tweet_count", TotalTweetsRead, "queue_size_before", queueSizeBefore, "queue_size_after", queueSizeAfter, "items_processed", removedCount, "max_items_per_cycle", cleanupMaxItems, "cleanup_trigger_batch_size", cfg.Analysis.CleanupTriggerBatchSize)
 			}
 
 			// Monitor busyword processor queues for potential system instability
@@ -1543,15 +1421,6 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 							time.Sleep(time.Duration(sleepMs) * time.Millisecond)
 						}
 
-						// Check if analytics thread is lagging and sleep if needed
-						if atomic.LoadInt32(&analyticsLagFlag) == 1 {
-							if cfg.Analysis.AnalyticsLagSlowDelay > 0 {
-								slog.Warn("Main thread sleeping due to analytics thread lag",
-									"sleep_ms", cfg.Analysis.AnalyticsLagSlowDelay)
-								time.Sleep(time.Duration(cfg.Analysis.AnalyticsLagSlowDelay) * time.Millisecond)
-							}
-							atomic.StoreInt32(&analyticsLagFlag, 0) // Reset flag
-						}
 					}
 				}
 			}
@@ -1565,7 +1434,7 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 // processFromFiles handles file input mode
 func processFromFiles(cfg *Config, printTweets bool) {
 	fmt.Fprintf(os.Stderr, "Reading tweets from files in: %s\n", cfg.FileSrcDir)
-	LogInfo(func() string { return fmt.Sprintf("Reading tweets from files in: %s", cfg.FileSrcDir) })
+	slog.Info("Reading tweets from files", "dir", cfg.FileSrcDir)
 
 	// Get list of CSV files in the directory
 	files, err := filepath.Glob(filepath.Join(cfg.FileSrcDir, "*.csv"))
@@ -1589,7 +1458,7 @@ func processFromFiles(cfg *Config, printTweets bool) {
 
 // processCSVFile processes a single CSV file
 func processCSVFile(filePath string, cfg *Config, printTweets bool) {
-	LogInfo(func() string { return fmt.Sprintf("Processing file: %s", filePath) })
+	slog.Info("Processing file", "file", filePath)
 
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -1640,7 +1509,7 @@ func processCSVFile(filePath string, cfg *Config, printTweets bool) {
 		}
 
 		if printTweets {
-			LogDebug(func() string { return fmt.Sprintf("Parsed Tweet: %+v", tweet) })
+			slog.Debug("Parsed Tweet", "tweet", tweet)
 		}
 
 		// Add tweet to global queue for clustering
@@ -1680,12 +1549,6 @@ func processCSVFile(filePath string, cfg *Config, printTweets bool) {
 
 				// Route tokens to frequency classes only if filters are available
 				if pipeline.HasGlobalFilters() {
-					// Debug: Log when filters are available (verbose only)
-					if cfg.Verbose && TotalTweetsRead%10000 == 0 {
-						slog.Debug("Filters are available for token routing",
-							"tweet_count", TotalTweetsRead,
-							"num_filters", pipeline.GetGlobalFiltersCount())
-					}
 
 					// Enqueue to appropriate frequency class (skip if class is in skip list)
 					if !freqClassProcessor.IsClassActive(freqClass) {
@@ -1696,11 +1559,6 @@ func processCSVFile(filePath string, cfg *Config, printTweets bool) {
 				} else {
 					// No filters available yet - this is normal during startup
 					// The FCT will build filters as tokens arrive via the inboundTokenQueue
-					// Log occasionally (verbose only) to show progress
-					if cfg.Verbose && TotalTweetsRead%500000 == 0 {
-						slog.Info("No frequency class filters available yet - FCT building from scratch",
-							"tweet_count", TotalTweetsRead)
-					}
 				}
 			}
 		}
@@ -1727,22 +1585,9 @@ func processCSVFile(filePath string, cfg *Config, printTweets bool) {
 				// Increment global batch count when signal 3PK is sent (this represents actual batches sent for processing)
 				globalBatchCount++
 
-				if cfg.Verbose {
-					slog.Debug("Main: Sent termination signals to busy word processors",
-						"tweet_count", TotalTweetsRead,
-						"batch_size", cfg.BatchSize,
-						"total_freq_classes", freqClasses,
-						"active_freq_classes", activeCount)
-				}
 			} else {
 				// No filters available yet - this is normal during startup
 				// Skip batch termination until filters are built
-				if cfg.Verbose && TotalTweetsRead%10000 == 0 {
-					LogDebug(func() string {
-						return fmt.Sprintf("Skipping batch termination - no frequency class filters available yet: tweet_count=%d batch_size=%d",
-							TotalTweetsRead, cfg.BatchSize)
-					})
-				}
 			}
 		}
 
@@ -1761,12 +1606,6 @@ func processCSVFile(filePath string, cfg *Config, printTweets bool) {
 			// Only process cleanup if queue is large enough to leave safety buffer
 			if queueSizeBefore <= cleanupLeaveAtLeast {
 				// Queue too small - skip cleanup to avoid race conditions
-				if cfg.Verbose && TotalTweetsRead%100000 == 0 {
-					LogDebug(func() string {
-						return fmt.Sprintf("Skipping 3PK cleanup - queue size %d below safety buffer %d (tweet_count=%d)",
-							queueSizeBefore, cleanupLeaveAtLeast, TotalTweetsRead)
-					})
-				}
 				continue
 			}
 
@@ -1789,10 +1628,7 @@ func processCSVFile(filePath string, cfg *Config, printTweets bool) {
 			// Log cleanup performance (debug level - only shows in verbose mode)
 			// Only log when items were actually processed (queue wasn't empty)
 			if removedCount > 0 {
-				LogDebug(func() string {
-					return fmt.Sprintf("3PK cleanup performance: tweet_count=%d queue_size_before=%d queue_size_after=%d items_processed=%d max_items_per_cycle=%d cleanup_trigger_batch_size=%d",
-						TotalTweetsRead, queueSizeBefore, queueSizeAfter, removedCount, cleanupMaxItems, cfg.Analysis.CleanupTriggerBatchSize)
-				})
+				slog.Debug("3PK cleanup performance", "tweet_count", TotalTweetsRead, "queue_size_before", queueSizeBefore, "queue_size_after", queueSizeAfter, "items_processed", removedCount, "max_items_per_cycle", cleanupMaxItems, "cleanup_trigger_batch_size", cfg.Analysis.CleanupTriggerBatchSize)
 			}
 
 			// Monitor busyword processor queues for potential system instability
@@ -1831,22 +1667,13 @@ func processCSVFile(filePath string, cfg *Config, printTweets bool) {
 							time.Sleep(time.Duration(sleepMs) * time.Millisecond)
 						}
 
-						// Check if analytics thread is lagging and sleep if needed
-						if atomic.LoadInt32(&analyticsLagFlag) == 1 {
-							if cfg.Analysis.AnalyticsLagSlowDelay > 0 {
-								slog.Warn("Main thread sleeping due to analytics thread lag",
-									"sleep_ms", cfg.Analysis.AnalyticsLagSlowDelay)
-								time.Sleep(time.Duration(cfg.Analysis.AnalyticsLagSlowDelay) * time.Millisecond)
-							}
-							atomic.StoreInt32(&analyticsLagFlag, 0) // Reset flag
-						}
 					}
 				}
 			}
 		}
 	}
 
-	LogInfo(func() string { return fmt.Sprintf("Completed processing file: %s", filePath) })
+	slog.Info("Completed processing file", "file", filePath)
 }
 
 // createBatchFromClusters creates a batch from clustering results and adds it to the batch window
@@ -2004,7 +1831,7 @@ func loadConfig(path string) (*Config, error) {
 }
 
 // setupLogger creates the log directory if needed and returns a slog.Logger that writes to a file.
-func setupLogger(logDir string) (*slog.Logger, *os.File, error) {
+func setupLogger(logDir string, level slog.Level) (*slog.Logger, *os.File, error) {
 	// No default! logDir must be set by config and checked in main()
 	if logDir == "" {
 		return nil, nil, fmt.Errorf("logDir must be set in config; refusing to use a default")
@@ -2022,7 +1849,7 @@ func setupLogger(logDir string) (*slog.Logger, *os.File, error) {
 		return nil, nil, err
 	}
 	logger := slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: level,
 	}))
 	return logger, logFile, nil
 }
@@ -2097,7 +1924,7 @@ func printStats() {
 	// fmt.Printf("Token filter statistics will be handled by analysis thread\n")
 
 	// Print frequency class stats (ordered from lowest to highest class number)
-	LogDebug(func() string { return "--- Frequency Class Stats ---" })
+	slog.Debug("--- Frequency Class Stats ---")
 	for i := 0; i < freqClasses; i++ {
 		queueKey := fmt.Sprintf("freq_class_%d_queue_size", i)
 		processorKey := fmt.Sprintf("freq_class_%d_tokens_processed", i)
@@ -2117,12 +1944,9 @@ func printStats() {
 
 		// Use lazy evaluation for expensive formatting
 		classIndex := i
-		LogDebug(func() string {
-			return fmt.Sprintf("Frequency Class Stats: class=%d queue=%d processed=%d distinct=%d",
-				classIndex, queueSize, tokensProcessed, distinctTokens)
-		})
+		slog.Debug("Frequency Class Stats", "class", classIndex, "queue", queueSize, "processed", tokensProcessed, "distinct", distinctTokens)
 	}
-	LogDebug(func() string { return "----------------------" })
+	slog.Debug("----------------------")
 
 	// Also log to slog
 	slog.Info("Pipeline stats ",
@@ -2583,7 +2407,7 @@ func setupBloomFilterParams(numClasses int) ([]int, []uint) {
 
 // loadPersistedState loads the persisted data structures from files and logs statistics
 func loadPersistedState(stateDir string, freqClasses int, cfg *Config) map[string]int {
-	LogInfo(func() string { return "=== LOADING PERSISTED STATE ===" })
+	slog.Info("=== LOADING PERSISTED STATE ===")
 
 	// Check if any of the files exist
 	tokenCounterPath := filepath.Join(stateDir, "token_counter.json")
@@ -2593,8 +2417,8 @@ func loadPersistedState(stateDir string, freqClasses int, cfg *Config) map[strin
 	_, err1 := os.Stat(tokenCounterPath)
 	_, err2 := os.Stat(freqClassPath)
 	if os.IsNotExist(err1) && os.IsNotExist(err2) {
-		LogInfo(func() string { return "No persisted state files found. Starting fresh." })
-		LogInfo(func() string { return "=== PERSISTED STATE LOADING COMPLETE ===" })
+		slog.Info("No persisted state files found. Starting fresh.")
+		slog.Info("=== PERSISTED STATE LOADING COMPLETE ===")
 		return nil
 	}
 
@@ -2602,9 +2426,9 @@ func loadPersistedState(stateDir string, freqClasses int, cfg *Config) map[strin
 	tempTokenCounter := pipeline.NewTokenCounter()
 	if err := tempTokenCounter.LoadFromFile(tokenCounterPath); err != nil {
 		if strings.Contains(err.Error(), "no such file or directory") {
-			LogInfo(func() string { return fmt.Sprintf("TokenCounter file not found: %s", tokenCounterPath) })
+			slog.Info("TokenCounter file not found", "file", tokenCounterPath)
 		} else {
-			LogInfo(func() string { return fmt.Sprintf("Failed to load TokenCounter: %v", err) })
+			slog.Info("Failed to load TokenCounter", "error", err)
 		}
 		return nil
 	}
@@ -2616,24 +2440,22 @@ func loadPersistedState(stateDir string, freqClasses int, cfg *Config) map[strin
 		totalTokens += count
 	}
 	loadDuration := time.Since(loadStartTime)
-	LogInfo(func() string {
-		return fmt.Sprintf("TokenCounter loaded: %d total tokens (%d distinct tokens) in %v", totalTokens, len(counts), loadDuration)
-	})
+	slog.Info("TokenCounter loaded", "total_tokens", totalTokens, "distinct_tokens", len(counts), "duration", loadDuration)
 
 	// Load FrequencyClassResult if it exists
 	var tempFreqClassResult pipeline.FreqClassResult
 	if err := tempFreqClassResult.LoadFromFile(freqClassPath); err != nil {
 		if strings.Contains(err.Error(), "no such file or directory") {
-			LogInfo(func() string { return fmt.Sprintf("FrequencyClassResult file not found: %s", freqClassPath) })
+			slog.Info("FrequencyClassResult file not found", "file", freqClassPath)
 		} else {
-			LogInfo(func() string { return fmt.Sprintf("Failed to load FrequencyClassResult: %v", err) })
+			slog.Info("Failed to load FrequencyClassResult", "error", err)
 		}
 	} else {
 		classes := len(tempFreqClassResult.Filters)
-		LogInfo(func() string { return fmt.Sprintf("FrequencyClassResult loaded: %d classes", classes) })
+		slog.Info("FrequencyClassResult loaded", "classes", classes)
 	}
 
-	LogInfo(func() string { return "=== PERSISTED STATE LOADING COMPLETE ===" })
+	slog.Info("=== PERSISTED STATE LOADING COMPLETE ===")
 	return counts
 }
 
@@ -3102,6 +2924,11 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 		maxToShow = 10 // Default value
 	}
 
+	// For fallback clusters, show 3x the normal amount of tweets
+	if fallbackCluster, ok := clusterMap["fallback_cluster"].(bool); ok && fallbackCluster {
+		maxToShow = maxToShow * 3
+	}
+
 	// Track the total number of unique tweets after deduplication
 	var uniqueTweetCount int
 	var originalTweetCount int
@@ -3239,11 +3066,6 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 		// Preserve the original medoid for meta-clustering
 		humanReadable["medoid"] = mostTypicalTweet.Text
 
-		// Debug: Log the medoid tweet details
-		slog.Debug("Medoid tweet details",
-			"unix_time", mostTypicalTweet.Unix,
-			"created_at", mostTypicalTweet.CreatedAt,
-			"text_preview", mostTypicalTweet.Text[:min(50, len(mostTypicalTweet.Text))])
 	} else {
 		// Fallback: try to get medoid from other sources
 		if medoidText, ok := clusterMap["medoid"].(string); ok && medoidText != "" {
@@ -3380,17 +3202,17 @@ func loadBannedPhrasesFromDirectory(dirPath string) ([]*regexp.Regexp, error) {
 		return nil, fmt.Errorf("no .txt files found in directory %s", dirPath)
 	}
 
-	LogInfo(func() string { return fmt.Sprintf("Loading banned phrases from %d files in %s:", len(files), dirPath) })
+	slog.Info("Loading banned phrases", "files", len(files), "dir", dirPath)
 	var allPatterns []*regexp.Regexp
 	for _, file := range files {
-		LogInfo(func() string { return fmt.Sprintf("  - %s", filepath.Base(file)) })
+		slog.Info("Loading banned phrase file", "file", filepath.Base(file))
 		patterns, err := loadBannedPhrases(file)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load %s: %v", file, err)
 		}
 		allPatterns = append(allPatterns, patterns...)
 	}
-	LogInfo(func() string { return fmt.Sprintf("Loaded %d total banned phrase patterns", len(allPatterns)) })
+	slog.Info("Loaded banned phrase patterns", "count", len(allPatterns))
 	return allPatterns, nil
 }
 
@@ -3418,12 +3240,14 @@ type MetaCluster struct {
 
 // IndividualCluster represents a standalone cluster
 type IndividualCluster struct {
-	Type       string   `json:"type"`
-	ClusterID  int      `json:"cluster_id"`
-	Size       int      `json:"size"`
-	Medoid     string   `json:"medoid"`
-	BusyWords  []string `json:"busy_words"`
-	TweetTexts []string `json:"tweet_texts,omitempty"`
+	Type            string   `json:"type"`
+	ClusterID       int      `json:"cluster_id"`
+	Size            int      `json:"size"`
+	Medoid          string   `json:"medoid"`
+	BusyWords       []string `json:"busy_words"`
+	TweetTexts      []string `json:"tweet_texts,omitempty"`
+	FallbackCluster bool     `json:"fallback_cluster,omitempty"`
+	ClusteringNote  string   `json:"clustering_note,omitempty"`
 }
 
 // clusterSimilarity calculates similarity between two clusters based on their medoids and busy words
@@ -3785,13 +3609,31 @@ func convertToIndividualCluster(cluster map[string]interface{}) *IndividualClust
 		tweetTexts = texts
 	}
 
+	fallbackCluster := false
+	if fc, ok := cluster["fallback_cluster"].(bool); ok {
+		fallbackCluster = fc
+	}
+
+	clusteringNote := ""
+	if note, ok := cluster["clustering_note"].(string); ok {
+		clusteringNote = note
+	}
+
+	// Determine the type based on whether it's a fallback cluster
+	clusterType := "individual_cluster"
+	if fallbackCluster {
+		clusterType = "fallback_cluster"
+	}
+
 	return &IndividualCluster{
-		Type:       "individual_cluster",
-		ClusterID:  clusterID,
-		Size:       size,
-		Medoid:     medoid,
-		BusyWords:  busyWords,
-		TweetTexts: tweetTexts,
+		Type:            clusterType,
+		ClusterID:       clusterID,
+		Size:            size,
+		Medoid:          medoid,
+		BusyWords:       busyWords,
+		TweetTexts:      tweetTexts,
+		FallbackCluster: fallbackCluster,
+		ClusteringNote:  clusteringNote,
 	}
 }
 

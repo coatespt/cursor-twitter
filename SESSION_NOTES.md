@@ -488,6 +488,11 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 - "Start and internet business"
 
 # TTD and Direction
+Dont implement anything--I want to understand a problem. The log says that the analytics thread is lagging far behind and it's causing problems. Eventually it starts causing the 3pk's to not be found, and the busyword processor queues to get too full, etc.  Yet it seems to be spitting out batches at a rapid clip.  we need to figure this out.      time=2025-09-09T16:36:55.309-04:00 level=WARN msg="Analytics thread lag detected" global_batch=386 completed_batch=0 lag=386 threshold=2 tweet_count=7880055
+
+I think what is happening that the 
+
+
 We recently:
 - Fixed the premature EOF issue by replacing the custom JSON parsing with Go's standard json.Decoder
 - Added the Jaccard similarity config option for using busy words only vs. all tokens

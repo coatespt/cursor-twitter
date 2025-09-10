@@ -235,7 +235,6 @@ func BuildFrequencyClassHashSets(tokenCounts map[string]int, F int, bloomSizes [
 	}
 
 	// Log final class distribution with usage counts
-	slog.Info("Frequency class rebuild started", "num_classes", F, "total_tokens", total, "target_per_class", C)
 	for i := 0; i < F; i++ {
 		// Calculate total usage for this class (optimized - use map lookup)
 		classUsage := 0

@@ -1,6 +1,7 @@
 
 # This is the basic configuration file for the back end. 
 # There is a separate front-end configuration file in the display directory.
+# Analytics thread lag detection removed - barrier synchronization handles throttling
 #
 # This is the only documentation for some of the parameters.
 # 
@@ -84,7 +85,6 @@ window_batches: 5
 # log anything to the console other than the JSON output.
 # TODO: This might be obsolete. Only legit output goes to stdout now. All 
 # other screen output should go to stderr.
-verbose: false
 
 # The directory to log to. 
 log_dir: ./logs
@@ -258,7 +258,7 @@ analysis:
 
   # Minimum number of unique tweets required after deduplication
   # Lowered from 6 to 3 since we now deduplicate by user, so this counts real unique content
-  min_cluster_size: 5
+  min_cluster_size: 2
 
   # Filter out clusters with repetitive meme-like patterns
   filter_repetitive_patterns: true
@@ -345,13 +345,6 @@ analysis:
   #number of items to leave on the queue.
   bw_queue_max: 0.01
 
-  # Maximum lag between global and analytics batch counts before warning
-  # Analytics thread should be 1-2 batches behind global count normally
-  # TODO: Document whether breaching this threshold causes throttling..
-  #    I think it does. If the BW queues back up, it causes sleeps in the main thread. 
-  #
-  analytics_batch_lag_threshold: 2
-
   # Total sleep time in milliseconds when busyword queues are backlogged. Sleep time is 
   # distributed across backlogged threads: sleep_ms = bw_thread_slow_delay / freq_classes
   # Default: 200ms (1/5 second) - gives busyword processors time to catch up
@@ -362,10 +355,6 @@ analysis:
   #    the total is divided among all processors. That sounds wrong because any queue
   #    can trigger a sleep. 
   bw_thread_slow_delay: 200
-
-  # Sleep time in milliseconds when analytics thread falls behind
-  # Default: 1000ms (1 second) - gives analytics thread time to catch up
-  analytics_lag_slow_delay: 100
 
 # Set to true to enable language detection in the Python parser 
 # WARNING: slows parsing to a crawl!!! like 275/second.  We now use a multi-threaded Golang

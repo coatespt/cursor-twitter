@@ -3,7 +3,6 @@ package pipeline
 import (
 	"encoding/gob"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -78,9 +77,6 @@ func (tc *TokenCounter) DecrementTokens(tokens []string) {
 
 	// Log tokens added to cleanup queue for monitoring cleanup rate
 	if zeroCountTokens > 0 {
-		slog.Info("Tokens added to cleanup queue",
-			"tokens_added", zeroCountTokens,
-			"total_tokens_processed", len(tokens))
 
 		// Update global counter for dynamic safety buffer calculation
 		atomic.AddInt64(&globalTokensAddedToCleanupQueue, int64(zeroCountTokens))
