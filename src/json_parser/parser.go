@@ -128,52 +128,84 @@ func ParseClusters(batch Batch) ([]Cluster, error) {
 			continue
 		}
 
-		// Extract cluster data
-		clusterID, _ := clusterMap["cluster_id"].(float64)
-		size, _ := clusterMap["size"].(float64)
+		// Check cluster type
+		clusterType, _ := clusterMap["type"].(string)
 
-		// Extract busy words
-		busyWordsInterface, _ := clusterMap["busy_words"].([]interface{})
-		var busyWords []string
-		for _, word := range busyWordsInterface {
-			if wordStr, ok := word.(string); ok {
-				busyWords = append(busyWords, wordStr)
+		if clusterType == "individual_cluster" {
+			// Process individual clusters directly
+			cluster := extractClusterFromMap(clusterMap)
+			if cluster != nil {
+				clusters = append(clusters, *cluster)
+			}
+		} else if clusterType == "meta_cluster" {
+			// Process sub-clusters within meta clusters
+			subClustersInterface, _ := clusterMap["sub_clusters"].([]interface{})
+			for _, subClusterInterface := range subClustersInterface {
+				subClusterMap, ok := subClusterInterface.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				cluster := extractClusterFromMap(subClusterMap)
+				if cluster != nil {
+					clusters = append(clusters, *cluster)
+				}
 			}
 		}
-
-		// Extract tweet texts
-		tweetTextsInterface, _ := clusterMap["tweet_texts"].([]interface{})
-		var tweetTexts []string
-		for _, tweet := range tweetTextsInterface {
-			if tweetStr, ok := tweet.(string); ok {
-				tweetTexts = append(tweetTexts, tweetStr)
-			}
-		}
-
-		// Extract medoid if present
-		medoid, _ := clusterMap["medoid"].(string)
-		medoidTweet, _ := clusterMap["medoid_tweet"].(string)
-
-		// Extract quality score if present
-		qualityScore, _ := clusterMap["quality_score"].(float64)
-
-		// Extract busy word classes if present
-		busyWordClasses, _ := clusterMap["busy_word_classes"].(map[string]interface{})
-
-		cluster := Cluster{
-			ClusterID:       int(clusterID),
-			Size:            int(size),
-			BusyWords:       busyWords,
-			TweetTexts:      tweetTexts,
-			Medoid:          medoid,
-			MedoidTweet:     medoidTweet,
-			QualityScore:    qualityScore,
-			BusyWordClasses: busyWordClasses,
-		}
-		clusters = append(clusters, cluster)
+		// Skip fallback_cluster (disabled in config) and other types
 	}
 
 	return clusters, nil
+}
+
+// extractClusterFromMap extracts cluster data from a map, returns nil if invalid
+func extractClusterFromMap(clusterMap map[string]interface{}) *Cluster {
+	// Extract cluster data
+	clusterIDFloat, hasClusterID := clusterMap["cluster_id"].(float64)
+	if !hasClusterID {
+		// Skip clusters without cluster_id - they're invalid
+		return nil
+	}
+	clusterID := int(clusterIDFloat)
+	size, _ := clusterMap["size"].(float64)
+
+	// Extract busy words
+	busyWordsInterface, _ := clusterMap["busy_words"].([]interface{})
+	var busyWords []string
+	for _, word := range busyWordsInterface {
+		if wordStr, ok := word.(string); ok {
+			busyWords = append(busyWords, wordStr)
+		}
+	}
+
+	// Extract tweet texts
+	tweetTextsInterface, _ := clusterMap["tweet_texts"].([]interface{})
+	var tweetTexts []string
+	for _, tweet := range tweetTextsInterface {
+		if tweetStr, ok := tweet.(string); ok {
+			tweetTexts = append(tweetTexts, tweetStr)
+		}
+	}
+
+	// Extract medoid if present
+	medoid, _ := clusterMap["medoid"].(string)
+	medoidTweet, _ := clusterMap["medoid_tweet"].(string)
+
+	// Extract quality score if present
+	qualityScore, _ := clusterMap["quality_score"].(float64)
+
+	// Extract busy word classes if present
+	busyWordClasses, _ := clusterMap["busy_word_classes"].(map[string]interface{})
+
+	return &Cluster{
+		ClusterID:       clusterID,
+		Size:            int(size),
+		BusyWords:       busyWords,
+		TweetTexts:      tweetTexts,
+		Medoid:          medoid,
+		MedoidTweet:     medoidTweet,
+		QualityScore:    qualityScore,
+		BusyWordClasses: busyWordClasses,
+	}
 }
 
 // LoadInitialData loads the first few chunks to get initial data

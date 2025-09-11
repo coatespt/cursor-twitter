@@ -272,6 +272,10 @@ analysis:
   # Deduplicate tweets by user within each cluster (filters out spam from same user)
   deduplicate_by_user: true
 
+  # Create fallback clusters when no clusters found but tweets exist
+  # Set to false to allow empty batches (more informative)
+  create_fallback_clusters: false
+
   # Use Levenshteindistance-based deduplication to detect and remove near-duplicate 
   #   tweets within clusters
   # This catches spam variations like "same tweet with different URL/number at end"

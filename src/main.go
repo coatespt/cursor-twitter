@@ -1019,9 +1019,7 @@ func main() {
 	// Set default values for new configuration options
 	// CreateFallbackClusters defaults to true for safety (avoid losing data)
 	// Users can set it to false in their config if they want to drop batches with no clusters
-	if cfg.Analysis.CreateFallbackClusters == false {
-		cfg.Analysis.CreateFallbackClusters = true // Default to true
-	}
+	// Note: Removed override - respect user's explicit config setting
 
 	// Logging is now handled entirely by slog
 
@@ -2956,6 +2954,7 @@ func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 	if storedTexts, ok := clusterMap["tweet_texts"].([]string); ok {
 		uniqueTweetCount = len(storedTexts)
 		originalTweetCount = uniqueTweetCount // For pre-deduplicated data, they're the same
+
 		for i, text := range storedTexts {
 			if i >= maxToShow {
 				break

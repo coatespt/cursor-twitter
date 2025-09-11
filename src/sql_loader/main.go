@@ -459,10 +459,10 @@ func (sl *SQLLoader) ProcessBatch(batch json_parser.Batch) error {
 		return fmt.Errorf("failed to parse clusters for batch %d: %v", batch.Data.BatchNumber, err)
 	}
 
-	// Debug anomalous batches
+	// Log batches with no clusters (expected when fallback clusters are disabled)
 	if len(clusters) == 0 && batch.Data.TotalTweets > 0 {
-		fmt.Printf("  DEBUG: Batch %d has 0 clusters but %d total tweets. Raw data: clusters=%v, total_clusters=%d\n",
-			batch.Data.BatchNumber, batch.Data.TotalTweets, batch.Data.Clusters, batch.Data.TotalClusters)
+		fmt.Printf("  INFO: Batch %d has 0 clusters but %d total tweets (fallback clusters disabled)\n",
+			batch.Data.BatchNumber, batch.Data.TotalTweets)
 	}
 
 	// Process each cluster
