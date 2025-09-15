@@ -104,57 +104,77 @@ type FrequencyClassProcessor struct {
 	batchNumber int64
 	zScoreMin   float64
 
-	// Batch results collection
-	// Analysis thread communication
-	resultChannel chan BusyWordResult
-
 	// Coordination pattern: workers -> analytics -> workers
-	releaseChannel chan struct{}
+	Barrier        *Barrier    // Proper synchronization barrier
+	classToBarrier map[int]int // Map class index to barrier index
 }
 
 // Barrier implements thread coordination barrier pattern
 type Barrier struct {
-	mu      sync.Mutex
-	count   int
-	waiting int
-	cond    *sync.Cond
+	numProducers int
+	results      []BusyWordResult
+	submitted    int
+	consumed     bool
+	mu           sync.Mutex
+	submitCond   *sync.Cond
+	consumeCond  *sync.Cond
 }
 
-// NewBarrier creates a new barrier for N threads
-func NewBarrier(count int) *Barrier {
-	b := &Barrier{count: count}
-	b.cond = sync.NewCond(&b.mu)
+// NewBarrier creates a new barrier for N producers
+func NewBarrier(numProducers int) *Barrier {
+	b := &Barrier{
+		numProducers: numProducers,
+		results:      make([]BusyWordResult, numProducers),
+		consumed:     true, // Start ready to accept first batch
+	}
+	b.submitCond = sync.NewCond(&b.mu)
+	b.consumeCond = sync.NewCond(&b.mu)
 	return b
 }
 
-// Wait blocks until all N threads have called Wait()
-func (b *Barrier) Wait() {
-	b.mu.Lock()
-	b.waiting++
-
-	if b.waiting < b.count {
-		// Not all threads have reached the barrier yet
-		b.cond.Wait()
-	} else {
-		// All threads have reached the barrier, wake everyone up
-		b.cond.Broadcast()
-	}
-
-	b.mu.Unlock()
-}
-
-// Reset resets the barrier for the next cycle
-func (b *Barrier) Reset() {
-	b.mu.Lock()
-	b.waiting = 0
-	b.mu.Unlock()
-}
-
-// IsComplete returns true if all threads have reached the barrier
-func (b *Barrier) IsComplete() bool {
+// Submit a result from producer i. Blocks only if trying to submit next result before previous batch consumed.
+func (b *Barrier) Submit(producerID int, result BusyWordResult) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.waiting == b.count
+
+	// Wait until previous batch has been consumed (only blocks on next submission)
+	for !b.consumed {
+		b.submitCond.Wait()
+	}
+
+	b.results[producerID] = result
+	b.submitted++
+
+	// If this completes the batch, mark as ready for consumption
+	if b.submitted == b.numProducers {
+		b.consumed = false
+		b.consumeCond.Signal() // Wake up consumer
+	}
+}
+
+// ConsumeBatch waits for all F producers to submit, then returns the batch.
+// This marks the batch as consumed and allows producers to submit again.
+func (b *Barrier) ConsumeBatch() []BusyWordResult {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Wait until all producers have submitted
+	for b.submitted < b.numProducers {
+		b.consumeCond.Wait()
+	}
+
+	// Copy the results
+	batch := make([]BusyWordResult, len(b.results))
+	copy(batch, b.results)
+
+	// Reset for next batch
+	b.submitted = 0
+	b.consumed = true
+
+	// Wake up any producers waiting to submit next batch
+	b.submitCond.Broadcast()
+
+	return batch
 }
 
 // BusyWordProcessor processes ThreePartKeys for a specific frequency class
@@ -206,10 +226,12 @@ func NewFrequencyClassProcessorWithZScores(numClasses int, arrayLen int, zScores
 		zScoreMin = zScores[0]
 	}
 
-	// Count active classes (non-skipped)
+	// Count active classes (non-skipped) and create mapping
 	activeClasses := 0
+	classToBarrier := make(map[int]int)
 	for i := 0; i < numClasses; i++ {
 		if !skipMap[i] {
+			classToBarrier[i] = activeClasses
 			activeClasses++
 		}
 	}
@@ -220,8 +242,8 @@ func NewFrequencyClassProcessorWithZScores(numClasses int, arrayLen int, zScores
 		processors:     processors,
 		skipClasses:    skipMap,
 		stopChan:       make(chan struct{}),
-		resultChannel:  make(chan BusyWordResult, numClasses), // Buffer for analysis thread
-		releaseChannel: make(chan struct{}),                   // Coordination release channel
+		Barrier:        NewBarrier(activeClasses), // Proper synchronization barrier
+		classToBarrier: classToBarrier,            // Map class indices to barrier indices
 		startTime:      time.Now(),
 		zScoreMin:      zScoreMin,
 		logDir:         logDir,
@@ -473,20 +495,10 @@ func (fcp *FrequencyClassProcessor) GetProcessorStats() map[string]int {
 	return stats
 }
 
-// GetResultChannel returns the channel for receiving busy word results
-func (fcp *FrequencyClassProcessor) GetResultChannel() <-chan BusyWordResult {
-	return fcp.resultChannel
-}
-
 // ReleaseBarrier releases the barrier to allow processors to start the next batch
 func (fcp *FrequencyClassProcessor) ReleaseBarrier() {
-	releaseTime := time.Now()
-	slog.Info("Barrier released - all classes reached barrier",
-		"batch", atomic.LoadInt64(&fcp.batchNumber),
-		"release_time", releaseTime.Format("15:04:05.000"))
-
-	close(fcp.releaseChannel)
-	fcp.releaseChannel = make(chan struct{}) // Create fresh channel for next batch
+	// The new barrier pattern handles this automatically in ConsumeBatch()
+	// No manual release needed - the barrier coordinates everything
 }
 
 // run is the main loop for a busy word processor
@@ -518,7 +530,7 @@ func (bwp *BusyWordProcessor) run() {
 				// Check for termination signal: (-1, -1, -1)
 				if key.Part1 == -1 && key.Part2 == -1 && key.Part3 == -1 {
 					// Perform coordinated z-computation using batch number from termination signal
-					slog.Info("BWP received termination signal", "class", bwp.classIndex, "batch_id", key.BatchID)
+					// BWP received termination signal - logging removed for cleaner output
 					bwp.performCoordinatedZComputation(key.BatchID)
 					continue
 				}
@@ -542,8 +554,6 @@ func (bwp *BusyWordProcessor) run() {
 
 // performCoordinatedZComputation performs z-computation and reports results to coordinator
 func (bwp *BusyWordProcessor) performCoordinatedZComputation(batchNumber int64) {
-	startTime := time.Now()
-
 	// Calculate statistics for each array
 	part1Stats := bwp.CalculateArrayStats(bwp.part1Counters)
 	part2Stats := bwp.CalculateArrayStats(bwp.part2Counters)
@@ -554,26 +564,19 @@ func (bwp *BusyWordProcessor) performCoordinatedZComputation(batchNumber int64) 
 	part2HighZScores := bwp.CalculateZScores(bwp.part2Counters, part2Stats, bwp.zScoreThreshold)
 	part3HighZScores := bwp.CalculateZScores(bwp.part3Counters, part3Stats, bwp.zScoreThreshold)
 
+	// Debug: Log high Z-score counts
+	if len(part1HighZScores) > 0 || len(part2HighZScores) > 0 || len(part3HighZScores) > 0 {
+		slog.Info("High Z-scores found", "class", bwp.classIndex, "part1_count", len(part1HighZScores), "part2_count", len(part2HighZScores), "part3_count", len(part3HighZScores), "threshold", bwp.zScoreThreshold)
+	}
+
 	// Find busy words
 	busyWords := bwp.FindBusyWords(part1HighZScores, part2HighZScores, part3HighZScores)
 
-	computationTime := time.Since(startTime)
-	slog.Info("BusyWordProcessor z-computation completed",
-		"class_index", bwp.classIndex,
-		"busy_words_found", len(busyWords),
-		"computation_time_ms", computationTime.Milliseconds(),
-		"batch_number", bwp.freqClassProcessor.batchNumber)
+	// BusyWordProcessor z-computation completed - logging removed for cleaner output
 
 	// Create z-score info string
 	zScoreInfo := fmt.Sprintf("Class %d: part1_high=%d, part2_high=%d, part3_high=%d, threshold=%.2f",
 		bwp.classIndex, len(part1HighZScores), len(part2HighZScores), len(part3HighZScores), bwp.zScoreThreshold)
-
-	// Wipe all counter arrays to zero
-	for i := 0; i < bwp.arrayLen; i++ {
-		bwp.part1Counters[i] = 0
-		bwp.part2Counters[i] = 0
-		bwp.part3Counters[i] = 0
-	}
 
 	// Report results to coordinator
 	result := BusyWordResult{
@@ -583,28 +586,34 @@ func (bwp *BusyWordProcessor) performCoordinatedZComputation(batchNumber int64) 
 		ZScoreInfo:     zScoreInfo,
 	}
 
+	// Only log if there are busy words found
+	if len(result.BusyWord3PKs) > 0 {
+		busyWordStrings := make([]string, 0, len(result.BusyWord3PKs))
+		for _, threePK := range result.BusyWord3PKs {
+			if word, exists := GetWordFrom3PK(threePK); exists {
+				busyWordStrings = append(busyWordStrings, word)
+			}
+		}
+		slog.Info("BWP found busy words", "class", bwp.classIndex, "batch", result.BatchNumber, "words", busyWordStrings)
+	}
+
+	// Wipe all counter arrays to zero
+	for i := 0; i < bwp.arrayLen; i++ {
+		bwp.part1Counters[i] = 0
+		bwp.part2Counters[i] = 0
+		bwp.part3Counters[i] = 0
+	}
+
 	// CRITICAL: Send result ONLY to the barrier - NEVER send to analytics thread directly
-	// The barrier is the ONLY mechanism that should communicate with the analytics thread
-	// Any other communication path is a show-stopping error
-	slog.Info("BWP sending result to barrier", "class", bwp.classIndex, "batch_number", result.BatchNumber, "busy_words", len(result.BusyWord3PKs))
-	bwp.freqClassProcessor.resultChannel <- result
-
-	// Log when this class reaches the barrier
-	barrierReachTime := time.Now()
-	slog.Debug("BusyWordProcessor reached barrier",
-		"class_index", bwp.classIndex,
-		"batch", bwp.freqClassProcessor.batchNumber,
-		"barrier_reach_time", barrierReachTime.Format("15:04:05.000"))
-
-	// Wait for barrier release before starting next batch
-	barrierWaitStart := time.Now()
-	<-bwp.freqClassProcessor.releaseChannel
-	barrierWaitTime := time.Since(barrierWaitStart)
-
-	slog.Info("BusyWordProcessor released from barrier",
-		"class_index", bwp.classIndex,
-		"batch", bwp.freqClassProcessor.batchNumber,
-		"barrier_wait_time_ms", barrierWaitTime.Milliseconds())
+	// Submit result to barrier - this blocks until previous batch is consumed
+	// CRITICAL: BWPs should ONLY send results to the barrier
+	// and NEVER directly to the analytics thread
+	barrierIndex, exists := bwp.freqClassProcessor.classToBarrier[bwp.classIndex]
+	if !exists {
+		slog.Error("BWP class index not found in barrier mapping", "class_index", bwp.classIndex, "batch", result.BatchNumber)
+		return
+	}
+	bwp.freqClassProcessor.Barrier.Submit(barrierIndex, result)
 }
 
 // GetTokenCount returns the number of tokens processed by this processor
@@ -682,6 +691,31 @@ func (bwp *BusyWordProcessor) CalculateZScores(counts []int, stats ArrayStats, t
 		}
 	}
 
+	// Calculate Z-score distribution in buckets from 3.0 upward
+	if len(allZScores) > 0 {
+		// Find max Z-score to determine bucket range
+		maxZ := allZScores[0]
+		for _, z := range allZScores {
+			if z > maxZ {
+				maxZ = z
+			}
+		}
+
+		// Create buckets from 3.0 to maxZ in 0.5 increments
+		buckets := make(map[string]int)
+		for _, z := range allZScores {
+			if z >= 3.0 {
+				bucket := fmt.Sprintf("%.1f", float64(int(z*2))/2.0) // Round to nearest 0.5
+				buckets[bucket]++
+			}
+		}
+
+		// Log distribution if there are any Z-scores >= 3.0
+		if len(buckets) > 0 {
+			slog.Info("Z-score distribution", "class", bwp.classIndex, "threshold", threshold, "buckets", buckets)
+		}
+	}
+
 	// Calculate z-score statistics
 	if len(allZScores) > 0 {
 		minZ := allZScores[0]
@@ -705,16 +739,30 @@ func (bwp *BusyWordProcessor) CalculateZScores(counts []int, stats ArrayStats, t
 // ArrayStats holds statistical information about an array
 type ArrayStats struct {
 	Total  int
+	Min    int
+	Max    int
 	Mean   float64
 	StdDev float64
 }
 
 // CalculateArrayStats calculates mean, standard deviation, and z-scores for an array
 func (bwp *BusyWordProcessor) CalculateArrayStats(counts []int) ArrayStats {
-	// Calculate total and mean
+	if len(counts) == 0 {
+		return ArrayStats{Total: 0, Min: 0, Max: 0, Mean: 0, StdDev: 0}
+	}
+
+	// Calculate total, min, max, and mean
 	total := 0
+	min := counts[0]
+	max := counts[0]
 	for _, count := range counts {
 		total += count
+		if count < min {
+			min = count
+		}
+		if count > max {
+			max = count
+		}
 	}
 	mean := float64(total) / float64(bwp.arrayLen)
 
@@ -731,6 +779,8 @@ func (bwp *BusyWordProcessor) CalculateArrayStats(counts []int) ArrayStats {
 
 	return ArrayStats{
 		Total:  total,
+		Min:    min,
+		Max:    max,
 		Mean:   mean,
 		StdDev: stdDev,
 	}
@@ -760,9 +810,19 @@ func (bwp *BusyWordProcessor) FindBusyWords(part1HighZScores, part2HighZScores, 
 				if bwp.existsInGlobalTokenMapping(key) {
 					validCombinations++
 					busyWords = append(busyWords, key)
+				} else {
+					// Debug: Log first few failed lookups to see what's happening
+					if len(busyWords) < 3 {
+						slog.Info("3PK lookup failed", "class", bwp.classIndex, "pos1", pos1, "pos2", pos2, "pos3", pos3, "key", key)
+					}
 				}
 			}
 		}
+	}
+
+	// Debug: Log the busy word detection process
+	if totalCombinations > 0 {
+		slog.Info("Busy word detection", "class", bwp.classIndex, "total_combinations", totalCombinations, "valid_combinations", validCombinations, "busy_words_found", len(busyWords))
 	}
 
 	// Log filtering statistics (reduced verbosity)

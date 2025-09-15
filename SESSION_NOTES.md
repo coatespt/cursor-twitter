@@ -39,6 +39,8 @@ When a test doesn't pass, we have to look at why before changing anything. No re
 
 If any changes seem to involve multiple threads, be sure to get my agreement before doing anything. Anytime there thread safety constructs like mutex, etc., always check. We keep getting into trouble with unnecessary and incorrect thread complexity.
 
+Apparently you are under the impression that I want happy sunny output. No! Be as critical as possible.
+
 # Input and Output
 
 The input available for development purposes is two weeks of the decahose (about 500 Tweets/second.) It consists of JSON-formatted Tweets in files that have the file order encoded in the filenames as Unix start and end times. The files are about five minutes of Tweets at about 500 Tweets/second. The original files are unpacked into uncompressed CSV files.  
@@ -488,36 +490,13 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 - "Start and internet business"
 
 # TTD and Direction
-Dont implement anything--I want to understand a problem. The log says that the analytics thread is lagging far behind and it's causing problems. Eventually it starts causing the 3pk's to not be found, and the busyword processor queues to get too full, etc.  Yet it seems to be spitting out batches at a rapid clip.  we need to figure this out.      time=2025-09-09T16:36:55.309-04:00 level=WARN msg="Analytics thread lag detected" global_batch=386 completed_batch=0 lag=386 threshold=2 tweet_count=7880055
-
-I think what is happening that the 
-
-
-We recently:
-- Fixed the premature EOF issue by replacing the custom JSON parsing with Go's standard json.Decoder
-- Added the Jaccard similarity config option for using busy words only vs. all tokens
-- Fixed the cluster count bug in the main program
-- Restored proper streaming support with LoadNextChunkContinuous()
-- Replaced the entire schema in Postgres
-- Did the changes to the loader that were part of that.
 
 ## Cursor says the rabbit v disk modes are implemented as the entire pipeline. 
-Find out if this is true.
+Find out if this is true. Each mode of input should be just a function call at the beginnin go the main loop. 
 
-## Parse Error Problem
-
-The sql_loader kept failing with some kind of parse error. 
-It seems to be related to chunks. Sometimes the next chunk seems malformed to the parser (it isn't) and it just swallows it and picks up with the next chunk.
-
-./sql_loader 2>&1 | tee -a sql_loader_output.log
-
-Running with very small chunks did not fix the problem. We have tried 
-
-Replaced the whole thign with the json.decoder. This is a perfect example of how Cursor has no brain.  I said, but surely this problem has been solved thousands of times, right?
-
-## Clustering Problems 
 
 ### Batches with no tweets.
+
 WARNING: Cluster 0 in batch 4590 has no tweets!
 
 ### Batches with Tweets but no clusters and no busy words, but have tweets
@@ -531,9 +510,7 @@ This is not an sql_loader problem. The batches are like that in the main zfilter
 
 This may or may not be be correct clustering behavior but it's intuitively not what we want. If you have a bunch of tweets in a batch, they should be at least one cluster on that basis.
 
-
-
-### Clusters with not tweets. 
+### Clusters with no tweets. 
 Note, cluster 0 has no Tweets but there are other clusters in the batch that are fine.
 
 WARNING: Cluster 0 in batch 4830 has no tweets!

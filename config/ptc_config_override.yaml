@@ -1,14 +1,16 @@
 
 # Overrride file for smaller batches and bigger window 9/6/2025
 
-window: 5000000
+window: 3000000
 token_persist_files: 70
+rebuild_every_files: 20
 
 # Smaller batch than we'd been using
 # 20,000 is 40 seconds of the decahose (wall clock time) but only four seconds 
 # of the firehose.
-batch: 50000 
-
+batch: 25000 
+#
+z_scores: [6.0, 6.0, 7.0, 6.5, 6.5, 5.5, 5.5, 5.5, 5.5, 5.5, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0,5.0,5.0,5.0,5.0] 
 # Analysis settings
 analysis:
   min_cluster_size: 3

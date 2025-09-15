@@ -128,72 +128,70 @@ func ParseClusters(batch Batch) ([]Cluster, error) {
 			continue
 		}
 
-		// Check cluster type
-		clusterType, _ := clusterMap["type"].(string)
+		// Simple approach: process any cluster that has a cluster_id field
+		// This handles individual_cluster, meta_cluster sub-clusters, etc.
+		cluster := extractClusterFromMap(clusterMap)
+		if cluster != nil {
+			clusters = append(clusters, *cluster)
+		}
 
-		if clusterType == "individual_cluster" {
-			// Process individual clusters directly
-			cluster := extractClusterFromMap(clusterMap)
-			if cluster != nil {
-				clusters = append(clusters, *cluster)
-			}
-		} else if clusterType == "meta_cluster" {
-			// Process sub-clusters within meta clusters
-			subClustersInterface, _ := clusterMap["sub_clusters"].([]interface{})
+		// Also check for sub-clusters in meta clusters
+		if subClustersInterface, ok := clusterMap["sub_clusters"].([]interface{}); ok {
 			for _, subClusterInterface := range subClustersInterface {
-				subClusterMap, ok := subClusterInterface.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				cluster := extractClusterFromMap(subClusterMap)
-				if cluster != nil {
-					clusters = append(clusters, *cluster)
+				if subClusterMap, ok := subClusterInterface.(map[string]interface{}); ok {
+					subCluster := extractClusterFromMap(subClusterMap)
+					if subCluster != nil {
+						clusters = append(clusters, *subCluster)
+					}
 				}
 			}
 		}
-		// Skip fallback_cluster (disabled in config) and other types
 	}
 
 	return clusters, nil
 }
 
 // extractClusterFromMap extracts cluster data from a map, returns nil if invalid
+// This function is robust and handles missing fields gracefully
 func extractClusterFromMap(clusterMap map[string]interface{}) *Cluster {
-	// Extract cluster data
+	// Extract cluster data - cluster_id is required
 	clusterIDFloat, hasClusterID := clusterMap["cluster_id"].(float64)
 	if !hasClusterID {
-		// Skip clusters without cluster_id - they're invalid
+		// No cluster_id means this isn't a valid cluster - skip silently
 		return nil
 	}
 	clusterID := int(clusterIDFloat)
+
+	// Extract size with default
 	size, _ := clusterMap["size"].(float64)
+	if size == 0 {
+		size = 0 // Default to 0 if missing
+	}
 
-	// Extract busy words
-	busyWordsInterface, _ := clusterMap["busy_words"].([]interface{})
+	// Extract busy words - handle missing or invalid data gracefully
 	var busyWords []string
-	for _, word := range busyWordsInterface {
-		if wordStr, ok := word.(string); ok {
-			busyWords = append(busyWords, wordStr)
+	if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
+		for _, word := range busyWordsInterface {
+			if wordStr, ok := word.(string); ok {
+				busyWords = append(busyWords, wordStr)
+			}
 		}
 	}
 
-	// Extract tweet texts
-	tweetTextsInterface, _ := clusterMap["tweet_texts"].([]interface{})
+	// Extract tweet texts - handle missing or invalid data gracefully
 	var tweetTexts []string
-	for _, tweet := range tweetTextsInterface {
-		if tweetStr, ok := tweet.(string); ok {
-			tweetTexts = append(tweetTexts, tweetStr)
+	if tweetTextsInterface, ok := clusterMap["tweet_texts"].([]interface{}); ok {
+		for _, tweet := range tweetTextsInterface {
+			if tweetStr, ok := tweet.(string); ok {
+				tweetTexts = append(tweetTexts, tweetStr)
+			}
 		}
 	}
 
-	// Extract medoid if present
+	// Extract optional fields
 	medoid, _ := clusterMap["medoid"].(string)
 	medoidTweet, _ := clusterMap["medoid_tweet"].(string)
-
-	// Extract quality score if present
 	qualityScore, _ := clusterMap["quality_score"].(float64)
-
-	// Extract busy word classes if present
 	busyWordClasses, _ := clusterMap["busy_word_classes"].(map[string]interface{})
 
 	return &Cluster{

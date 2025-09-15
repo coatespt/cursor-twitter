@@ -57,7 +57,7 @@ func BenchmarkMemoryUsage(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			token := "token" + string(rune(i))
-			GenerateThreePartKey(token)
+			GenerateThreePartKey(token, int64(i))
 			AddToCleanupQueue(token)
 		}
 		// Process cleanup queue

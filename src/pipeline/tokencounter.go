@@ -67,8 +67,6 @@ func (tc *TokenCounter) DecrementTokens(tokens []string) {
 		tc.counts[token]--
 		if tc.counts[token] <= 0 {
 			delete(tc.counts, token) // Clean up to save memory
-			// Add to cleanup queue for 3PK collision mitigation
-			AddToCleanupQueue(token)
 			zeroCountTokens++
 		}
 		// Update running total (decrement by 1)

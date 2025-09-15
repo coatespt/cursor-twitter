@@ -367,7 +367,7 @@ func (fct *FrequencyComputationThread) performRebuild() {
 	if fct.minCountThreshold > 0 {
 		result = BuildFrequencyClassHashSetsAdaptive(tokenCounts, fct.freqClasses, fct.minCountThreshold)
 	} else {
-		result = BuildFrequencyClassHashSets(tokenCounts, fct.freqClasses, nil, nil)
+		result = BuildFrequencyClassHashSets(tokenCounts, fct.freqClasses)
 	}
 
 	slog.Info("FCT: BuildFrequencyClassHashSets returned", "filters_built", len(result.Filters))

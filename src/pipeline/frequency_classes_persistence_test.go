@@ -40,7 +40,7 @@ func TestFreqClassResultSaveLoad(t *testing.T) {
 	}
 
 	// Build frequency class result
-	result := BuildFrequencyClassHashSets(tokenCounts, 3, nil, nil)
+	result := BuildFrequencyClassHashSets(tokenCounts, 3)
 
 	// Save to file
 	filename := filepath.Join(tempDir, "test_frequency_filters.gob")
@@ -158,7 +158,7 @@ func TestFreqClassResultSaveLoadSingleClass(t *testing.T) {
 	}
 
 	// Build frequency class result with only 1 class
-	result := BuildFrequencyClassHashSets(tokenCounts, 1, nil, nil)
+	result := BuildFrequencyClassHashSets(tokenCounts, 1)
 
 	// Save to file
 	filename := filepath.Join(tempDir, "single_class_filters.gob")
@@ -208,7 +208,7 @@ func TestFreqClassResultSaveLoadLargeDataset(t *testing.T) {
 	}
 
 	// Build frequency class result
-	result := BuildFrequencyClassHashSets(tokenCounts, 5, nil, nil)
+	result := BuildFrequencyClassHashSets(tokenCounts, 5)
 
 	// Save to file
 	filename := filepath.Join(tempDir, "large_frequency_filters.gob")
@@ -287,7 +287,7 @@ func TestFreqClassResultSaveLoadConcurrentAccess(t *testing.T) {
 	}
 
 	// Build frequency class result
-	result := BuildFrequencyClassHashSets(tokenCounts, 2, nil, nil)
+	result := BuildFrequencyClassHashSets(tokenCounts, 2)
 
 	// Save to file while other operations are happening
 	filename := filepath.Join(tempDir, "concurrent_test.gob")

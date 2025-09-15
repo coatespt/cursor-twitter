@@ -305,7 +305,7 @@ func TestFrequencyClassBuilding(t *testing.T) {
 	}
 
 	// Build frequency classes
-	result := pipeline.BuildFrequencyClassHashSets(tokenCounts, 3, nil, nil)
+	result := pipeline.BuildFrequencyClassHashSets(tokenCounts, 3)
 
 	// Verify we got the expected number of filters
 	if len(result.Filters) != 3 {
@@ -354,27 +354,27 @@ func TestFrequencyClassBuilding(t *testing.T) {
 // This test ensures the system handles unusual inputs gracefully.
 func TestFrequencyClassBuildingEdgeCases(t *testing.T) {
 	// Test with empty token counts
-	result := pipeline.BuildFrequencyClassHashSets(map[string]int{}, 3, nil, nil)
+	result := pipeline.BuildFrequencyClassHashSets(map[string]int{}, 3)
 	if len(result.Filters) != 3 {
 		t.Errorf("Expected 3 filters even with empty input, got %d", len(result.Filters))
 	}
 
 	// Test with single token
 	singleToken := map[string]int{"only": 1}
-	result = pipeline.BuildFrequencyClassHashSets(singleToken, 3, nil, nil)
+	result = pipeline.BuildFrequencyClassHashSets(singleToken, 3)
 	if len(result.Filters) != 3 {
 		t.Errorf("Expected 3 filters with single token, got %d", len(result.Filters))
 	}
 
 	// Test with zero frequency classes (should default to 1)
 	multipleTokens := map[string]int{"a": 10, "b": 5, "c": 3}
-	result = pipeline.BuildFrequencyClassHashSets(multipleTokens, 0, nil, nil)
+	result = pipeline.BuildFrequencyClassHashSets(multipleTokens, 0)
 	if len(result.Filters) != 1 {
 		t.Errorf("Expected 1 filter with zero frequency classes, got %d", len(result.Filters))
 	}
 
 	// Test with negative frequency classes (should default to 1)
-	result = pipeline.BuildFrequencyClassHashSets(multipleTokens, -1, nil, nil)
+	result = pipeline.BuildFrequencyClassHashSets(multipleTokens, -1)
 	if len(result.Filters) != 1 {
 		t.Errorf("Expected 1 filter with negative frequency classes, got %d", len(result.Filters))
 	}

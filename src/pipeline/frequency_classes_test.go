@@ -32,7 +32,7 @@ func TestFrequencyCalculationAlgorithm(t *testing.T) {
 
 	// Test with 3 frequency classes
 	F := 3
-	result := BuildFrequencyClassBloomFiltersOptimized(tokenCounts, F, nil, nil)
+	result := BuildFrequencyClassHashSets(tokenCounts, F)
 
 	// Verify we got the right number of classes
 	if len(result.Filters) != F {
@@ -89,7 +89,7 @@ func TestFrequencyClassDistribution(t *testing.T) {
 
 	// Test with 5 frequency classes
 	F := 5
-	result := BuildFrequencyClassBloomFiltersOptimized(tokenCounts, F, nil, nil)
+	result := BuildFrequencyClassHashSets(tokenCounts, F)
 
 	// Verify we got the right number of classes
 	if len(result.Filters) != F {
@@ -121,7 +121,7 @@ func TestFrequencyClassEdgeCases(t *testing.T) {
 			"c": 3,
 		}
 
-		result := BuildFrequencyClassBloomFiltersOptimized(tokenCounts, 2, nil, nil)
+		result := BuildFrequencyClassHashSets(tokenCounts, 2)
 		if len(result.Filters) != 2 {
 			t.Errorf("Expected 2 classes, got %d", len(result.Filters))
 		}
@@ -135,7 +135,7 @@ func TestFrequencyClassEdgeCases(t *testing.T) {
 			"c": 3,
 		}
 
-		result := BuildFrequencyClassBloomFiltersOptimized(tokenCounts, 1, nil, nil)
+		result := BuildFrequencyClassHashSets(tokenCounts, 1)
 		if len(result.Filters) != 1 {
 			t.Errorf("Expected 1 class, got %d", len(result.Filters))
 		}
@@ -145,7 +145,7 @@ func TestFrequencyClassEdgeCases(t *testing.T) {
 	t.Run("ZeroTokens", func(t *testing.T) {
 		tokenCounts := map[string]int{}
 
-		result := BuildFrequencyClassBloomFiltersOptimized(tokenCounts, 3, nil, nil)
+		result := BuildFrequencyClassHashSets(tokenCounts, 3)
 		if len(result.Filters) != 3 {
 			t.Errorf("Expected 3 classes, got %d", len(result.Filters))
 		}
@@ -179,7 +179,7 @@ func TestFrequencyClassDetailedDistribution(t *testing.T) {
 
 	// Test with 3 frequency classes
 	F := 3
-	result := BuildFrequencyClassBloomFiltersOptimized(tokenCounts, F, nil, nil)
+	result := BuildFrequencyClassHashSets(tokenCounts, F)
 
 	// Calculate total and target per class
 	total := 0
@@ -303,7 +303,7 @@ func TestBuildFrequencyClassHashSets(t *testing.T) {
 
 	// Test with 3 frequency classes
 	F := 3
-	result := BuildFrequencyClassHashSets(tokenCounts, F, nil, nil)
+	result := BuildFrequencyClassHashSets(tokenCounts, F)
 
 	// Verify we got the right number of classes
 	if len(result.Filters) != F {
@@ -418,7 +418,7 @@ func TestBuildFrequencyClassHashSetsDynamic(t *testing.T) {
 
 	for _, F := range testCases {
 		t.Run(fmt.Sprintf("F=%d", F), func(t *testing.T) {
-			result := BuildFrequencyClassHashSets(tokenCounts, F, nil, nil)
+			result := BuildFrequencyClassHashSets(tokenCounts, F)
 
 			// Verify we got the right number of classes
 			if len(result.Filters) != F {

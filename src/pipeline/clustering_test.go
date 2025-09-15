@@ -44,7 +44,7 @@ func TestOptimizedTweetClusterer(t *testing.T) {
 	}
 
 	// Create clusterer
-	clusterer := NewOptimizedTweetClusterer(0.1, 1000)
+	clusterer := NewOptimizedTweetClusterer(0.1, 1000, false)
 
 	// Perform clustering
 	result := clusterer.ClusterTweets(testTweets, busyWords, 1)
@@ -72,7 +72,7 @@ func TestOptimizedTweetClusterer(t *testing.T) {
 }
 
 func TestJaccardSimilarity(t *testing.T) {
-	clusterer := NewOptimizedTweetClusterer(0.1, 1000)
+	clusterer := NewOptimizedTweetClusterer(0.1, 1000, false)
 
 	tweet1 := &tweets.Tweet{
 		IDStr:  "1",

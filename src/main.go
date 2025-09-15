@@ -310,9 +310,8 @@ var globalTweetQueue *TweetQueue
 var lastClusteringTime time.Time
 
 // Analysis thread for processing busy word results and running clustering
-func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Config, loadedState map[string]int) {
+func startAnalysisThread(cfg *Config, loadedState map[string]int) {
 	go func() {
-		slog.Info("ANALYTICS THREAD STARTED - VERSION WITH DIAGNOSTICS")
 		resultCount := 0
 
 		// ========================================================================
@@ -389,7 +388,7 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 					if cfg.MinCountThreshold > 0 {
 						result = pipeline.BuildFrequencyClassHashSetsAdaptive(loadedState, cfg.FreqClasses, cfg.MinCountThreshold)
 					} else {
-						result = pipeline.BuildFrequencyClassHashSets(loadedState, cfg.FreqClasses, nil, nil)
+						result = pipeline.BuildFrequencyClassHashSets(loadedState, cfg.FreqClasses)
 					}
 					pipeline.SetGlobalFilters(result.Filters)
 					rebuildDuration := time.Since(rebuildStartTime)
@@ -405,29 +404,21 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 		// END CRITICAL STATE LOADING LOGIC
 		// ========================================================================
 
-		expectedProcessors := len(cfg.BusywordClasses) // Number of frequency classes we expect results from
-
 		// CRITICAL: Analytics thread gets input ONLY from the barrier (resultChannel)
 		// NEVER accept input from any other source - this is a show-stopping error
 		// The barrier is the ONLY mechanism that should provide input to analytics thread
 
-		// Simple loop: collect N results, process them, release barrier, repeat
+		// Simple loop: collect batch from barrier, process it, repeat
 		for {
-			// Collect exactly N results from barrier
-			resultsCollected := 0
+			// Consume complete batch from barrier - this blocks until all BWPs submit
+			results := freqClassProcessor.Barrier.ConsumeBatch()
+
+			// Process the batch results
 			currentBatch := make(map[int][]string) // class -> busy words
 			var batchNumber int64
 
-			for resultsCollected < expectedProcessors {
-				// CRITICAL: Read ONLY from the barrier - NEVER from any other source
-				result, ok := <-resultChannel
-				if !ok {
-					// Channel closed, we're done
-					return
-				}
-
+			for i, result := range results {
 				resultCount++
-				slog.Info("Analytics thread received result from barrier", "class", result.FrequencyClass, "batch_number", result.BatchNumber, "busy_words", len(result.BusyWord3PKs))
 
 				// Convert 3PKs to actual words
 				busyWords := make([]string, 0, len(result.BusyWord3PKs))
@@ -446,28 +437,19 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 
 				// Store results for this class
 				currentBatch[result.FrequencyClass] = busyWords
-				// CRITICAL: Overwrite batchNumber immediately with each result
-				// All results should have the same batch number, but we use the current one
-				if resultsCollected > 0 && batchNumber != result.BatchNumber {
+
+				// Check batch number consistency
+				if i > 0 && batchNumber != result.BatchNumber {
 					slog.Error("BATCH NUMBER MISMATCH!", "expected", batchNumber, "got", result.BatchNumber, "class", result.FrequencyClass)
 				}
 				batchNumber = result.BatchNumber
-				resultsCollected++
 			}
-
-			// ANALYTICS: Collected all F results for batch
-			slog.Info("ANALYTICS: Collected all F results", "batch_number", batchNumber, "results_collected", resultsCollected, "expected", expectedProcessors)
 
 			// Process the batch
 			recentTweets := globalTweetQueue.GetRecentTweets(cfg.BatchSize)
 
-			// ANALYTICS: About to run clustering
-			slog.Info("ANALYTICS: About to run clustering", "batch_number", batchNumber, "tweets_count", len(recentTweets))
-
 			runClusteringForBatch(currentBatch, recentTweets, batchNumber, cfg)
 
-			// Release barrier to allow processors to start next batch
-			freqClassProcessor.ReleaseBarrier()
 		}
 
 		slog.Info("Analysis thread stopped", "results", resultCount)
@@ -476,6 +458,8 @@ func startAnalysisThread(resultChannel <-chan pipeline.BusyWordResult, cfg *Conf
 
 // runClusteringForBatch runs clustering analysis for a batch of busy words and tweets
 func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets.Tweet, batchNumber int64, cfg *Config) {
+	slog.Info("Clustering: Starting batch analysis", "batch_number", batchNumber, "class_results", len(classResults), "recent_tweets", len(recentTweets))
+
 	// Print busy word summary
 	printBatchSummary(classResults, batchNumber, cfg)
 
@@ -541,22 +525,10 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 		return
 	}
 
-	// Time the clustering operation
-	clusteringStart := time.Now()
-	timeSinceLastClustering := clusteringStart.Sub(lastClusteringTime)
-
 	// Only graph clustering is supported now
 	runGraphClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber, classResults)
 
-	clusteringDuration := time.Since(clusteringStart)
-
-	// Log detailed timing information
-	slog.Info("Clustering cycle timing",
-		"batch", batchNumber,
-		"tweets_processed", len(tweetsWithBusyWords),
-		"busy_words_count", len(allBusyWords),
-		"time_since_last_clustering_ms", timeSinceLastClustering.Milliseconds(),
-		"clustering_processing_time_ms", clusteringDuration.Milliseconds())
+	// Clustering cycle timing - diagnostic logging removed for cleaner output
 
 	// Update last clustering time
 	lastClusteringTime = time.Now()
@@ -692,11 +664,7 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 		}
 	}
 
-	slog.Info("Fallback cluster check",
-		"batchClusters", len(batchClusters),
-		"clustersAboveMinSize", clustersAboveMinSize,
-		"tweetsWithBusyWords", len(tweetsWithBusyWords),
-		"CreateFallbackClusters", cfg.Analysis.CreateFallbackClusters)
+	// Fallback cluster check - diagnostic logging removed for cleaner output
 
 	if clustersAboveMinSize == 0 && len(tweetsWithBusyWords) > 0 && cfg.Analysis.CreateFallbackClusters {
 		// Create a fallback cluster with all tweets
@@ -740,7 +708,7 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 	clustersAboveMinSize = 0
 	for i, cluster := range batchClusters {
 		if size, ok := cluster["size"].(int); ok {
-			slog.Info("Cluster size check", "clusterIndex", i, "size", size, "minClusterSize", cfg.Analysis.MinClusterSize, "meetsMinSize", size >= cfg.Analysis.MinClusterSize)
+			// Cluster size check - diagnostic logging removed for cleaner output
 			if size >= cfg.Analysis.MinClusterSize {
 				clustersAboveMinSize++
 			}
@@ -750,13 +718,9 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 	}
 
 	// ANALYTICS: About to output final batch data
-	slog.Info("ANALYTICS: About to output final batch data", "batch_number", batchNumber, "total_tweets", len(tweetsWithBusyWords))
+	// Analytics about to output final batch data - diagnostic logging removed for cleaner output
 
-	slog.Info("Final batch data",
-		"batchNumber", batchNumber,
-		"totalClusters", totalClusters,
-		"clustersAboveMinSize", clustersAboveMinSize,
-		"totalTweets", len(tweetsWithBusyWords))
+	// Final batch data - diagnostic logging removed for cleaner output
 
 	batchData := map[string]interface{}{
 		"batch_number":            batchNumber,
@@ -1180,7 +1144,7 @@ func main() {
 	lastClusteringTime = time.Now()
 
 	// Start the analysis thread to process busy word results and run clustering
-	startAnalysisThread(freqClassProcessor.GetResultChannel(), cfg, loadedState)
+	startAnalysisThread(cfg, loadedState)
 
 	timestamp := time.Now().Format("20060102_150405")
 	clusterFileName := fmt.Sprintf("clusters_%s.txt", timestamp)
@@ -1286,28 +1250,21 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 			// Always populate 3PK mappings for all tokens (regardless of filter availability)
 			for _, token := range tweet.Tokens {
 				// Get token info (3PK and frequency class) in a single operation
-				threePK, freqClass, exists := pipeline.GetTokenInfo(token)
+				threePK, _, exists := pipeline.GetTokenInfo(token)
 				if !exists {
 					// New token: create 3PK, insert into mapping
 					threePK = pipeline.GenerateThreePartKey(token, int64(globalBatchCount)) // This inserts into the mapping
-					if pipeline.HasGlobalFilters() {
-						freqClass = pipeline.GetGlobalFiltersCount() - 1 // Least frequent class (highest number)
-					}
 				}
 
-				// Route tokens to frequency classes only if filters are available
-				if pipeline.HasGlobalFilters() {
+				// Get frequency class for this token - always works, no coordination needed
+				freqClass := pipeline.WhatClass(token)
 
-					// Enqueue to appropriate frequency class (skip if class is in skip list)
-					if !freqClassProcessor.IsClassActive(freqClass) {
-						// Skip this frequency class - don't enqueue tokens
-						continue
-					}
-					freqClassProcessor.EnqueueToFrequencyClass(freqClass, threePK)
-				} else {
-					// No filters available yet - this is normal during startup
-					// The FCT will build filters as tokens arrive via the inboundTokenQueue
+				// Enqueue to appropriate frequency class (skip if class is in skip list)
+				if !freqClassProcessor.IsClassActive(freqClass) {
+					// Skip this frequency class - don't enqueue tokens
+					continue
 				}
+				freqClassProcessor.EnqueueToFrequencyClass(freqClass, threePK)
 			}
 		}
 
@@ -1318,7 +1275,7 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 		// Send termination signals to busy word processors every batch number of tweets
 		// Only send if frequency class filters are available
 		if TotalTweetsRead%cfg.BatchSize == 0 && TotalTweetsRead > 0 {
-			if pipeline.HasGlobalFilters() {
+			{
 				// Increment batch number FIRST, then create termination signal
 				freqClassProcessor.IncrementBatchNumber()
 				newBatchNum := freqClassProcessor.GetBatchNumber()
@@ -1343,9 +1300,6 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 				// Increment global batch count when signal 3PK is sent (this represents actual batches sent for processing)
 				globalBatchCount++
 
-			} else {
-				// No filters available yet - this is normal during startup
-				// Skip batch termination until filters are built
 			}
 		}
 
@@ -1390,7 +1344,7 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 			}
 
 			// Monitor busyword processor queues for potential system instability
-			if cfg.Analysis.BWQueueMax > 0 && pipeline.HasGlobalFilters() {
+			if cfg.Analysis.BWQueueMax > 0 {
 				threshold := int(float64(cfg.BatchSize) * cfg.Analysis.BWQueueMax)
 				queueStats := freqClassProcessor.GetQueueStats()
 
@@ -1462,7 +1416,6 @@ func processFromFiles(cfg *Config, printTweets bool) {
 
 // processCSVFile processes a single CSV file
 func processCSVFile(filePath string, cfg *Config, printTweets bool) {
-	slog.Info("Processing file", "file", filePath)
 
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -1542,28 +1495,21 @@ func processCSVFile(filePath string, cfg *Config, printTweets bool) {
 			// Always populate 3PK mappings for all tokens (regardless of filter availability)
 			for _, token := range tweet.Tokens {
 				// Get token info (3PK and frequency class) in a single operation
-				threePK, freqClass, exists := pipeline.GetTokenInfo(token)
+				threePK, _, exists := pipeline.GetTokenInfo(token)
 				if !exists {
 					// New token: create 3PK, insert into mapping
 					threePK = pipeline.GenerateThreePartKey(token, int64(globalBatchCount)) // This inserts into the mapping
-					if pipeline.HasGlobalFilters() {
-						freqClass = pipeline.GetGlobalFiltersCount() - 1 // Least frequent class (highest number)
-					}
 				}
 
-				// Route tokens to frequency classes only if filters are available
-				if pipeline.HasGlobalFilters() {
+				// Get frequency class for this token - always works, no coordination needed
+				freqClass := pipeline.WhatClass(token)
 
-					// Enqueue to appropriate frequency class (skip if class is in skip list)
-					if !freqClassProcessor.IsClassActive(freqClass) {
-						// Skip this frequency class - don't enqueue tokens
-						continue
-					}
-					freqClassProcessor.EnqueueToFrequencyClass(freqClass, threePK)
-				} else {
-					// No filters available yet - this is normal during startup
-					// The FCT will build filters as tokens arrive via the inboundTokenQueue
+				// Enqueue to appropriate frequency class (skip if class is in skip list)
+				if !freqClassProcessor.IsClassActive(freqClass) {
+					// Skip this frequency class - don't enqueue tokens
+					continue
 				}
+				freqClassProcessor.EnqueueToFrequencyClass(freqClass, threePK)
 			}
 		}
 
@@ -1574,7 +1520,7 @@ func processCSVFile(filePath string, cfg *Config, printTweets bool) {
 		// Send termination signals to busy word processors every batch number of tweets
 		// Only send if frequency class filters are available
 		if TotalTweetsRead%cfg.BatchSize == 0 && TotalTweetsRead > 0 {
-			if pipeline.HasGlobalFilters() {
+			{
 				// Increment batch number FIRST, then create termination signal
 				freqClassProcessor.IncrementBatchNumber()
 				newBatchNum := freqClassProcessor.GetBatchNumber()
@@ -1599,9 +1545,6 @@ func processCSVFile(filePath string, cfg *Config, printTweets bool) {
 				// Increment global batch count when signal 3PK is sent (this represents actual batches sent for processing)
 				globalBatchCount++
 
-			} else {
-				// No filters available yet - this is normal during startup
-				// Skip batch termination until filters are built
 			}
 		}
 
@@ -1646,7 +1589,7 @@ func processCSVFile(filePath string, cfg *Config, printTweets bool) {
 			}
 
 			// Monitor busyword processor queues for potential system instability
-			if cfg.Analysis.BWQueueMax > 0 && pipeline.HasGlobalFilters() {
+			if cfg.Analysis.BWQueueMax > 0 {
 				threshold := int(float64(cfg.BatchSize) * cfg.Analysis.BWQueueMax)
 				queueStats := freqClassProcessor.GetQueueStats()
 
@@ -1948,15 +1891,8 @@ func printStats() {
 		tokensProcessed := freqClassProcessorStats[processorKey]
 
 		// Get distinct token count for this frequency class
+		// Note: distinct token count is no longer available since we removed the old filter system
 		distinctTokens := 0
-		if pipeline.HasGlobalFilters() {
-			filters := pipeline.GetGlobalFilters()
-			if i < len(filters) {
-				if setFilter, ok := filters[i].(*pipeline.SetFilter); ok {
-					distinctTokens = setFilter.TokenCount()
-				}
-			}
-		}
 
 		// Use lazy evaluation for expensive formatting
 		classIndex := i
