@@ -290,18 +290,42 @@ func (sl *SQLLoader) CreateExperimentRun(runName, pipelineConfigPath, overrideCo
 	// Run doesn't exist, create new one
 	fmt.Printf("Creating new run...\n")
 
-	// Note: New schema doesn't store configuration details, so we don't need to load config
+	// Load pipeline configuration
+	pipelineConfig, err := loadPipelineConfig(pipelineConfigPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to load pipeline config: %v", err)
+	}
+
+	// Apply override config if provided
+	if overrideConfigPath != "" {
+		overrideConfig, err := loadPipelineConfig(overrideConfigPath)
+		if err != nil {
+			return 0, fmt.Errorf("failed to load override config: %v", err)
+		}
+		// Apply overrides (this is a simple merge - in practice you might want more sophisticated merging)
+		pipelineConfig = overrideConfig
+	}
 
 	// Convert arrays to strings
-	// Note: New schema only stores run_name, not all configuration details
+	zScoresStr := fmt.Sprintf("%v", pipelineConfig.ZScores)
 
-	// Insert experiment run
+	// Insert experiment run with all configuration details
 	var runID int
 	err = sl.db.QueryRow(`
-		INSERT INTO new_experiment_runs (run_name)
-		VALUES ($1)
+		INSERT INTO new_experiment_runs (
+			run_name, window_size, batch_size, freq_classes, min_jaccard_similarity,
+			bw_array_len, z_scores, min_busy_words_per_tweet, duplicate_similarity_threshold,
+			language_filter, use_medoid_similarity, use_busy_word_similarity,
+			medoid_similarity_threshold, busy_word_similarity_threshold, min_token_len
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		RETURNING run_id
-	`, uniqueRunName).Scan(&runID)
+	`, uniqueRunName, pipelineConfig.WindowSize, pipelineConfig.Batch, pipelineConfig.FreqClasses,
+		pipelineConfig.Analysis.MinJaccardSimilarity, pipelineConfig.BWArrayLen, zScoresStr,
+		pipelineConfig.Analysis.MinBusyWordsPerTweet, pipelineConfig.Analysis.DuplicateSimilarityThreshold,
+		pipelineConfig.LanguageFilter, pipelineConfig.Analysis.UseMedoidSimilarity,
+		pipelineConfig.Analysis.UseBusyWordSimilarity, pipelineConfig.Analysis.MedoidSimilarityThreshold,
+		pipelineConfig.Analysis.BusyWordSimilarityThreshold, pipelineConfig.Analysis.MinTokenLen).Scan(&runID)
 
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert experiment run: %v", err)

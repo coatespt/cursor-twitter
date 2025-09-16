@@ -379,7 +379,7 @@ function switchMode(mode) {
     document.getElementById('evolution-controls').style.display = mode === 'evolution' ? 'block' : 'none';
     
     // Show/hide displays
-    document.getElementById('standard-display').style.display = mode === 'standard' ? 'block' : 'none';
+    document.getElementById('results-grid').style.display = mode === 'standard' ? 'block' : 'none';
     document.getElementById('evolution-display').style.display = mode === 'evolution' ? 'block' : 'none';
     
     // Update panel title
