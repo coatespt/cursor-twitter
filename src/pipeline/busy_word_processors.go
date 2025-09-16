@@ -564,11 +564,6 @@ func (bwp *BusyWordProcessor) performCoordinatedZComputation(batchNumber int64) 
 	part2HighZScores := bwp.CalculateZScores(bwp.part2Counters, part2Stats, bwp.zScoreThreshold)
 	part3HighZScores := bwp.CalculateZScores(bwp.part3Counters, part3Stats, bwp.zScoreThreshold)
 
-	// Debug: Log high Z-score counts
-	if len(part1HighZScores) > 0 || len(part2HighZScores) > 0 || len(part3HighZScores) > 0 {
-		slog.Info("High Z-scores found", "class", bwp.classIndex, "part1_count", len(part1HighZScores), "part2_count", len(part2HighZScores), "part3_count", len(part3HighZScores), "threshold", bwp.zScoreThreshold)
-	}
-
 	// Find busy words
 	busyWords := bwp.FindBusyWords(part1HighZScores, part2HighZScores, part3HighZScores)
 
@@ -691,31 +686,6 @@ func (bwp *BusyWordProcessor) CalculateZScores(counts []int, stats ArrayStats, t
 		}
 	}
 
-	// Calculate Z-score distribution in buckets from 3.0 upward
-	if len(allZScores) > 0 {
-		// Find max Z-score to determine bucket range
-		maxZ := allZScores[0]
-		for _, z := range allZScores {
-			if z > maxZ {
-				maxZ = z
-			}
-		}
-
-		// Create buckets from 3.0 to maxZ in 0.5 increments
-		buckets := make(map[string]int)
-		for _, z := range allZScores {
-			if z >= 3.0 {
-				bucket := fmt.Sprintf("%.1f", float64(int(z*2))/2.0) // Round to nearest 0.5
-				buckets[bucket]++
-			}
-		}
-
-		// Log distribution if there are any Z-scores >= 3.0
-		if len(buckets) > 0 {
-			slog.Info("Z-score distribution", "class", bwp.classIndex, "threshold", threshold, "buckets", buckets)
-		}
-	}
-
 	// Calculate z-score statistics
 	if len(allZScores) > 0 {
 		minZ := allZScores[0]
@@ -810,19 +780,9 @@ func (bwp *BusyWordProcessor) FindBusyWords(part1HighZScores, part2HighZScores, 
 				if bwp.existsInGlobalTokenMapping(key) {
 					validCombinations++
 					busyWords = append(busyWords, key)
-				} else {
-					// Debug: Log first few failed lookups to see what's happening
-					if len(busyWords) < 3 {
-						slog.Info("3PK lookup failed", "class", bwp.classIndex, "pos1", pos1, "pos2", pos2, "pos3", pos3, "key", key)
-					}
 				}
 			}
 		}
-	}
-
-	// Debug: Log the busy word detection process
-	if totalCombinations > 0 {
-		slog.Info("Busy word detection", "class", bwp.classIndex, "total_combinations", totalCombinations, "valid_combinations", validCombinations, "busy_words_found", len(busyWords))
 	}
 
 	// Log filtering statistics (reduced verbosity)

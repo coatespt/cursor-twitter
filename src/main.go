@@ -1901,15 +1901,14 @@ func printStats() {
 	slog.Debug("----------------------")
 
 	// Also log to slog
-	slog.Info("Pipeline stats ",
+	slog.Info("Pipeline stats",
 		"tweets", totalTweets,
 		"tokens", totalTokens,
 		"distinct", distinctTokens,
 		// "window_size", windowSize, // Removed tweet-based window size
 		"inbound_queue_size", inboundQueueSize,
 		"total_rate_tweets_per_sec", totalRate,
-		"processing_rate_tweets_per_sec", processingRate,
-		"<------")
+		"processing_rate_tweets_per_sec", processingRate)
 
 	// Update for next calculation
 	lastStatsTime = now

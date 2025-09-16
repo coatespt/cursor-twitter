@@ -205,7 +205,7 @@ func (af *AIFeeder) Close() error {
 	return af.db.Close()
 }
 
-// CreateAnalysisSession creates a new AI analysis session
+// CreateAnalysisSession creates a new AI analysis session or resumes an existing one
 func (af *AIFeeder) CreateAnalysisSession(runName string) (int, int, error) {
 	// Look up run_id from run_name
 	var runID int
@@ -216,6 +216,35 @@ func (af *AIFeeder) CreateAnalysisSession(runName string) (int, int, error) {
 		return 0, 0, fmt.Errorf("failed to find experiment run '%s': %v", runName, err)
 	}
 
+	// Check if session already exists
+	var existingSessionID int
+	var status string
+	err = af.db.QueryRow(`
+		SELECT session_id, status FROM ai_analysis_sessions 
+		WHERE run_id = $1 AND session_name = $2
+	`, runID, af.config.Processing.SessionName).Scan(&existingSessionID, &status)
+
+	if err == nil {
+		// Session exists
+		if status == "running" {
+			af.logger.Printf("Resuming existing AI analysis session %d for run '%s' (status: %s)",
+				existingSessionID, runName, status)
+			return existingSessionID, runID, nil
+		} else {
+			// Session is completed or failed, create new one with timestamp
+			timestampedName := fmt.Sprintf("%s_%d", af.config.Processing.SessionName, time.Now().Unix())
+			af.logger.Printf("Existing session %d is %s, creating new session with name '%s'",
+				existingSessionID, status, timestampedName)
+			return af.createNewSession(runID, timestampedName)
+		}
+	}
+
+	// No existing session, create new one
+	return af.createNewSession(runID, af.config.Processing.SessionName)
+}
+
+// createNewSession creates a new analysis session
+func (af *AIFeeder) createNewSession(runID int, sessionName string) (int, int, error) {
 	// Read prompt template
 	promptTemplate, err := os.ReadFile(af.config.Processing.PromptTemplate)
 	if err != nil {
@@ -241,7 +270,7 @@ func (af *AIFeeder) CreateAnalysisSession(runName string) (int, int, error) {
 			analysis_type, total_clusters
 		) VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING session_id
-	`, runID, af.config.Processing.SessionName,
+	`, runID, sessionName,
 		af.config.AI.Model, af.config.AI.Endpoint, string(promptTemplate),
 		af.config.Processing.AnalysisType, totalClusters).Scan(&sessionID)
 
@@ -249,8 +278,8 @@ func (af *AIFeeder) CreateAnalysisSession(runName string) (int, int, error) {
 		return 0, 0, fmt.Errorf("failed to create analysis session: %v", err)
 	}
 
-	af.logger.Printf("Created AI analysis session %d for run '%s' (run_id %d, %d clusters)",
-		sessionID, runName, runID, totalClusters)
+	af.logger.Printf("Created new AI analysis session %d for run_id %d (session: '%s', %d clusters)",
+		sessionID, runID, sessionName, totalClusters)
 
 	return sessionID, runID, nil
 }
@@ -259,7 +288,7 @@ func (af *AIFeeder) CreateAnalysisSession(runName string) (int, int, error) {
 func (af *AIFeeder) GetClustersForAnalysis(sessionID int, runID int) ([]ClusterData, error) {
 	query := `
 		SELECT 
-			c.id, c.cluster_id, b.batch_number, b.batch_time, c.size, c.quality_score,
+			c.cluster_id, c.cluster_id, b.batch_number, b.batch_time, c.size, c.quality_score,
 			(SELECT array_agg(t.tweet_text ORDER BY tc.tweet_order) FROM new_tweets t JOIN new_tweet_clusters tc ON t.tweet_id = tc.tweet_id WHERE tc.cluster_id = c.cluster_id) as tweets,
 			(SELECT t.tweet_text FROM new_tweets t JOIN new_tweet_clusters tc ON t.tweet_id = tc.tweet_id WHERE tc.cluster_id = c.cluster_id AND tc.is_medoid = true LIMIT 1) as medoid_tweet,
 			(SELECT array_agg(word ORDER BY word_order) FROM new_busy_words WHERE cluster_id = c.cluster_id) as busy_words,
