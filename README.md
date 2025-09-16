@@ -68,6 +68,16 @@ The solution is fast and efficient. A commodity laptop can process at a rate sev
 
 In fact, the job of parsing the JSON to get the fields of interest is several times as CPU intensive as the actual Tweet processing.
 
+## Installation
+
+For complete installation instructions, see [INSTALLATION.md](INSTALLATION.md).
+
+### Quick Setup
+```bash
+# Run the automated setup script
+./setup.sh
+```
+
 ## Display Component
 
 This project includes a web-based display component for visualizing the cluster analysis results in real-time. The display provides an interactive web interface for viewing Twitter subject clusters as they are discovered.

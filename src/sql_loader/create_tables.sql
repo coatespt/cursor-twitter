@@ -1,5 +1,6 @@
--- Create tables for Twitter Pipeline Database
--- Run this separately to ensure tables are created
+-- DEPRECATED: This file creates the old table names (batches, clusters, tweets, busy_words)
+-- Use create_new_tables.sql instead for the current schema with new_* table names
+-- This file is kept for reference only
 
 -- Experiment runs table (one row per experimental run)
 CREATE TABLE IF NOT EXISTS experiment_runs (
