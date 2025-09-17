@@ -225,21 +225,27 @@ func (af *AIFeeder) CreateAnalysisSession(runName string) (int, int, error) {
 	`, runID, af.config.Processing.SessionName).Scan(&existingSessionID, &status)
 
 	if err == nil {
-		// Session exists
-		if status == "running" {
-			af.logger.Printf("Resuming existing AI analysis session %d for run '%s' (status: %s)",
-				existingSessionID, runName, status)
-			return existingSessionID, runID, nil
-		} else {
-			// Session is completed or failed, create new one with timestamp
-			timestampedName := fmt.Sprintf("%s_%d", af.config.Processing.SessionName, time.Now().Unix())
-			af.logger.Printf("Existing session %d is %s, creating new session with name '%s'",
-				existingSessionID, status, timestampedName)
-			return af.createNewSession(runID, timestampedName)
+		// Session exists - always resume it, regardless of status
+		af.logger.Printf("Resuming existing AI analysis session %d for run '%s' (status: %s)",
+			existingSessionID, runName, status)
+
+		// Update session status to running if it was completed/failed
+		if status != "running" {
+			_, err = af.db.Exec(`
+				UPDATE ai_analysis_sessions 
+				SET status = 'running', completed_at = NULL
+				WHERE session_id = $1
+			`, existingSessionID)
+			if err != nil {
+				af.logger.Printf("Warning: failed to update session status to running: %v", err)
+			}
 		}
+
+		return existingSessionID, runID, nil
 	}
 
 	// No existing session, create new one
+	af.logger.Printf("No existing session found for '%s', creating new session", af.config.Processing.SessionName)
 	return af.createNewSession(runID, af.config.Processing.SessionName)
 }
 
@@ -286,6 +292,39 @@ func (af *AIFeeder) createNewSession(runID int, sessionName string) (int, int, e
 
 // GetClustersForAnalysis retrieves clusters to analyze
 func (af *AIFeeder) GetClustersForAnalysis(sessionID int, runID int) ([]ClusterData, error) {
+	// Find the last processed cluster for this session
+	var startFromCluster int
+	var lastProcessedCluster int
+	err := af.db.QueryRow(`
+		SELECT COALESCE(MAX(cluster_id), 0) 
+		FROM ai_analysis_results 
+		WHERE session_id = $1
+	`, sessionID).Scan(&lastProcessedCluster)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find last processed cluster: %v", err)
+	}
+
+	// Start from the next cluster after the last processed one
+	startFromCluster = lastProcessedCluster + 1
+
+	// Count how many clusters are remaining to process
+	var totalClusters int
+	err = af.db.QueryRow(`
+		SELECT COUNT(*) FROM new_clusters c
+		JOIN new_batches b ON c.batch_id = b.id
+		WHERE b.run_id = $1 AND c.cluster_id >= $2
+	`, runID, startFromCluster).Scan(&totalClusters)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count remaining clusters: %v", err)
+	}
+
+	if lastProcessedCluster == 0 {
+		af.logger.Printf("Starting fresh analysis from cluster %d (%d clusters total)", startFromCluster, totalClusters)
+	} else {
+		af.logger.Printf("Resuming analysis from cluster %d (last processed: %d, %d clusters remaining)",
+			startFromCluster, lastProcessedCluster, totalClusters)
+	}
+
 	query := `
 		SELECT 
 			c.cluster_id, c.cluster_id, b.batch_number, b.batch_time, c.size, c.quality_score,
@@ -298,8 +337,7 @@ func (af *AIFeeder) GetClustersForAnalysis(sessionID int, runID int) ([]ClusterD
 		WHERE b.run_id = $1
 		AND c.cluster_id >= $2
 		AND c.cluster_id NOT IN (
-			SELECT DISTINCT cluster_id 
-			FROM ai_analysis_results 
+			SELECT cluster_id FROM ai_analysis_results WHERE session_id = $3
 		)
 		ORDER BY c.cluster_id
 	`
@@ -309,7 +347,7 @@ func (af *AIFeeder) GetClustersForAnalysis(sessionID int, runID int) ([]ClusterD
 		query += fmt.Sprintf(" LIMIT %d", af.config.Processing.MaxClusters)
 	}
 
-	rows, err := af.db.Query(query, runID, af.config.Processing.StartFromCluster)
+	rows, err := af.db.Query(query, runID, startFromCluster, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query clusters: %v", err)
 	}
