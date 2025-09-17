@@ -1169,9 +1169,9 @@ func main() {
 
 	switch cfg.Mode {
 	case "mqj":
-		processFromRabbitMQ(cfg, *printTweets)
+		processTweets(cfg, *printTweets)
 	case "files":
-		processFromFiles(cfg, *printTweets)
+		processTweets(cfg, *printTweets)
 	default:
 		slog.Error("Invalid mode specified", "mode", cfg.Mode, "valid_modes", []string{"mqj", "files"})
 		os.Exit(1)
@@ -1219,6 +1219,11 @@ func processFromRabbitMQ(cfg *Config, printTweets bool) {
 			msg.Ack(false)
 			continue
 		}
+
+		// Increment counters after successful parsing
+		TotalTweetsRead++
+		TotalTokensCounted += len(tweet.Tokens)
+
 		if printTweets {
 			// Log to file instead of stdout
 			slog.Debug("Parsed Tweet", "tweet", tweet)
@@ -1465,6 +1470,10 @@ func processCSVFile(filePath string, cfg *Config, printTweets bool) {
 			continue
 		}
 
+		// Increment counters after successful parsing
+		TotalTweetsRead++
+		TotalTokensCounted += len(tweet.Tokens)
+
 		if printTweets {
 			slog.Debug("Parsed Tweet", "tweet", tweet)
 		}
@@ -1631,6 +1640,175 @@ func processCSVFile(filePath string, cfg *Config, printTweets bool) {
 	}
 
 	slog.Info("Completed processing file", "file", filePath)
+}
+
+// processTweets() is the unified main processing pipeline
+// It processes tweets from any source via getNextTweet() abstraction
+func processTweets(cfg *Config, printTweets bool) {
+	for {
+		// Get next tweet using the abstraction
+		row, err := getNextTweet(cfg)
+		if err != nil {
+			if err == io.EOF {
+				slog.Info("Reached end of input")
+				break
+			}
+			slog.Warn("Failed to read tweet", "error", err)
+			continue
+		}
+
+		// Apply language filter if configured
+		if cfg.Analysis.LanguageFilter != "" && cfg.Analysis.LanguageFilter != "all" {
+			langSuffix := "," + strings.ToLower(cfg.Analysis.LanguageFilter)
+			if !strings.HasSuffix(strings.ToLower(strings.TrimSpace(row)), langSuffix) {
+				continue
+			}
+		}
+
+		// Parse tweet using existing function
+		tweet, err := parseCSVToTweet(row, cfg)
+		if err != nil {
+			slog.Warn("Failed to parse tweet", "error", err, "row", row)
+			continue
+		}
+		if tweet == nil {
+			// Tweet was filtered out (e.g., by language)
+			continue
+		}
+
+		// Increment counters after successful parsing
+		TotalTweetsRead++
+		TotalTokensCounted += len(tweet.Tokens)
+
+		if printTweets {
+			slog.Debug("Parsed Tweet", "tweet", tweet)
+		}
+
+		// Add tweet to global queue for clustering
+		globalTweetQueue.Enqueue(tweet)
+
+		// ========================================================================
+		// CRITICAL TOKEN PROCESSING LOGIC
+		// ========================================================================
+		// This section processes tokens and enqueues them to frequency class processors.
+		// It is critical that this logic remains unchanged and is not modified
+		// without careful consideration of the following constraints:
+		//
+		// 1. Token processing must happen for every tweet regardless of filter availability
+		// 2. Frequency class determination must use the current active filters
+		// 3. Tokens must be enqueued to the appropriate frequency class processors
+		// 4. The main thread must never wait for FCT (Frequency Class Thread) operations
+		// 5. Main thread never waits or coordinates with FCT
+		//
+		// This logic has been broken multiple times by adding filter availability
+		// checks before token processing. DO NOT add waiting or coordination here.
+		// ========================================================================
+
+		// Always add new tweet tokens to the inbound queue for FCT to build frequency filters
+		if len(tweet.Tokens) > 0 {
+			inboundTokenQueue.Enqueue(tweet.Tokens)
+
+			// Always populate 3PK mappings for all tokens (regardless of filter availability)
+			for _, token := range tweet.Tokens {
+				// Get token info (3PK and frequency class) in a single operation
+				threePK, _, exists := pipeline.GetTokenInfo(token)
+				if !exists {
+					// Token not found in current filters - skip it
+					continue
+				}
+
+				// Get frequency class for this token
+				freqClass := pipeline.WhatClass(token)
+
+				// Only enqueue to frequency class processors if the class is active
+				if !freqClassProcessor.IsClassActive(freqClass) {
+					// Skip this frequency class - don't enqueue tokens
+					continue
+				}
+				freqClassProcessor.EnqueueToFrequencyClass(freqClass, threePK)
+			}
+		}
+
+		// ========================================================================
+		// END CRITICAL TOKEN PROCESSING LOGIC
+		// ========================================================================
+
+		// Send termination signals to busy word processors every batch number of tweets
+		// Only send if frequency class filters are available
+		if TotalTweetsRead%cfg.BatchSize == 0 && TotalTweetsRead > 0 {
+			{
+				// Increment batch number FIRST, then create termination signal
+				freqClassProcessor.IncrementBatchNumber()
+				newBatchNum := freqClassProcessor.GetBatchNumber()
+
+				// Create termination signal with the incremented batch number
+				terminationSignal := tweets.ThreePartKey{
+					Part1:   -1,
+					Part2:   -1,
+					Part3:   -1,
+					BatchID: newBatchNum,
+				}
+
+				// Send termination signal to active frequency class processors only
+				activeCount := 0
+				for i := 0; i < freqClasses; i++ {
+					if freqClassProcessor.IsClassActive(i) {
+						freqClassProcessor.EnqueueToFrequencyClass(i, terminationSignal)
+						activeCount++
+					}
+				}
+
+				// Increment global batch count when signal 3PK is sent (this represents actual batches sent for processing)
+				globalBatchCount++
+
+			}
+		}
+
+		// Cleanup trigger - remove obsolete tokens from 3PK mappings
+		if cfg.Analysis.CleanupTriggerBatchSize > 0 && TotalTweetsRead%cfg.Analysis.CleanupTriggerBatchSize == 0 && TotalTweetsRead > 0 {
+			// Get queue size before processing
+			queueSize := inboundTokenQueue.Len()
+			if queueSize > 0 {
+				// Calculate dynamic threshold based on actual token obsolescence rate
+				// Leave at least window_batches worth of obsolete tokens on the queue
+				threshold := queueSize - (cfg.WindowBatches * 1000) // Conservative estimate
+				if threshold < 0 {
+					threshold = 0
+				}
+
+				// Process cleanup with dynamic threshold
+				cleanupCount := pipeline.ProcessCleanupQueue(threshold)
+				if cleanupCount > 0 {
+					slog.Debug("Cleaned up obsolete tokens", "count", cleanupCount, "queue_size", queueSize, "threshold", threshold)
+				}
+			}
+		}
+
+		// Throttling logic - sleep if busy word processor queues are getting too long
+		if cfg.Analysis.BWQueueMax > 0 {
+			maxAllowedQueueLength := int(float64(cfg.BatchSize) * cfg.Analysis.BWQueueMax)
+			queueStats := freqClassProcessor.GetQueueStats()
+			for i := 0; i < freqClasses; i++ {
+				if freqClassProcessor.IsClassActive(i) {
+					queueKey := fmt.Sprintf("freq_class_%d_queue_size", i)
+					queueLength := queueStats[queueKey]
+					if queueLength > maxAllowedQueueLength {
+						// Calculate sleep time distributed across all active processors
+						sleepMs := cfg.Analysis.BWThreadSlowDelay / freqClasses
+						if sleepMs < 1 {
+							sleepMs = 1
+						}
+						slog.Debug("Busy word processor queue too long, sleeping",
+							"class", i,
+							"queue_length", queueLength,
+							"max_allowed", maxAllowedQueueLength,
+							"sleep_ms", sleepMs)
+						time.Sleep(time.Duration(sleepMs) * time.Millisecond)
+					}
+				}
+			}
+		}
+	}
 }
 
 // createBatchFromClusters creates a batch from clustering results and adds it to the batch window
@@ -2003,8 +2181,7 @@ func parseCSVToTweet(row string, cfg *Config) (*tweets.Tweet, error) {
 	// Note: ThreePKs not stored in Tweet struct but still generated for other uses
 
 	// Step 3: Update global stats counters (token counting is now handled by FCT)
-	TotalTweetsRead++
-	TotalTokensCounted += len(tokens)
+	// Note: TotalTweetsRead and TotalTokensCounted are incremented by the calling function, not here
 
 	return tweet, nil
 }

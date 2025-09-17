@@ -491,9 +491,51 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 
 # TTD and Direction
 
-## Cursor says the rabbit v disk modes are implemented as the entire pipeline. 
-Find out if this is true. Each mode of input should be just a function call at the beginnin go the main loop. 
+## The rabbit v disk modes are implemented as the entire pipeline. 
 
+We copied the entire pipeline to add reading from disk. 
+
+The problem is we have two paths in the main pipeline where there should be one.
+
+The problem is, the logic for getting the next tweet is muddied up with the processing of the tweets.  We have now tried to fix this twice and toally destroyed to program each time.
+
+DO NOT TOUCH ANYTHING IN THE processFromFiles() or processCSVFIle() function without express permission. Not one single semicolon. Nothing.
+
+We are going to write the getNextTweet() method without touching anything else.
+
+The processFromFiles(cfg *Config, printTweets bool) is fundamentally and irrmediably broken. It iterates over a list of files and calls processCSVFile() on each one. 
+
+Do NOT CHANGE ANY OF THAT FOR ANY REASON WHATSOEVER. We are toing to write a new method to get tweets from scratch.  Do not touch a single line of existing code. Zero. None.
+
+- First step is to isolate getting tweets behind a single method called getNextTweet() which is called at the beginning of the pipeline.  
+
+  - getNextTweet takes no argument and returns just a line of CSV.
+  - It entirely hides the source of the CSV from the caller, which may be the main pipeline method or it may be a test routine.
+    - If config says get it from Rabbit, it accesses Rabbit. 
+    - If config says get it from disk, it gets it from disk. 
+    - It must be impossible for the main pipeline to know where the CSV comes from or be influenced in any way by the source of the CSV.
+    - It must be impossible for the getNextTweet() method to do anything other than obtain and return a single line of CSV.
+ - This method, getNextTweet() will be implemented and tested first without changing anything else. 
+
+ When getNextTweet() is called in file access mode, it's initialization is somewhat like what processFromFiles() does, which is get a list of files from the directory.
+
+ In file access mode, it is going to take each file in turn, opening it and returning a single CSV row each time it is called. Reading the actual file is now INCORRECTLY done in processCSVFIle().
+
+ The reading of the individual files should now be in the code that backs getNextTweet() This code should do evertthing that the first 26 lines of processCSVFile() does except that returns the row.  
+
+ The file access mode behind getNextTweet() not parse the row into a Tweet as is done in proceessCSVFile().
+ Neither does the Rabbit mode. The simply return the row to the caller.
+
+The caller,  which will normally be the main processing loop, will execute the function
+ parseCSVToTweet(row, cfg) REGARDLESS OF WHERE THE ROW CAME FROM.
+
+### Absolutely Critical
+ Note that ALL OF THE REST OF THE CODE THAT IS NOW IN processCSVFile() Will ultimately be in the main Processing loop and will be identical regardless of where the csv came from 
+
+
+## We will ultimately discard the RABBIT path and integrate this call only in what is currently called the Disk access path.  The rabbit path should be completely unnecessary after we do this because config will decide where getNextTweet() gets its tweets.
+
+Ok. Do you understand the part of the requirements about creating a new main pipeline function. It does everthing from the processCSVFIle() from 1471, 	tweet, err := parseCSVToTweet(row, cfg) except the last line that says slog.Info("Completed processing file", "file", filePath).  The new pipeline method knows nothing about files, remember?   So we should be able to make the new processTweets() method EXACTLY like processCSVFile() except that it doesn't need the arguments, and instead of the first part down to (but not including) parseCSVToTweet() it just has getNextTweet() along with any error checking it might need, etc.
 
 ### Batches with no tweets.
 
