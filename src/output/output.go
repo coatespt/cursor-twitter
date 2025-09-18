@@ -88,6 +88,7 @@ type BatchOutput struct {
 	BatchNumber          int64         `json:"batch_number"`
 	BatchTime            string        `json:"batch_time"`
 	Method               string        `json:"method"`
+	TotalTweets          int           `json:"total_tweets"`
 	TotalClusters        int           `json:"total_clusters"`
 	ClustersAboveMinSize int           `json:"clusters_above_min_size"`
 	Clusters             []interface{} `json:"clusters"`
@@ -609,3 +610,555 @@ func jaccard(tokensA, tokensB []string) float64 {
 	}
 	return float64(intersection) / float64(union)
 }
+func clusterSimilarity(cluster1, cluster2 map[string]interface{}, cfg *config.Config) float64 {
+	// Check if any similarity measures are enabled
+	if !cfg.Analysis.UseMedoidSimilarity && !cfg.Analysis.UseBusyWordSimilarity {
+		return 0.0
+	}
+
+	var medoidSimilarity, busyWordSimilarity float64
+	var medoidWeight, busyWordWeight float64
+
+	// Calculate medoid similarity if enabled
+	if cfg.Analysis.UseMedoidSimilarity {
+		medoid1, ok1 := cluster1["medoid_tweet_text"].(string)
+		medoid2, ok2 := cluster2["medoid_tweet_text"].(string)
+
+		if !ok1 || !ok2 {
+			return 0.0
+		}
+
+		medoidSimilarity = 1.0 - normalizedWordDistance(medoid1, medoid2)
+	}
+
+	// Calculate busy word similarity if enabled
+	if cfg.Analysis.UseBusyWordSimilarity {
+		busyWords1, ok1 := cluster1["busy_words"].([]string)
+		busyWords2, ok2 := cluster2["busy_words"].([]string)
+
+		if !ok1 || !ok2 {
+			return 0.0
+		}
+
+		busyWordSimilarity = jaccard(busyWords1, busyWords2)
+	}
+
+	// Determine weights based on which measures are enabled
+	if cfg.Analysis.UseMedoidSimilarity && cfg.Analysis.UseBusyWordSimilarity {
+		// Both enabled: use original 60%/40% split
+		medoidWeight = 0.6
+		busyWordWeight = 0.4
+	} else if cfg.Analysis.UseMedoidSimilarity {
+		// Only medoid enabled: 100% weight
+		medoidWeight = 1.0
+		busyWordWeight = 0.0
+	} else {
+		// Only busy word enabled: 100% weight
+		medoidWeight = 0.0
+		busyWordWeight = 1.0
+	}
+
+	combinedSimilarity := (medoidSimilarity * medoidWeight) + (busyWordSimilarity * busyWordWeight)
+	return combinedSimilarity
+}
+
+// performMetaClustering groups similar clusters into meta-clusters
+
+func PerformMetaClustering(clusters []map[string]interface{}, cfg *config.Config) []interface{} {
+	if !cfg.Analysis.EnableMetaClustering || len(clusters) < 2 {
+		// Return individual clusters if meta-clustering is disabled or not enough clusters
+		result := make([]interface{}, len(clusters))
+		for i, cluster := range clusters {
+			result[i] = ConvertToIndividualCluster(cluster)
+		}
+		return result
+	}
+
+	// Use union approach if enabled
+	if cfg.Analysis.UseUnionApproach {
+		return PerformUnionMetaClustering(clusters, cfg)
+	}
+
+	// Use traditional weighted approach
+	threshold := cfg.Analysis.MetaClusterSimilarityThreshold
+
+	// Track which clusters have been assigned to meta-clusters
+	assigned := make([]bool, len(clusters))
+	var metaClusters []*MetaCluster
+	var individualClusters []interface{}
+
+	// Try to group clusters into meta-clusters
+	for i := 0; i < len(clusters); i++ {
+		if assigned[i] {
+			continue
+		}
+
+		// Start a new meta-cluster with this cluster
+		totalTweets := 0
+		var subClusters []map[string]interface{}
+
+		// Find all clusters similar to this one
+		for j := i; j < len(clusters); j++ {
+			if assigned[j] {
+				continue
+			}
+
+			// Check if clusters i and j are similar
+			similarity := clusterSimilarity(clusters[i], clusters[j], cfg)
+			if similarity >= threshold {
+				assigned[j] = true
+				subClusters = append(subClusters, clusters[j])
+
+				// Get size of this sub-cluster
+				if size, ok := clusters[j]["size"].(int); ok {
+					totalTweets += size
+				}
+			}
+		}
+
+		// If we have multiple clusters, create a meta-cluster (regardless of total tweets)
+		if len(subClusters) > 1 {
+			metaCluster := createMetaCluster(subClusters, totalTweets)
+			metaClusters = append(metaClusters, metaCluster)
+		} else if len(subClusters) == 1 {
+			// Single cluster becomes individual cluster
+			individualClusters = append(individualClusters, ConvertToIndividualCluster(subClusters[0]))
+		}
+		// If subClusters is empty, do nothing (this can happen if no clusters meet similarity criteria)
+	}
+
+	// Add any remaining unassigned clusters as individual clusters
+	for i := 0; i < len(clusters); i++ {
+		if !assigned[i] {
+			individualClusters = append(individualClusters, ConvertToIndividualCluster(clusters[i]))
+		}
+	}
+
+	// Combine meta-clusters and individual clusters
+	result := make([]interface{}, 0, len(metaClusters)+len(individualClusters))
+
+	// Add meta-clusters first
+	for _, mc := range metaClusters {
+		result = append(result, mc)
+	}
+
+	// Add individual clusters
+	result = append(result, individualClusters...)
+
+	return result
+}
+
+// performUnionMetaClustering performs meta-clustering using union of medoid and busy word similarities
+func PerformUnionMetaClustering(clusters []map[string]interface{}, cfg *config.Config) []interface{} {
+	// Create adjacency matrices for both similarity measures
+	medoidAdjacency := make([][]bool, len(clusters))
+	busyWordAdjacency := make([][]bool, len(clusters))
+
+	for i := range clusters {
+		medoidAdjacency[i] = make([]bool, len(clusters))
+		busyWordAdjacency[i] = make([]bool, len(clusters))
+	}
+
+	// Calculate medoid similarities
+	if cfg.Analysis.UseMedoidSimilarity {
+		for i := 0; i < len(clusters); i++ {
+			for j := i; j < len(clusters); j++ {
+				medoidSim := calculateMedoidSimilarity(clusters[i], clusters[j])
+				medoidAdjacency[i][j] = medoidSim >= cfg.Analysis.MedoidSimilarityThreshold
+				medoidAdjacency[j][i] = medoidAdjacency[i][j] // Symmetric
+			}
+		}
+	}
+
+	// Calculate busy word similarities
+	if cfg.Analysis.UseBusyWordSimilarity {
+		for i := 0; i < len(clusters); i++ {
+			for j := i; j < len(clusters); j++ {
+				busyWordSim := calculateBusyWordSimilarity(clusters[i], clusters[j])
+				busyWordAdjacency[i][j] = busyWordSim >= cfg.Analysis.BusyWordSimilarityThreshold
+				busyWordAdjacency[j][i] = busyWordAdjacency[i][j] // Symmetric
+			}
+		}
+	}
+
+	// Create union adjacency matrix (OR operation)
+	unionAdjacency := make([][]bool, len(clusters))
+	for i := range clusters {
+		unionAdjacency[i] = make([]bool, len(clusters))
+		for j := range clusters {
+			unionAdjacency[i][j] = medoidAdjacency[i][j] || busyWordAdjacency[i][j]
+		}
+	}
+
+	// Find connected components in the union graph
+	assigned := make([]bool, len(clusters))
+	var metaClusters []*MetaCluster
+	var individualClusters []interface{}
+
+	for i := 0; i < len(clusters); i++ {
+		if assigned[i] {
+			continue
+		}
+
+		// Start a new meta-cluster with this cluster
+		totalTweets := 0
+		var subClusters []map[string]interface{}
+
+		// Find all clusters connected to this one (including itself)
+		queue := []int{i}
+		assigned[i] = true
+
+		for len(queue) > 0 {
+			current := queue[0]
+			queue = queue[1:]
+
+			subClusters = append(subClusters, clusters[current])
+			if size, ok := clusters[current]["size"].(int); ok {
+				totalTweets += size
+			}
+
+			// Find all unassigned clusters connected to current
+			for j := 0; j < len(clusters); j++ {
+				if !assigned[j] && unionAdjacency[current][j] {
+					assigned[j] = true
+					queue = append(queue, j)
+				}
+			}
+		}
+
+		// If we have multiple clusters, create a meta-cluster
+		if len(subClusters) > 1 {
+			metaCluster := createMetaCluster(subClusters, totalTweets)
+			metaClusters = append(metaClusters, metaCluster)
+		} else if len(subClusters) == 1 {
+			// Single cluster becomes individual cluster
+			individualClusters = append(individualClusters, ConvertToIndividualCluster(subClusters[0]))
+		}
+	}
+
+	// Add any remaining unassigned clusters as individual clusters
+	for i := 0; i < len(clusters); i++ {
+		if !assigned[i] {
+			individualClusters = append(individualClusters, ConvertToIndividualCluster(clusters[i]))
+		}
+	}
+
+	// Combine meta-clusters and individual clusters
+	result := make([]interface{}, 0, len(metaClusters)+len(individualClusters))
+
+	// Add meta-clusters first
+	for _, mc := range metaClusters {
+		result = append(result, mc)
+	}
+
+	// Add individual clusters
+	result = append(result, individualClusters...)
+
+	return result
+}
+
+func ConvertToIndividualCluster(cluster map[string]interface{}) *IndividualCluster {
+	clusterID := 0
+	if id, ok := cluster["cluster_id"].(int); ok {
+		clusterID = id
+	}
+
+	size := 0
+	if s, ok := cluster["size"].(int); ok {
+		size = s
+	}
+
+	medoid := ""
+	if medoidText, ok := cluster["medoid_tweet_text"].(string); ok {
+		medoid = medoidText
+	} else if medoidText, ok := cluster["medoid"].(string); ok {
+		medoid = medoidText
+	}
+
+	busyWords := []string{}
+	if words, ok := cluster["busy_words"].([]string); ok {
+		busyWords = words
+	}
+
+	tweetTexts := []string{}
+	if texts, ok := cluster["tweet_texts"].([]string); ok {
+		tweetTexts = texts
+	}
+
+	fallbackCluster := false
+	if fc, ok := cluster["fallback_cluster"].(bool); ok {
+		fallbackCluster = fc
+	}
+
+	clusteringNote := ""
+	if note, ok := cluster["clustering_note"].(string); ok {
+		clusteringNote = note
+	}
+
+	// Determine the type based on whether it's a fallback cluster
+	clusterType := "individual_cluster"
+	if fallbackCluster {
+		clusterType = "fallback_cluster"
+	}
+
+	return &IndividualCluster{
+		Type:            clusterType,
+		ClusterID:       clusterID,
+		Size:            size,
+		Medoid:          medoid,
+		BusyWords:       busyWords,
+		TweetTexts:      tweetTexts,
+		FallbackCluster: fallbackCluster,
+		ClusteringNote:  clusteringNote,
+	}
+}
+func createMetaCluster(subClusters []map[string]interface{}, totalTweets int) *MetaCluster {
+	if len(subClusters) == 0 {
+		return nil
+	}
+
+	// Use the largest cluster's medoid as the meta-cluster medoid
+	var largestCluster map[string]interface{}
+	maxSize := 0
+
+	for _, cluster := range subClusters {
+		if size, ok := cluster["size"].(int); ok && size > maxSize {
+			maxSize = size
+			largestCluster = cluster
+		}
+	}
+
+	// Get medoid from largest cluster
+	medoid := ""
+	if largestCluster != nil {
+		if medoidText, ok := largestCluster["medoid_tweet_text"].(string); ok {
+			medoid = medoidText
+		}
+	}
+
+	// Combine busy words from all sub-clusters
+	allBusyWords := make(map[string]bool)
+	for _, cluster := range subClusters {
+		if busyWords, ok := cluster["busy_words"].([]string); ok {
+			for _, word := range busyWords {
+				allBusyWords[word] = true
+			}
+		}
+	}
+
+	// Convert to slice and sort for consistency
+	busyWords := make([]string, 0, len(allBusyWords))
+	for word := range allBusyWords {
+		busyWords = append(busyWords, word)
+	}
+	sort.Strings(busyWords)
+
+	// Generate theme from medoid (simple approach - could be enhanced)
+	theme := generateThemeFromMedoid(medoid)
+
+	// Create meta-cluster ID
+	metaClusterID := fmt.Sprintf("meta_%s", generateIDFromTheme(theme))
+
+	return &MetaCluster{
+		Type:          "meta_cluster",
+		MetaClusterID: metaClusterID,
+		Theme:         theme,
+		TotalTweets:   totalTweets,
+		Medoid:        medoid,
+		BusyWords:     busyWords,
+		SubClusters:   subClusters,
+	}
+}
+func calculateMedoidSimilarity(cluster1, cluster2 map[string]interface{}) float64 {
+	medoid1, ok1 := cluster1["medoid_tweet_text"].(string)
+	medoid2, ok2 := cluster2["medoid_tweet_text"].(string)
+
+	if !ok1 || !ok2 {
+		return 0.0
+	}
+
+	return 1.0 - normalizedWordDistance(medoid1, medoid2)
+}
+
+// calculateBusyWordSimilarity calculates similarity between two clusters based on busy words only
+func calculateBusyWordSimilarity(cluster1, cluster2 map[string]interface{}) float64 {
+	busyWords1, ok1 := cluster1["busy_words"].([]string)
+	busyWords2, ok2 := cluster2["busy_words"].([]string)
+
+	if !ok1 || !ok2 {
+		return 0.0
+	}
+
+	return jaccard(busyWords1, busyWords2)
+}
+
+func generateThemeFromMedoid(medoid string) string {
+	if medoid == "" {
+		return "unknown_theme"
+	}
+
+	// Simple approach: extract key words and create a theme
+	// This could be enhanced with NLP or more sophisticated analysis
+	words := strings.Fields(strings.ToLower(medoid))
+
+	// Filter out common words
+	commonWords := map[string]bool{
+		"the": true, "a": true, "an": true, "and": true, "or": true, "but": true,
+		"in": true, "on": true, "at": true, "to": true, "for": true, "of": true,
+		"with": true, "by": true, "is": true, "are": true, "was": true, "were": true,
+		"i": true, "you": true, "he": true, "she": true, "it": true, "we": true, "they": true,
+		"this": true, "that": true, "these": true, "those": true,
+	}
+
+	var keyWords []string
+	for _, word := range words {
+		if len(word) > 2 && !commonWords[word] {
+			keyWords = append(keyWords, word)
+		}
+	}
+
+	if len(keyWords) == 0 {
+		return "general_discussion"
+	}
+
+	// Take first few key words for theme
+	if len(keyWords) > 3 {
+		keyWords = keyWords[:3]
+	}
+
+	return strings.Join(keyWords, "_")
+}
+func generateIDFromTheme(theme string) string {
+	// Simple hash-like function
+	hash := 0
+	for _, char := range theme {
+		hash = (hash*31 + int(char)) % 10000
+	}
+	return fmt.Sprintf("%s_%04d", theme, hash)
+}
+
+func ConvertBatchToHumanReadable(batchMap map[string]interface{}, cfg *config.Config) interface{} {
+	// Convert clusters to human-readable format
+	var totalClusters, clustersAboveMinSize int
+	var humanReadableClusters []interface{}
+	if clusters, ok := batchMap["clusters"].([]map[string]interface{}); ok {
+		totalClusters = len(clusters)
+		var filteredClusters []map[string]interface{}
+		// First, apply user deduplication to all clusters if enabled
+		// Deduplication is now handled in convertIndividualClusterToHumanReadable
+
+		// Now filter by size and repetitive patterns
+		for _, cluster := range clusters {
+			if size, ok := cluster["size"].(int); ok {
+				if size >= cfg.Analysis.MinClusterSize {
+					// Apply repetitive pattern filtering
+					if !ShouldFilterRepetitiveCluster(cluster, cfg) {
+						filteredClusters = append(filteredClusters, cluster)
+					}
+				}
+			}
+		}
+		// Convert all clusters to human-readable format first (for tweet text extraction)
+		var humanReadableFilteredClusters []map[string]interface{}
+		for _, cluster := range filteredClusters {
+			humanReadableCluster := ConvertIndividualClusterToHumanReadable(cluster, cfg)
+			if humanReadableCluster != nil {
+				if clusterMap, ok := humanReadableCluster.(map[string]interface{}); ok {
+					humanReadableFilteredClusters = append(humanReadableFilteredClusters, clusterMap)
+				}
+			}
+		}
+
+		// Apply meta-clustering if enabled
+		if cfg.Analysis.EnableMetaClustering {
+			humanReadableClusters = PerformMetaClustering(humanReadableFilteredClusters, cfg)
+		} else {
+			// Use the already-converted clusters
+			for _, cluster := range humanReadableFilteredClusters {
+				humanReadableClusters = append(humanReadableClusters, cluster)
+			}
+		}
+
+		// Sort clusters by size (works for both individual and meta clusters)
+		sort.Slice(humanReadableClusters, func(i, j int) bool {
+			var sizeI, sizeJ int
+
+			// Handle both individual clusters and meta-clusters
+			if metaCluster, ok := humanReadableClusters[i].(*MetaCluster); ok {
+				sizeI = metaCluster.TotalTweets
+			} else if individualCluster, ok := humanReadableClusters[i].(*IndividualCluster); ok {
+				sizeI = individualCluster.Size
+			} else if clusterMap, ok := humanReadableClusters[i].(map[string]interface{}); ok {
+				if size, ok := clusterMap["size"].(int); ok {
+					sizeI = size
+				}
+			}
+
+			if metaCluster, ok := humanReadableClusters[j].(*MetaCluster); ok {
+				sizeJ = metaCluster.TotalTweets
+			} else if individualCluster, ok := humanReadableClusters[j].(*IndividualCluster); ok {
+				sizeJ = individualCluster.Size
+			} else if clusterMap, ok := humanReadableClusters[j].(map[string]interface{}); ok {
+				if size, ok := clusterMap["size"].(int); ok {
+					sizeJ = size
+				}
+			}
+
+			if cfg.Analysis.ClusterSortDescending {
+				return sizeI > sizeJ // Descending order (biggest first)
+			} else {
+				return sizeI < sizeJ // Ascending order (biggest last)
+			}
+		})
+
+		// Reassign cluster IDs to avoid gaps after filtering/deduplication and sorting
+		for i, cluster := range humanReadableClusters {
+			if clusterMap, ok := cluster.(map[string]interface{}); ok {
+				clusterMap["cluster_id"] = i + 1
+			} else if individualCluster, ok := cluster.(*IndividualCluster); ok {
+				individualCluster.ClusterID = i + 1
+			} else if metaCluster, ok := cluster.(*MetaCluster); ok {
+				metaCluster.MetaClusterID = fmt.Sprintf("meta_%d", i+1)
+			}
+		}
+
+		clustersAboveMinSize = len(humanReadableClusters)
+	}
+
+	// Always update totalClusters to match actual output
+	totalClusters = len(humanReadableClusters)
+
+	// Create batch output with guaranteed field ordering
+	batchOutput := &BatchOutput{
+		TotalClusters:        totalClusters,
+		ClustersAboveMinSize: clustersAboveMinSize,
+		Clusters:             humanReadableClusters,
+	}
+
+	// Set optional fields if they exist
+	if v, ok := batchMap["batch_number"]; ok {
+		if batchNum, ok := v.(int64); ok {
+			batchOutput.BatchNumber = batchNum
+		}
+	}
+	if v, ok := batchMap["batch_time"]; ok {
+		if batchTime, ok := v.(string); ok {
+			batchOutput.BatchTime = batchTime
+		}
+	}
+	if v, ok := batchMap["method"]; ok {
+		if method, ok := v.(string); ok {
+			batchOutput.Method = method
+		}
+	}
+	if v, ok := batchMap["total_tweets"]; ok {
+		if totalTweets, ok := v.(int); ok {
+			batchOutput.TotalTweets = totalTweets
+		}
+	}
+
+	return batchOutput
+}
+
+// convertIndividualClusterToHumanReadable converts individual cluster data to human-readable format
+// Returns nil if the cluster should be suppressed (not enough unique tweets after deduplication)
