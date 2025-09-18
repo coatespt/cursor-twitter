@@ -3,13 +3,22 @@ package output
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"cursor-twitter/src/config"
 	"cursor-twitter/src/pipeline"
 	"cursor-twitter/src/tweets"
+)
+
+// Global variables for batch window management
+var (
+	batchWindow      []*Batch
+	batchWindowMutex sync.RWMutex
 )
 
 // MetaCluster represents a group of similar clusters
@@ -1162,3 +1171,399 @@ func ConvertBatchToHumanReadable(batchMap map[string]interface{}, cfg *config.Co
 
 // convertIndividualClusterToHumanReadable converts individual cluster data to human-readable format
 // Returns nil if the cluster should be suppressed (not enough unique tweets after deduplication)
+func RunGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[string]bool, cfg *config.Config, batchNumber int64, classResults map[int][]string) {
+	// Perform optimized graph clustering
+	clusterer := pipeline.NewOptimizedTweetClusterer(
+		cfg.Analysis.MinJaccardSimilarity,
+		cfg.Analysis.MaxTweetsToCluster,
+		cfg.Analysis.JaccardUseBusyWordsOnly,
+	)
+
+	result := clusterer.ClusterTweets(tweetsWithBusyWords, allBusyWords, cfg.Analysis.MinClusterSize)
+
+	// Create a batch from the clusters and add it to the window
+	batch := &Batch{
+		BatchID:  batchNumber,
+		Tweets:   tweetsWithBusyWords,
+		Clusters: result.Clusters,
+	}
+	addBatchToWindow(batch, cfg)
+
+	// Get the current batch window for persistence tracking
+	currentBatchWindow := getBatchWindow()
+
+	// Get timestamp for the batch
+	var batchTimeStr string
+	if len(tweetsWithBusyWords) > 0 {
+		firstTweet := tweetsWithBusyWords[0]
+		batchTimeStr = time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05 UTC")
+	} else {
+		batchTimeStr = time.Now().UTC().Format("2006-01-02 15:04:05 UTC")
+	}
+
+	// Collect all clusters for this batch
+	var batchClusters []map[string]interface{}
+
+	for i, cluster := range result.Clusters {
+		// Get busy words for this cluster
+		clusterBusyWords := make(map[string]bool)
+		for _, tweet := range cluster.Tweets {
+			for _, token := range tweet.Tokens {
+				if allBusyWords[token] {
+					clusterBusyWords[token] = true
+				}
+			}
+		}
+
+		// Convert to sorted slice for display
+		var busyWordsList []string
+		for word := range clusterBusyWords {
+			busyWordsList = append(busyWordsList, word)
+		}
+		sort.Strings(busyWordsList)
+
+		// Create frequency class mapping for busy words
+		busyWordClasses := make(map[string]int)
+		for word := range clusterBusyWords {
+			// Find which frequency class this word belongs to
+			for classIndex, words := range classResults {
+				for _, classWord := range words {
+					if classWord == word {
+						busyWordClasses[word] = classIndex
+						break
+					}
+				}
+			}
+		}
+
+		// Find most typical tweet (medoid)
+		_, medoidIdx, _, _ := findMostTypicalTweets(cluster.Tweets, cfg.Analysis.MinJaccardSimilarity)
+		var mostTypicalTweet *tweets.Tweet
+		if len(cluster.Tweets) > 1 {
+			mostTypicalTweet = cluster.Tweets[medoidIdx]
+		} else {
+			mostTypicalTweet = cluster.Tweets[0]
+		}
+
+		// Get persistence information
+		persistenceInfo := GetContinuationInfo(cluster, currentBatchWindow, batchNumber, cfg)
+
+		// Create cluster data for output
+		// Find the earliest tweet chronologically (not just the first in DFS order)
+		firstTweet := cluster.Tweets[0]
+		earliestTime := firstTweet.Unix
+		latestTime := firstTweet.Unix
+		for _, tweet := range cluster.Tweets {
+			if tweet.Unix < earliestTime {
+				earliestTime = tweet.Unix
+				firstTweet = tweet
+			}
+			if tweet.Unix > latestTime {
+				latestTime = tweet.Unix
+			}
+		}
+		timeStr := firstTweet.CreatedAt
+
+		// Debug: Log the time span of this cluster
+		timeSpan := latestTime - earliestTime
+		if timeSpan > 300 { // More than 5 minutes
+			slog.Warn("Large time span in cluster",
+				"cluster_id", i+1,
+				"time_span_seconds", timeSpan,
+				"earliest", time.Unix(earliestTime, 0).Format("2006-01-02 15:04:05 UTC"),
+				"latest", time.Unix(latestTime, 0).Format("2006-01-02 15:04:05 UTC"),
+				"cluster_size", len(cluster.Tweets))
+		}
+
+		clusterData := map[string]interface{}{
+			"cluster_id":         i + 1,
+			"size":               len(cluster.Tweets),
+			"tweets":             cluster.Tweets,
+			"busy_words":         busyWordsList,
+			"busy_word_classes":  busyWordClasses,
+			"first_tweet_time":   timeStr,
+			"most_typical_tweet": mostTypicalTweet,
+			"persistence_info":   persistenceInfo,
+		}
+		batchClusters = append(batchClusters, clusterData)
+	}
+
+	// Check if we need to create a fallback cluster
+	// First count clusters above minimum size
+	clustersAboveMinSize := 0
+	for _, cluster := range batchClusters {
+		if size, ok := cluster["size"].(int); ok {
+			if size >= cfg.Analysis.MinClusterSize {
+				clustersAboveMinSize++
+			}
+		}
+	}
+
+	// Fallback cluster check - diagnostic logging removed for cleaner output
+
+	if clustersAboveMinSize == 0 && len(tweetsWithBusyWords) > 0 && cfg.Analysis.CreateFallbackClusters {
+		// Create a fallback cluster with all tweets
+		// Ensure the fallback cluster meets minimum size requirement
+		fallbackSize := len(tweetsWithBusyWords)
+		if fallbackSize < cfg.Analysis.MinClusterSize {
+			fallbackSize = cfg.Analysis.MinClusterSize // Force it to meet minimum
+		}
+
+		// Convert allBusyWords from map to sorted slice for consistency with normal clusters
+		var fallbackBusyWords []string
+		for word := range allBusyWords {
+			fallbackBusyWords = append(fallbackBusyWords, word)
+		}
+		sort.Strings(fallbackBusyWords)
+
+		fallbackCluster := map[string]interface{}{
+			"type":             "fallback_cluster",
+			"cluster_id":       0,
+			"size":             fallbackSize,
+			"medoid":           tweetsWithBusyWords[0].Text,
+			"busy_words":       fallbackBusyWords,
+			"tweet_texts":      make([]string, len(tweetsWithBusyWords)),
+			"fallback_cluster": true,
+			"clustering_note":  "No clusters found - created fallback cluster",
+		}
+
+		// Add all tweet texts
+		for i, tweet := range tweetsWithBusyWords {
+			fallbackCluster["tweet_texts"].([]string)[i] = tweet.Text
+		}
+
+		batchClusters = append(batchClusters, fallbackCluster)
+		slog.Info("Fallback cluster created", "totalClusters", len(batchClusters))
+	}
+
+	// Create batch-level data structure
+	totalClusters := len(batchClusters)
+
+	// Recalculate clusters above min size after fallback cluster might have been added
+	clustersAboveMinSize = 0
+	for i, cluster := range batchClusters {
+		if size, ok := cluster["size"].(int); ok {
+			// Cluster size check - diagnostic logging removed for cleaner output
+			if size >= cfg.Analysis.MinClusterSize {
+				clustersAboveMinSize++
+			}
+		} else {
+			slog.Warn("Cluster size not found or not int", "clusterIndex", i, "cluster", cluster)
+		}
+	}
+
+	// ANALYTICS: About to output final batch data
+	// Analytics about to output final batch data - diagnostic logging removed for cleaner output
+
+	// Final batch data - diagnostic logging removed for cleaner output
+
+	batchData := map[string]interface{}{
+		"batch_number":            batchNumber,
+		"batch_time":              batchTimeStr,
+		"method":                  "graph",
+		"total_clusters":          totalClusters,
+		"clusters_above_min_size": clustersAboveMinSize,
+		"total_tweets":            len(tweetsWithBusyWords),
+		"clusters":                batchClusters,
+	}
+
+	OutputClusterWithConfig(batchData, cfg)
+}
+
+// printBatchSummary prints a summary of all busy words found in a batch
+func CreateBatchFromClusters(clusters []pipeline.TweetCluster, batchNumber int, cfg *config.Config) {
+	// Collect all tweets that were actually clustered
+	var clusteredTweets []*tweets.Tweet
+	for _, cluster := range clusters {
+		// Assign batch ID to each tweet in the cluster
+		for _, tweet := range cluster.Tweets {
+			tweet.BatchID = batchNumber
+		}
+		clusteredTweets = append(clusteredTweets, cluster.Tweets...)
+	}
+
+	// TODO: Batch creation will be handled by analysis thread
+
+	// TODO: Batch window management will be handled by analysis thread
+}
+
+// getContinuationInfo returns continuation information for a cluster
+func GetContinuationInfo(currentCluster pipeline.TweetCluster, batchWindow []*Batch, currentBatchID int64, cfg *config.Config) string {
+	var continuationBatches []int64
+
+	// Check each previous batch in the window
+	for _, pastBatch := range batchWindow {
+		if pastBatch.BatchID >= currentBatchID {
+			continue // Skip current and future batches
+		}
+
+		// Check if any cluster in the past batch is similar to the current cluster
+		for _, pastCluster := range pastBatch.Clusters {
+			if ClustersAreRelated(currentCluster, pastCluster, cfg) {
+				continuationBatches = append(continuationBatches, pastBatch.BatchID)
+				break // Found a continuation, no need to check other clusters in this batch
+			}
+		}
+	}
+
+	// Sort and deduplicate continuation batches
+	if len(continuationBatches) > 0 {
+		continuationBatches = deduplicateAndSort(continuationBatches)
+		return fmt.Sprintf(" (continues from batches %v, current: %d)", continuationBatches, currentBatchID)
+	}
+
+	return " (new cluster)"
+}
+
+// clustersAreRelated checks if two clusters are related (similar busy words and tweets)
+func ClustersAreRelated(cluster1, cluster2 pipeline.TweetCluster, cfg *config.Config) bool {
+	// Default to busy_words method if not specified
+	method := cfg.Analysis.PersistenceClusteringMethod
+	if method == "" {
+		method = "busy_words"
+	}
+
+	switch method {
+	case "full_text":
+		return ClustersAreRelatedByFullText(cluster1, cluster2, cfg)
+	case "busy_words":
+		fallthrough
+	default:
+		return ClustersAreRelatedByBusyWords(cluster1, cluster2, cfg)
+	}
+}
+
+func ClustersAreRelatedByBusyWords(cluster1, cluster2 pipeline.TweetCluster, cfg *config.Config) bool {
+	// Check if they share busy words
+	sharedWords := 0
+	for _, word1 := range cluster1.BusyWords {
+		for _, word2 := range cluster2.BusyWords {
+			if word1 == word2 {
+				sharedWords++
+				break
+			}
+		}
+	}
+
+	// Use configurable threshold for relationship strength
+	minSharedWords := cfg.Analysis.MinSharedBusyWordsForPersistence
+	if len(cluster1.BusyWords) < 3 || len(cluster2.BusyWords) < 3 {
+		// Lower threshold for small clusters (use 1 if config value is higher)
+		if minSharedWords > 1 {
+			minSharedWords = 1
+		}
+	}
+
+	return sharedWords >= minSharedWords
+}
+
+func ClustersAreRelatedByFullText(cluster1, cluster2 pipeline.TweetCluster, cfg *config.Config) bool {
+	// Get all unique token sets from both clusters
+	tokenSets1 := make(map[string]bool)
+	tokenSets2 := make(map[string]bool)
+
+	for _, tweet := range cluster1.Tweets {
+		// Use the already normalized and filtered tokens
+		tokenKey := strings.Join(tweet.Tokens, " ")
+		tokenSets1[tokenKey] = true
+	}
+
+	for _, tweet := range cluster2.Tweets {
+		// Use the already normalized and filtered tokens
+		tokenKey := strings.Join(tweet.Tokens, " ")
+		tokenSets2[tokenKey] = true
+	}
+
+	// Count shared token sets (equivalent to shared normalized texts)
+	sharedTokenSets := 0
+	for tokenSet := range tokenSets1 {
+		if tokenSets2[tokenSet] {
+			sharedTokenSets++
+		}
+	}
+
+	// Consider clusters related if they share at least one token set
+	// This is equivalent to the previous text comparison but much faster
+	return sharedTokenSets >= 1
+}
+
+// deduplicateAndSort removes duplicates and sorts a slice of integers
+func deduplicateAndSort(slice []int64) []int64 {
+	seen := make(map[int64]bool)
+	var result []int64
+
+	for _, item := range slice {
+		if !seen[item] {
+			seen[item] = true
+			result = append(result, item)
+		}
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i] < result[j]
+	})
+	return result
+}
+
+// processBatchPersistence analyzes the batch window for persistent clusters
+func ProcessBatchPersistence(batchWindow []*Batch, cfg *config.Config) {
+	// TODO: This function should be moved to the analysis thread
+	// The analysis thread should handle persistence tracking
+	return
+
+}
+
+// setupLogger creates the log directory if needed and returns a slog.Logger that writes to a file.
+func addBatchToWindow(batch *Batch, cfg *config.Config) {
+	batchWindowMutex.Lock()
+	defer batchWindowMutex.Unlock()
+
+	// Add the new batch
+	batchWindow = append(batchWindow, batch)
+
+	// Maintain window size by removing old batches
+	maxBatches := cfg.Analysis.WindowBatchesPersistence
+	if maxBatches <= 0 {
+		maxBatches = 6 // Default value
+	}
+
+	// Remove oldest batches if we exceed the window size
+	for len(batchWindow) > maxBatches {
+		batchWindow = batchWindow[1:]
+	}
+}
+
+// getBatchWindow returns a copy of the current batch window
+func getBatchWindow() []*Batch {
+	batchWindowMutex.RLock()
+	defer batchWindowMutex.RUnlock()
+
+	// Return a copy to avoid race conditions
+	return append([]*Batch(nil), batchWindow...)
+}
+
+func OutputClusterWithConfig(cluster interface{}, cfg *config.Config) {
+	// Default to verbose mode if no config provided
+	outputMode := "verbose"
+	if cfg != nil {
+		outputMode = cfg.Analysis.OutputMode
+	}
+
+	// Process cluster data based on output mode
+	var processedData interface{}
+
+	if outputMode == "human" {
+		// Convert to human-readable format
+		processedData = ConvertToHumanReadable(cluster, cfg)
+	} else {
+		// Use original data for verbose mode
+		processedData = cluster
+	}
+
+	data := OutputData{
+		Type: OUTPUT_CLUSTER,
+		Data: processedData,
+	}
+	jsonData, _ := json.MarshalIndent(data, "", "  ")
+	fmt.Println(string(jsonData))
+}

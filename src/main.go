@@ -424,7 +424,7 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 	}
 
 	// Only graph clustering is supported now
-	runGraphClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber, classResults)
+	output.RunGraphClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber, classResults)
 
 	// Clustering cycle timing - diagnostic logging removed for cleaner output
 
