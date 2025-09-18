@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/streadway/amqp"
+
+	"cursor-twitter/src/config"
 )
 
 // TweetInputSource represents the different input sources for tweets
@@ -26,7 +28,7 @@ type RabbitMQInputSource struct {
 }
 
 // NewRabbitMQInputSource creates a new RabbitMQ input source
-func NewRabbitMQInputSource(cfg *Config) (*RabbitMQInputSource, error) {
+func NewRabbitMQInputSource(cfg *config.Config) (*RabbitMQInputSource, error) {
 	conn, ch, q, err := setupRabbitMQ(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up RabbitMQ: %w", err)
@@ -79,7 +81,7 @@ type FileInputSource struct {
 }
 
 // NewFileInputSource creates a new file input source
-func NewFileInputSource(cfg *Config) (*FileInputSource, error) {
+func NewFileInputSource(cfg *config.Config) (*FileInputSource, error) {
 	// Get list of CSV files in the directory
 	files, err := filepath.Glob(filepath.Join(cfg.FileSrcDir, "*.csv"))
 	if err != nil {
@@ -169,7 +171,7 @@ func (f *FileInputSource) Close() error {
 }
 
 // CreateTweetInputSource creates the appropriate input source based on config
-func CreateTweetInputSource(cfg *Config) (TweetInputSource, error) {
+func CreateTweetInputSource(cfg *config.Config) (TweetInputSource, error) {
 	switch cfg.Mode {
 	case "mqj":
 		return NewRabbitMQInputSource(cfg)
@@ -185,7 +187,7 @@ var inputSource TweetInputSource
 
 // getNextTweet() returns the next CSV tweet row
 // Initializes input source on first call if needed
-func getNextTweet(cfg *Config) (string, error) {
+func getNextTweet(cfg *config.Config) (string, error) {
 	if inputSource == nil {
 		var err error
 		inputSource, err = CreateTweetInputSource(cfg)

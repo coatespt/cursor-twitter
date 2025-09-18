@@ -1,13 +1,147 @@
-package main
+package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// Config struct for YAML config file (add log_dir)
+type Config struct {
+	Mode          string `yaml:"mode"`
+	InputDir      string `yaml:"input"`
+	FileSrcDir    string `yaml:"file_src_dir"` // Source directory for file input mode
+	MQHost        string `yaml:"mq_host"`
+	MQPort        int    `yaml:"mq_port"`
+	MQQueue       string `yaml:"mq_queue"`
+	WindowSize    int    `yaml:"window"`
+	BatchSize     int    `yaml:"batch"`
+	WindowBatches int    `yaml:"window_batches"` // Number of batches to keep in tweet window
+
+	LogDir               string    `yaml:"log_dir"`
+	LogLevel             string    `yaml:"log_level"` // DEBUG, INFO, WARN, ERROR
+	FreqClasses          int       `yaml:"freq_classes"`
+	BWArrayLen           int       `yaml:"bw_array_len"`
+	ZScores              []float64 `yaml:"z_scores"`
+	MinTokenLen          int       `yaml:"min_token_len"`
+	SkipFrequencyClasses []int     `yaml:"skip_frequency_classes"`
+	TokenPersistFiles    int       `yaml:"token_persist_files"`
+	RebuildEveryFiles    int       `yaml:"rebuild_every_files"`
+	MinCountThreshold    int       `yaml:"min_count_threshold"` // Minimum count for frequency class inclusion
+	BusywordClasses      []int     `yaml:"busyword_classes"`    // Frequency classes to use for clustering
+
+	Filter struct {
+		Enabled    bool   `yaml:"enabled"`
+		FilterDir  string `yaml:"filter_dir"`
+		FilterFile string `yaml:"filter_file"` // Keep for backward compatibility
+	} `yaml:"filter"`
+
+	TokenFilters struct {
+		Enabled                         bool    `yaml:"enabled"`
+		MaxLength                       int     `yaml:"max_length"`
+		MinCharacterDiversity           float64 `yaml:"min_character_diversity"`
+		MinCharacterDiversityLowerLimit int     `yaml:"min_character_diversity_lower_limit"`
+		MaxCharacterRepetition          float64 `yaml:"max_character_repetition"`
+		MaxCaseAlternations             float64 `yaml:"max_case_alternations"`
+		MaxNumberLetterMix              float64 `yaml:"max_number_letter_mix"`
+		RejectHashtags                  bool    `yaml:"reject_hashtags"`
+		RejectAtMentions                bool    `yaml:"reject_at_mentions"`
+		RejectUrls                      bool    `yaml:"reject_urls"`
+		RejectAllCapsLong               bool    `yaml:"reject_all_caps_long"`
+		AllCapsLowerLimit               int     `yaml:"all_caps_lower_limit"`
+		RemoveUrls                      bool    `yaml:"remove_urls"`
+		ApostropheHandling              string  `yaml:"apostrophe_handling"`
+	} `yaml:"token_filters"`
+
+	Persistence struct {
+		StateDir string `yaml:"state_dir"`
+	} `yaml:"persistence"`
+
+	Sender struct {
+		StatusFile string `yaml:"status_file"`
+	} `yaml:"sender"`
+
+	Analysis struct {
+		ClusteringWindowBatches      int     `yaml:"clustering_window_batches"`      // Number of batches of recent tweets to use for clustering
+		MinBusyWordsPerTweet         int     `yaml:"min_busy_words_per_tweet"`       // Minimum number of busy words a tweet must contain to be included in clustering
+		MinJaccardSimilarity         float64 `yaml:"min_jaccard_similarity"`         // Minimum Jaccard similarity threshold for creating edges between tweets
+		JaccardUseBusyWordsOnly      bool    `yaml:"jaccard_use_busy_words_only"`    // If true, Jaccard similarity uses only busy words; if false, uses all tokens
+		MaxTweetsToCluster           int     `yaml:"max_tweets_to_cluster"`          // Maximum number of tweets to cluster (0 = no limit)
+		SuppressDuplicates           bool    `yaml:"suppress_duplicates"`            // Suppress duplicate tweets in visualization
+		DuplicateSimilarityThreshold float64 `yaml:"duplicate_similarity_threshold"` // Similarity threshold for duplicates
+		LanguageFilter               string  `yaml:"language_filter"`                // Language filter: "en", "es", "all", etc.
+		ClusteringMethod             string  `yaml:"clustering_method"`              // Method for clustering: "graph" (only valid option)
+		OutputMode                   string  `yaml:"output_mode"`                    // Output mode: "verbose" or "human"
+		MinClusterSize               int     `yaml:"min_cluster_size"`               // Minimum number of tweets in a cluster for it to be included in the output
+		CreateFallbackClusters       bool    `yaml:"create_fallback_clusters"`       // Create fallback clusters when no clusters found but tweets exist
+		// Persistence window configuration for tracking clusters across multiple batches
+		WindowBatchesPersistence      int `yaml:"window_batches_persistence"`       // M
+		WindowBatchesPersistenceCheck int `yaml:"window_batches_persistence_check"` // K
+		// Minimum number of shared busy words required for clusters to be considered related (for persistence tracking)
+		MinSharedBusyWordsForPersistence int `yaml:"min_shared_busywords_for_persistence"` // Relationship strength threshold
+		// Method for determining cluster relationships across batches: "busy_words" or "full_text"
+		PersistenceClusteringMethod    string           `yaml:"persistence_clustering_method"` // Cross-batch relationship detection method
+		DropExcessiveQuestions         bool             `yaml:"drop_excessive_questions"`      // Drop tweets with excessive question marks
+		MaxHumanTweetsDisplayed        int              `yaml:"max_human_tweets_displayed"`    // Maximum number of tweets to display in human-readable format
+		FilterRepetitivePatterns       bool             `yaml:"filter_repetitive_patterns"`    // Filter out clusters with repetitive meme-like patterns
+		BannedPhrasesDir               string           `yaml:"banned_phrases_dir"`            // Path to directory containing banned phrase files
+		BannedPhrasesFile              string           `yaml:"banned_phrases_file"`           // Path to file containing banned phrases (backward compatibility)
+		RepetitivePatternThreshold     float64          `yaml:"repetitive_pattern_threshold"`  // Threshold for filtering repetitive clusters
+		CompiledBannedPatterns         []*regexp.Regexp // Compiled regex patterns (not in yaml)
+		DeduplicateByUser              bool             `yaml:"deduplicate_by_user"`               // Deduplicate tweets by user within clusters
+		UseLevenshteinDeduplication    bool             `yaml:"use_levenshtein_deduplication"`     // Use distance-based deduplication
+		DistanceMethod                 string           `yaml:"distance_method"`                   // "character" or "word" distance method
+		NearDuplicateThreshold         float64          `yaml:"near_duplicate_threshold"`          // Normalized distance threshold
+		CleanupTriggerBatchSize        int              `yaml:"cleanup_trigger_batch_size"`        // Trigger cleanup every N tweets
+		CleanupMaxItems                int              `yaml:"cleanup_max_items"`                 // Process up to M items per cleanup cycle
+		ClusterSortDescending          bool             `yaml:"cluster_sort_descending"`           // Sort clusters by size: true=descending (biggest first), false=ascending (biggest last)
+		SuppressIndividualTweets       bool             `yaml:"suppress_individual_tweets"`        // Suppress individual tweets in output, keep only metadata and medoid
+		EnableMetaClustering           bool             `yaml:"enable_meta_clustering"`            // Enable clustering of clusters into meta-clusters
+		MetaClusterSimilarityThreshold float64          `yaml:"meta_cluster_similarity_threshold"` // Similarity threshold for merging clusters (0.3-0.6)
+		MetaClusterMinSize             int              `yaml:"meta_cluster_min_size"`             // Minimum total tweets for a meta-cluster
+		UseMedoidSimilarity            bool             `yaml:"use_medoid_similarity"`             // Enable medoid similarity in meta-clustering
+		UseBusyWordSimilarity          bool             `yaml:"use_busy_word_similarity"`          // Enable busy word similarity in meta-clustering
+		UseUnionApproach               bool             `yaml:"use_union_approach"`                // Use union of medoid and busy word meta-clustering
+		MedoidSimilarityThreshold      float64          `yaml:"medoid_similarity_threshold"`       // Separate threshold for medoid similarity
+		BusyWordSimilarityThreshold    float64          `yaml:"busy_word_similarity_threshold"`    // Separate threshold for busy word similarity
+		BWQueueMax                     float64          `yaml:"bw_queue_max"`                      // Multiplier for batch size to trigger busyword queue warnings
+		BWThreadSlowDelay              int              `yaml:"bw_thread_slow_delay"`              // Total sleep time in milliseconds when busyword queues are backlogged
+	} `yaml:"analysis"`
+}
+
+// LoadConfig loads the YAML config file into a Config struct.
+func LoadConfig(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// LoadAndValidateConfig loads and validates configuration
+func LoadAndValidateConfig(path string) (*Config, error) {
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.LogDir == "" {
+		return nil, fmt.Errorf("ERROR: 'log_dir' must be defined in the config file and cannot be empty.")
+	}
+
+	// Note: Banned phrases loading moved to after path resolution
+	// to handle relative paths correctly
+
+	return cfg, nil
+}
 
 // resolvePathRelativeToConfig takes a path and resolves it relative to the project root
 // If the path is already absolute, it returns it unchanged
@@ -88,8 +222,8 @@ func resolvePathsInConfig(configPath string, cfg *Config) error {
 	return nil
 }
 
-// loadAndValidateConfigWithPathResolution loads config and resolves all relative paths
-func loadAndValidateConfigWithPathResolution(configPath string) (*Config, error) {
+// LoadAndValidateConfigWithPathResolution loads config and resolves all relative paths
+func LoadAndValidateConfigWithPathResolution(configPath string) (*Config, error) {
 	// Convert config path to absolute path
 	absConfigPath, err := filepath.Abs(configPath)
 	if err != nil {
@@ -97,7 +231,7 @@ func loadAndValidateConfigWithPathResolution(configPath string) (*Config, error)
 	}
 
 	// Load the config first
-	cfg, err := loadAndValidateConfig(configPath)
+	cfg, err := LoadAndValidateConfig(configPath)
 	if err != nil {
 		return nil, err
 	}
@@ -110,10 +244,10 @@ func loadAndValidateConfigWithPathResolution(configPath string) (*Config, error)
 	return cfg, nil
 }
 
-// loadConfigWithOverride loads a base config and optionally applies an override config
-func loadConfigWithOverride(baseConfigPath, overrideConfigPath string) (*Config, error) {
+// LoadConfigWithOverride loads a base config and optionally applies an override config
+func LoadConfigWithOverride(baseConfigPath, overrideConfigPath string) (*Config, error) {
 	// Load the base config
-	cfg, err := loadAndValidateConfigWithPathResolution(baseConfigPath)
+	cfg, err := LoadAndValidateConfigWithPathResolution(baseConfigPath)
 	if err != nil {
 		return nil, err
 	}
@@ -257,9 +391,9 @@ func applyOverrideFromYAML(cfg *Config, overrideConfigPath string) error {
 	return nil
 }
 
-// loadConfigWithoutValidation loads a config file without validation
+// LoadConfigWithoutValidation loads a config file without validation
 // Used for override files that may be incomplete
-func loadConfigWithoutValidation(configPath string) (*Config, error) {
+func LoadConfigWithoutValidation(configPath string) (*Config, error) {
 	// Read the config file
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -458,4 +592,65 @@ func mergeConfigs(base, override *Config) {
 	if override.Analysis.BWThreadSlowDelay != 0 {
 		base.Analysis.BWThreadSlowDelay = override.Analysis.BWThreadSlowDelay
 	}
+}
+
+// loadBannedPhrases loads and compiles banned phrase patterns from a file
+func loadBannedPhrases(filePath string) ([]*regexp.Regexp, error) {
+	if filePath == "" {
+		return nil, nil
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read banned phrases file %s: %v", filePath, err)
+	}
+
+	var patterns []*regexp.Regexp
+	lines := strings.Split(string(content), "\n")
+
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue // Skip empty lines and comments
+		}
+
+		// Compile the pattern (case-insensitive)
+		pattern, err := regexp.Compile("(?i)" + line)
+		if err != nil {
+			return nil, fmt.Errorf("invalid regex pattern on line %d: %s - %v", i+1, line, err)
+		}
+		patterns = append(patterns, pattern)
+	}
+
+	return patterns, nil
+}
+
+// loadBannedPhrasesFromDirectory loads and compiles banned phrase patterns from all .txt files in a directory
+func loadBannedPhrasesFromDirectory(dirPath string) ([]*regexp.Regexp, error) {
+	if dirPath == "" {
+		return nil, nil
+	}
+
+	// Read all .txt files in directory
+	files, err := filepath.Glob(filepath.Join(dirPath, "*.txt"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read directory %s: %v", dirPath, err)
+	}
+
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no .txt files found in directory %s", dirPath)
+	}
+
+	slog.Info("Loading banned phrases", "files", len(files), "dir", dirPath)
+	var allPatterns []*regexp.Regexp
+	for _, file := range files {
+		slog.Info("Loading banned phrase file", "file", filepath.Base(file))
+		patterns, err := loadBannedPhrases(file)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load %s: %v", file, err)
+		}
+		allPatterns = append(allPatterns, patterns...)
+	}
+
+	return allPatterns, nil
 }
