@@ -27,6 +27,7 @@ import (
 	"cursor-twitter/src/pipeline"
 	"cursor-twitter/src/regex"
 	"cursor-twitter/src/tweets"
+	"cursor-twitter/src/utils"
 )
 
 // ========================================================================
@@ -630,35 +631,19 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 
 // printStats prints the current pipeline statistics and logs them as CSV.
 func printStats() {
-	// Get stats from FCT instead of accessing its internal TokenCounter
-	stats := fct.GetStats()
-	distinctTokens := stats["distinct_tokens"]
-
-	// Get queue lengths
-	inboundQueueSize := inboundTokenQueue.Len()
-
-	// Get frequency class stats
-	freqClassQueueStats := freqClassProcessor.GetQueueStats()
-	freqClassProcessorStats := freqClassProcessor.GetProcessorStats()
-
-	// Call the logging package version
-	logging.PrintStats(
+	// Use the logging package wrapper function
+	lastStatsTime, lastTweetCount = logging.PrintStatsWrapper(
+		fct,
+		inboundTokenQueue,
+		freqClassProcessor,
 		TotalTweetsRead,
 		TotalTokensCounted,
-		distinctTokens,
 		lastStatsTime,
 		pipelineStartTime,
 		lastTweetCount,
-		inboundQueueSize,
-		freqClassQueueStats,
-		freqClassProcessorStats,
 		freqClasses,
 		statsCSVPath,
 	)
-
-	// Update for next calculation
-	lastStatsTime = time.Now()
-	lastTweetCount = TotalTweetsRead
 }
 
 // Helper: Initialize stats CSV
@@ -1912,7 +1897,7 @@ func findMostTypicalTweets(tweets []*tweets.Tweet, threshold float64) (mostConne
 		// Calculate temporal weights (closer to median = higher weight)
 		maxTimeDiff := int64(300) // 5 minutes in seconds
 		for i, tweet := range tweets {
-			timeDiff := abs(tweet.Unix - medianTimestamp)
+			timeDiff := utils.Abs(tweet.Unix - medianTimestamp)
 			if timeDiff > maxTimeDiff {
 				temporalWeights[i] = 0.1 // Very low weight for tweets far from median time
 			} else {
@@ -1952,22 +1937,6 @@ func findMostTypicalTweets(tweets []*tweets.Tweet, threshold float64) (mostConne
 		}
 	}
 	return
-}
-
-// Helper function for absolute value
-func abs(x int64) int64 {
-	if x < 0 {
-		return -x
-	}
-	return x
-}
-
-// Helper function
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // removeNearDuplicates removes near-duplicate tweets using configurable distance method
@@ -2040,7 +2009,7 @@ func levenshteinDistance(s1, s2 string) int {
 			if s1[i-1] == s2[j-1] {
 				dp[i][j] = dp[i-1][j-1]
 			} else {
-				dp[i][j] = 1 + min(dp[i-1][j], min(dp[i][j-1], dp[i-1][j-1]))
+				dp[i][j] = 1 + utils.Min(dp[i-1][j], utils.Min(dp[i][j-1], dp[i-1][j-1]))
 			}
 		}
 	}
@@ -2079,7 +2048,7 @@ func wordDistance(tweet1, tweet2 string) int {
 				dp[i][j] = dp[i-1][j-1]
 			} else {
 				// Take minimum of: delete, insert, or substitute
-				dp[i][j] = 1 + min(dp[i-1][j], min(dp[i][j-1], dp[i-1][j-1]))
+				dp[i][j] = 1 + utils.Min(dp[i-1][j], utils.Min(dp[i][j-1], dp[i-1][j-1]))
 			}
 		}
 	}
@@ -2097,17 +2066,9 @@ func normalizedWordDistance(tweet1, tweet2 string) float64 {
 	}
 
 	distance := wordDistance(tweet1, tweet2)
-	maxWords := max(len(words1), len(words2))
+	maxWords := utils.Max(len(words1), len(words2))
 
 	return float64(distance) / float64(maxWords)
-}
-
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // Batch represents a collection of tweets processed together

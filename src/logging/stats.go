@@ -126,3 +126,50 @@ func GetCurrentWorkingDir() string {
 	}
 	return dir
 }
+
+// PrintStatsWrapper is a wrapper function that collects pipeline statistics and calls PrintStats
+// This function takes the necessary pipeline components as parameters to avoid global variable dependencies
+func PrintStatsWrapper(
+	fct interface{ GetStats() map[string]int },
+	inboundTokenQueue interface{ Len() int },
+	freqClassProcessor interface {
+		GetQueueStats() map[string]int
+		GetProcessorStats() map[string]int
+	},
+	totalTweetsRead, totalTokensCounted int,
+	lastStatsTime, pipelineStartTime time.Time,
+	lastTweetCount, freqClasses int,
+	statsCSVPath string,
+) (time.Time, int) {
+	// Get stats from FCT instead of accessing its internal TokenCounter
+	stats := fct.GetStats()
+	distinctTokens := stats["distinct_tokens"]
+
+	// Get queue lengths
+	inboundQueueSize := inboundTokenQueue.Len()
+
+	// Get frequency class stats
+	freqClassQueueStats := freqClassProcessor.GetQueueStats()
+	freqClassProcessorStats := freqClassProcessor.GetProcessorStats()
+
+	// Call the logging package version
+	PrintStats(
+		totalTweetsRead,
+		totalTokensCounted,
+		distinctTokens,
+		lastStatsTime,
+		pipelineStartTime,
+		lastTweetCount,
+		inboundQueueSize,
+		freqClassQueueStats,
+		freqClassProcessorStats,
+		freqClasses,
+		statsCSVPath,
+	)
+
+	// Update for next calculation
+	newLastStatsTime := time.Now()
+	newLastTweetCount := totalTweetsRead
+
+	return newLastStatsTime, newLastTweetCount
+}
