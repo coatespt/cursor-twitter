@@ -24,6 +24,7 @@ import (
 
 	"cursor-twitter/src/config"
 	"cursor-twitter/src/filter"
+	"cursor-twitter/src/output"
 	"cursor-twitter/src/pipeline"
 	"cursor-twitter/src/tweets"
 )
@@ -2313,7 +2314,7 @@ func convertToHumanReadable(cluster interface{}, cfg *config.Config) interface{}
 	}
 
 	// This is an individual cluster (legacy format)
-	return convertIndividualClusterToHumanReadable(clusterMap, cfg)
+	return output.ConvertIndividualClusterToHumanReadable(clusterMap, cfg)
 }
 
 // convertBatchToHumanReadable converts batch-level data to human-readable format
@@ -2332,7 +2333,7 @@ func convertBatchToHumanReadable(batchMap map[string]interface{}, cfg *config.Co
 			if size, ok := cluster["size"].(int); ok {
 				if size >= cfg.Analysis.MinClusterSize {
 					// Apply repetitive pattern filtering
-					if !shouldFilterRepetitiveCluster(cluster, cfg) {
+					if !output.ShouldFilterRepetitiveCluster(cluster, cfg) {
 						filteredClusters = append(filteredClusters, cluster)
 					}
 				}
@@ -2341,7 +2342,7 @@ func convertBatchToHumanReadable(batchMap map[string]interface{}, cfg *config.Co
 		// Convert all clusters to human-readable format first (for tweet text extraction)
 		var humanReadableFilteredClusters []map[string]interface{}
 		for _, cluster := range filteredClusters {
-			humanReadableCluster := convertIndividualClusterToHumanReadable(cluster, cfg)
+			humanReadableCluster := output.ConvertIndividualClusterToHumanReadable(cluster, cfg)
 			if humanReadableCluster != nil {
 				if clusterMap, ok := humanReadableCluster.(map[string]interface{}); ok {
 					humanReadableFilteredClusters = append(humanReadableFilteredClusters, clusterMap)
@@ -2364,9 +2365,9 @@ func convertBatchToHumanReadable(batchMap map[string]interface{}, cfg *config.Co
 			var sizeI, sizeJ int
 
 			// Handle both individual clusters and meta-clusters
-			if metaCluster, ok := humanReadableClusters[i].(*MetaCluster); ok {
+			if metaCluster, ok := humanReadableClusters[i].(*output.MetaCluster); ok {
 				sizeI = metaCluster.TotalTweets
-			} else if individualCluster, ok := humanReadableClusters[i].(*IndividualCluster); ok {
+			} else if individualCluster, ok := humanReadableClusters[i].(*output.IndividualCluster); ok {
 				sizeI = individualCluster.Size
 			} else if clusterMap, ok := humanReadableClusters[i].(map[string]interface{}); ok {
 				if size, ok := clusterMap["size"].(int); ok {
@@ -2374,9 +2375,9 @@ func convertBatchToHumanReadable(batchMap map[string]interface{}, cfg *config.Co
 				}
 			}
 
-			if metaCluster, ok := humanReadableClusters[j].(*MetaCluster); ok {
+			if metaCluster, ok := humanReadableClusters[j].(*output.MetaCluster); ok {
 				sizeJ = metaCluster.TotalTweets
-			} else if individualCluster, ok := humanReadableClusters[j].(*IndividualCluster); ok {
+			} else if individualCluster, ok := humanReadableClusters[j].(*output.IndividualCluster); ok {
 				sizeJ = individualCluster.Size
 			} else if clusterMap, ok := humanReadableClusters[j].(map[string]interface{}); ok {
 				if size, ok := clusterMap["size"].(int); ok {
@@ -2395,9 +2396,9 @@ func convertBatchToHumanReadable(batchMap map[string]interface{}, cfg *config.Co
 		for i, cluster := range humanReadableClusters {
 			if clusterMap, ok := cluster.(map[string]interface{}); ok {
 				clusterMap["cluster_id"] = i + 1
-			} else if individualCluster, ok := cluster.(*IndividualCluster); ok {
+			} else if individualCluster, ok := cluster.(*output.IndividualCluster); ok {
 				individualCluster.ClusterID = i + 1
-			} else if metaCluster, ok := cluster.(*MetaCluster); ok {
+			} else if metaCluster, ok := cluster.(*output.MetaCluster); ok {
 				metaCluster.MetaClusterID = fmt.Sprintf("meta_%d", i+1)
 			}
 		}
@@ -2442,191 +2443,6 @@ func convertBatchToHumanReadable(batchMap map[string]interface{}, cfg *config.Co
 
 // convertIndividualClusterToHumanReadable converts individual cluster data to human-readable format
 // Returns nil if the cluster should be suppressed (not enough unique tweets after deduplication)
-func convertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, cfg *config.Config) interface{} {
-	// Create a new map for human-readable output
-	humanReadable := make(map[string]interface{})
-
-	// Copy all the metadata fields (except size, which we'll calculate)
-	for key, value := range clusterMap {
-		if key != "tweets" && key != "most_typical_tweet" && key != "size" {
-			humanReadable[key] = value
-		}
-	}
-
-	// Convert tweets to just their texts
-	var tweetTexts []string
-	maxToShow := cfg.Analysis.MaxHumanTweetsDisplayed
-	if maxToShow <= 0 {
-		maxToShow = 10 // Default value
-	}
-
-	// For fallback clusters, show 3x the normal amount of tweets
-	if fallbackCluster, ok := clusterMap["fallback_cluster"].(bool); ok && fallbackCluster {
-		maxToShow = maxToShow * 3
-	}
-
-	// Track the total number of unique tweets after deduplication
-	var uniqueTweetCount int
-	var originalTweetCount int
-	var nearDuplicateRemovedCount int
-
-	// Check if tweet_texts is already stored in the cluster (after deduplication)
-	if storedTexts, ok := clusterMap["tweet_texts"].([]string); ok {
-		uniqueTweetCount = len(storedTexts)
-		originalTweetCount = uniqueTweetCount // For pre-deduplicated data, they're the same
-
-		for i, text := range storedTexts {
-			if i >= maxToShow {
-				break
-			}
-			// If the stored text already includes a timestamp, use it as-is
-			// Otherwise, we can't add timestamp since we don't have the original tweet
-			tweetTexts = append(tweetTexts, text)
-		}
-	} else if tweetsInterface, ok := clusterMap["tweets"].([]interface{}); ok {
-		// Handle tweets stored as []interface{} (before deduplication)
-		originalTweetCount = len(tweetsInterface)
-
-		// Apply user deduplication if enabled
-		var deduplicatedTweets []interface{}
-		if cfg.Analysis.DeduplicateByUser {
-			// Map to track seen tweets by content (not by user)
-			seenTweetTexts := make(map[string]bool)
-
-			for _, tweetInterface := range tweetsInterface {
-				// Type assert to get tweet fields
-				if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
-					tweetText, _ := tweetMap["text"].(string)
-
-					// Check if we've already seen this exact tweet text
-					if !seenTweetTexts[tweetText] {
-						seenTweetTexts[tweetText] = true
-						deduplicatedTweets = append(deduplicatedTweets, tweetInterface)
-					}
-				}
-			}
-		} else {
-			// No deduplication, use all tweets
-			deduplicatedTweets = tweetsInterface
-		}
-
-		// Count unique tweets after deduplication
-		uniqueTweetCount = len(deduplicatedTweets)
-
-		// Convert deduplicated tweets to texts with timestamps (only if not suppressed)
-		if !cfg.Analysis.SuppressIndividualTweets {
-			for i, tweetInterface := range deduplicatedTweets {
-				if i >= maxToShow {
-					break
-				}
-				if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
-					if text, ok := tweetMap["text"].(string); ok {
-						if createdAt, ok := tweetMap["created_at"].(string); ok {
-							tweetWithTime := fmt.Sprintf("[%s] %s", createdAt, text)
-							tweetTexts = append(tweetTexts, tweetWithTime)
-						} else {
-							tweetTexts = append(tweetTexts, text)
-						}
-					}
-				}
-			}
-		}
-	} else if tweetsStruct, ok := clusterMap["tweets"].([]*tweets.Tweet); ok {
-		// Handle tweets stored as []*tweets.Tweet (before deduplication)
-		originalTweetCount = len(tweetsStruct)
-
-		// Apply user deduplication if enabled
-		var deduplicatedTweets []*tweets.Tweet
-		if cfg.Analysis.DeduplicateByUser {
-			// Map to track seen tweets by content (not by user)
-			seenTweetTexts := make(map[string]bool)
-
-			for _, tweet := range tweetsStruct {
-				tweetText := tweet.Text
-
-				// Check if we've already seen this exact tweet text
-				if !seenTweetTexts[tweetText] {
-					seenTweetTexts[tweetText] = true
-					deduplicatedTweets = append(deduplicatedTweets, tweet)
-				}
-			}
-		} else {
-			// No deduplication, use all tweets
-			deduplicatedTweets = tweetsStruct
-		}
-
-		// Apply distance-based deduplication if enabled
-		if cfg.Analysis.UseLevenshteinDeduplication && len(deduplicatedTweets) > 1 {
-			distanceMethod := cfg.Analysis.DistanceMethod
-			if distanceMethod == "" {
-				distanceMethod = "word" // Default to word distance
-			}
-
-			deduplicatedTweets, nearDuplicateRemovedCount = removeNearDuplicates(deduplicatedTweets, cfg.Analysis.NearDuplicateThreshold, distanceMethod)
-		}
-
-		// Count unique tweets after deduplication
-		uniqueTweetCount = len(deduplicatedTweets)
-
-		// Convert deduplicated tweets to texts with timestamps (only if not suppressed)
-		if !cfg.Analysis.SuppressIndividualTweets {
-			for i, tweet := range deduplicatedTweets {
-				if i >= maxToShow {
-					break
-				}
-				tweetWithTime := fmt.Sprintf("[%s] %s", tweet.CreatedAt, tweet.Text)
-				tweetTexts = append(tweetTexts, tweetWithTime)
-			}
-		}
-
-	}
-
-	// Check if we have enough unique tweets after deduplication
-	if uniqueTweetCount < cfg.Analysis.MinClusterSize {
-		return nil // Suppress this cluster
-	}
-
-	// Add size information to show both original and deduplicated counts
-	humanReadable["size"] = uniqueTweetCount
-	humanReadable["original_size"] = originalTweetCount
-	humanReadable["size_info"] = fmt.Sprintf("%d/%d", uniqueTweetCount, originalTweetCount)
-
-	// Add individual tweets if we have any (they're only built when not suppressed)
-	if len(tweetTexts) > 0 {
-		humanReadable["tweet_texts"] = tweetTexts
-	}
-
-	// Add the most typical tweet text with timestamp
-	if mostTypicalTweet, ok := clusterMap["most_typical_tweet"].(*tweets.Tweet); ok && mostTypicalTweet != nil {
-		medoidWithTime := fmt.Sprintf("[%s] %s", mostTypicalTweet.CreatedAt, mostTypicalTweet.Text)
-		humanReadable["medoid_tweet_text"] = medoidWithTime
-		// Preserve the original medoid for meta-clustering
-		humanReadable["medoid"] = mostTypicalTweet.Text
-
-	} else {
-		// Fallback: try to get medoid from other sources
-		if medoidText, ok := clusterMap["medoid"].(string); ok && medoidText != "" {
-			humanReadable["medoid_tweet_text"] = medoidText
-			humanReadable["medoid"] = medoidText
-		} else if len(tweetTexts) > 0 {
-			// Use first tweet as medoid if available
-			humanReadable["medoid_tweet_text"] = tweetTexts[0]
-			humanReadable["medoid"] = tweetTexts[0]
-		}
-	}
-
-	// Add persistence information if available
-	if persistenceInfo, ok := clusterMap["persistence_info"].(string); ok {
-		humanReadable["persistence_info"] = persistenceInfo
-	}
-
-	// Add metadata about near-duplicate removal if any were removed
-	if nearDuplicateRemovedCount > 0 {
-		humanReadable["near_duplicates_removed"] = nearDuplicateRemovedCount
-	}
-
-	return humanReadable
-}
 
 func OutputStats(stats interface{}) {
 	data := OutputData{
@@ -2660,38 +2476,6 @@ func OutputRaw(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stdout, format+"\n", args...)
 }
 
-// shouldFilterRepetitiveCluster checks if a cluster should be filtered out due to repetitive patterns
-func shouldFilterRepetitiveCluster(cluster map[string]interface{}, cfg *config.Config) bool {
-	if !cfg.Analysis.FilterRepetitivePatterns || len(cfg.Analysis.CompiledBannedPatterns) == 0 {
-		return false
-	}
-
-	tweets, ok := cluster["tweets"].([]*tweets.Tweet)
-	if !ok {
-		return false
-	}
-
-	if len(tweets) == 0 {
-		return false
-	}
-
-	// Count tweets that match banned patterns
-	matchingTweets := 0
-	for _, tweet := range tweets {
-		tweetTextLower := strings.ToLower(tweet.Text)
-		for _, pattern := range cfg.Analysis.CompiledBannedPatterns {
-			if pattern.MatchString(tweetTextLower) {
-				matchingTweets++
-				break
-			}
-		}
-	}
-
-	// Check if the percentage exceeds the threshold
-	percentage := float64(matchingTweets) / float64(len(tweets))
-	return percentage >= cfg.Analysis.RepetitivePatternThreshold
-}
-
 // BatchOutput represents the human-readable batch output with guaranteed field ordering
 type BatchOutput struct {
 	BatchNumber          int64       `json:"batch_number"`
@@ -2701,29 +2485,6 @@ type BatchOutput struct {
 	TotalClusters        int         `json:"total_clusters"`
 	ClustersAboveMinSize int         `json:"clusters_above_min_size"`
 	Clusters             interface{} `json:"clusters"`
-}
-
-// MetaCluster represents a group of similar clusters
-type MetaCluster struct {
-	Type          string                   `json:"type"`
-	MetaClusterID string                   `json:"meta_cluster_id"`
-	Theme         string                   `json:"theme"`
-	TotalTweets   int                      `json:"total_tweets"`
-	Medoid        string                   `json:"medoid"`
-	BusyWords     []string                 `json:"busy_words"`
-	SubClusters   []map[string]interface{} `json:"sub_clusters"`
-}
-
-// IndividualCluster represents a standalone cluster
-type IndividualCluster struct {
-	Type            string   `json:"type"`
-	ClusterID       int      `json:"cluster_id"`
-	Size            int      `json:"size"`
-	Medoid          string   `json:"medoid"`
-	BusyWords       []string `json:"busy_words"`
-	TweetTexts      []string `json:"tweet_texts,omitempty"`
-	FallbackCluster bool     `json:"fallback_cluster,omitempty"`
-	ClusteringNote  string   `json:"clustering_note,omitempty"`
 }
 
 // clusterSimilarity calculates similarity between two clusters based on their medoids and busy words
@@ -2800,7 +2561,7 @@ func performMetaClustering(clusters []map[string]interface{}, cfg *config.Config
 
 	// Track which clusters have been assigned to meta-clusters
 	assigned := make([]bool, len(clusters))
-	var metaClusters []*MetaCluster
+	var metaClusters []*output.MetaCluster
 	var individualClusters []interface{}
 
 	// Try to group clusters into meta-clusters
@@ -2908,7 +2669,7 @@ func performUnionMetaClustering(clusters []map[string]interface{}, cfg *config.C
 
 	// Find connected components in the union graph
 	assigned := make([]bool, len(clusters))
-	var metaClusters []*MetaCluster
+	var metaClusters []*output.MetaCluster
 	var individualClusters []interface{}
 
 	for i := 0; i < len(clusters); i++ {
@@ -2998,7 +2759,7 @@ func calculateBusyWordSimilarity(cluster1, cluster2 map[string]interface{}) floa
 }
 
 // createMetaCluster creates a meta-cluster from a group of similar clusters
-func createMetaCluster(subClusters []map[string]interface{}, totalTweets int) *MetaCluster {
+func createMetaCluster(subClusters []map[string]interface{}, totalTweets int) *output.MetaCluster {
 	if len(subClusters) == 0 {
 		return nil
 	}
@@ -3045,7 +2806,7 @@ func createMetaCluster(subClusters []map[string]interface{}, totalTweets int) *M
 	// Create meta-cluster ID
 	metaClusterID := fmt.Sprintf("meta_%s", generateIDFromTheme(theme))
 
-	return &MetaCluster{
+	return &output.MetaCluster{
 		Type:          "meta_cluster",
 		MetaClusterID: metaClusterID,
 		Theme:         theme,
@@ -3057,7 +2818,7 @@ func createMetaCluster(subClusters []map[string]interface{}, totalTweets int) *M
 }
 
 // convertToIndividualCluster converts a cluster map to IndividualCluster struct
-func convertToIndividualCluster(cluster map[string]interface{}) *IndividualCluster {
+func convertToIndividualCluster(cluster map[string]interface{}) *output.IndividualCluster {
 	clusterID := 0
 	if id, ok := cluster["cluster_id"].(int); ok {
 		clusterID = id
@@ -3101,7 +2862,7 @@ func convertToIndividualCluster(cluster map[string]interface{}) *IndividualClust
 		clusterType = "fallback_cluster"
 	}
 
-	return &IndividualCluster{
+	return &output.IndividualCluster{
 		Type:            clusterType,
 		ClusterID:       clusterID,
 		Size:            size,
