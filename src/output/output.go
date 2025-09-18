@@ -1567,3 +1567,21 @@ func OutputClusterWithConfig(cluster interface{}, cfg *config.Config) {
 	jsonData, _ := json.MarshalIndent(data, "", "  ")
 	fmt.Println(string(jsonData))
 }
+
+// convertToHumanReadable converts cluster data to human-readable format
+func convertToHumanReadable(cluster interface{}, cfg *config.Config) interface{} {
+	// Type assert to get the cluster data
+	clusterMap, ok := cluster.(map[string]interface{})
+	if !ok {
+		return cluster // Return original if not the expected format
+	}
+
+	// Check if this is a batch-level structure
+	if _, hasBatchNumber := clusterMap["batch_number"]; hasBatchNumber {
+		// This is a batch-level structure
+		return ConvertBatchToHumanReadable(clusterMap, cfg)
+	}
+
+	// This is an individual cluster (legacy format)
+	return ConvertIndividualClusterToHumanReadable(clusterMap, cfg)
+}

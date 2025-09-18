@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/csv"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -630,7 +629,7 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 		"clusters":                batchClusters,
 	}
 
-	OutputClusterWithConfig(batchData, cfg)
+	output.OutputClusterWithConfig(batchData, cfg)
 }
 
 // printBatchSummary prints a summary of all busy words found in a batch
@@ -2263,58 +2262,3 @@ type OutputData struct {
 	Type OutputType  `json:"type"`
 	Data interface{} `json:"data"`
 }
-
-// Output functions for structured data (goes to stdout)
-func OutputCluster(cluster interface{}) {
-	// Get the global config to check output mode
-	// Since we don't have direct access to config here, we'll use a global variable
-	// or modify the function signature. For now, let's create a new function that takes config.
-	OutputClusterWithConfig(cluster, nil) // Will be called with proper config from clustering functions
-}
-
-// OutputClusterWithConfig outputs cluster data based on the configured output mode
-func OutputClusterWithConfig(cluster interface{}, cfg *config.Config) {
-	// Default to verbose mode if no config provided
-	outputMode := "verbose"
-	if cfg != nil {
-		outputMode = cfg.Analysis.OutputMode
-	}
-
-	// Process cluster data based on output mode
-	var processedData interface{}
-
-	if outputMode == "human" {
-		// Convert to human-readable format
-		processedData = convertToHumanReadable(cluster, cfg)
-	} else {
-		// Use original data for verbose mode
-		processedData = cluster
-	}
-
-	data := OutputData{
-		Type: OUTPUT_CLUSTER,
-		Data: processedData,
-	}
-	jsonData, _ := json.MarshalIndent(data, "", "  ")
-	fmt.Println(string(jsonData))
-}
-
-// convertToHumanReadable converts cluster data to human-readable format
-func convertToHumanReadable(cluster interface{}, cfg *config.Config) interface{} {
-	// Type assert to get the cluster data
-	clusterMap, ok := cluster.(map[string]interface{})
-	if !ok {
-		return cluster // Return original if not the expected format
-	}
-
-	// Check if this is a batch-level structure
-	if _, hasBatchNumber := clusterMap["batch_number"]; hasBatchNumber {
-		// This is a batch-level structure
-		return output.ConvertBatchToHumanReadable(clusterMap, cfg)
-	}
-
-	// This is an individual cluster (legacy format)
-	return output.ConvertIndividualClusterToHumanReadable(clusterMap, cfg)
-}
-
-// convertBatchToHumanReadable converts batch-level data to human-readable format
