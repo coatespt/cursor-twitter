@@ -2,11 +2,11 @@ package config
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
+
+	"cursor-twitter/src/regex"
 
 	"gopkg.in/yaml.v3"
 )
@@ -204,10 +204,10 @@ func resolvePathsInConfig(configPath string, cfg *Config) error {
 
 			// Try directory first (new approach)
 			if cfg.Analysis.BannedPhrasesDir != "" {
-				patterns, err = loadBannedPhrasesFromDirectory(cfg.Analysis.BannedPhrasesDir)
+				patterns, err = regex.LoadBannedPhrasesFromDirectory(cfg.Analysis.BannedPhrasesDir)
 			} else if cfg.Analysis.BannedPhrasesFile != "" {
 				// Fall back to single file (backward compatibility)
-				patterns, err = loadBannedPhrases(cfg.Analysis.BannedPhrasesFile)
+				patterns, err = regex.LoadBannedPhrasesFromFile(cfg.Analysis.BannedPhrasesFile)
 			} else {
 				return fmt.Errorf("neither banned_phrases_dir nor banned_phrases_file specified in config")
 			}
@@ -592,65 +592,4 @@ func mergeConfigs(base, override *Config) {
 	if override.Analysis.BWThreadSlowDelay != 0 {
 		base.Analysis.BWThreadSlowDelay = override.Analysis.BWThreadSlowDelay
 	}
-}
-
-// loadBannedPhrases loads and compiles banned phrase patterns from a file
-func loadBannedPhrases(filePath string) ([]*regexp.Regexp, error) {
-	if filePath == "" {
-		return nil, nil
-	}
-
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read banned phrases file %s: %v", filePath, err)
-	}
-
-	var patterns []*regexp.Regexp
-	lines := strings.Split(string(content), "\n")
-
-	for i, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue // Skip empty lines and comments
-		}
-
-		// Compile the pattern (case-insensitive)
-		pattern, err := regexp.Compile("(?i)" + line)
-		if err != nil {
-			return nil, fmt.Errorf("invalid regex pattern on line %d: %s - %v", i+1, line, err)
-		}
-		patterns = append(patterns, pattern)
-	}
-
-	return patterns, nil
-}
-
-// loadBannedPhrasesFromDirectory loads and compiles banned phrase patterns from all .txt files in a directory
-func loadBannedPhrasesFromDirectory(dirPath string) ([]*regexp.Regexp, error) {
-	if dirPath == "" {
-		return nil, nil
-	}
-
-	// Read all .txt files in directory
-	files, err := filepath.Glob(filepath.Join(dirPath, "*.txt"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read directory %s: %v", dirPath, err)
-	}
-
-	if len(files) == 0 {
-		return nil, fmt.Errorf("no .txt files found in directory %s", dirPath)
-	}
-
-	slog.Info("Loading banned phrases", "files", len(files), "dir", dirPath)
-	var allPatterns []*regexp.Regexp
-	for _, file := range files {
-		slog.Info("Loading banned phrase file", "file", filepath.Base(file))
-		patterns, err := loadBannedPhrases(file)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load %s: %v", file, err)
-		}
-		allPatterns = append(allPatterns, patterns...)
-	}
-
-	return allPatterns, nil
 }

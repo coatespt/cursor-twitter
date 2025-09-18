@@ -3,7 +3,6 @@ package main
 import (
 	"cursor-twitter/src/pipeline"
 	"fmt"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -24,8 +23,7 @@ func testConfig() *Config {
 
 func init() {
 	// Initialize regex patterns for tests
-	urlRegex = regexp.MustCompile(`(https?://[^\s]+|www\.[^\s]+)`)
-	apostropheRegex = regexp.MustCompile(`'.*`)
+	// Regex patterns are now in the regex package
 }
 
 // TestParseCSVToTweetValid tests parsing valid CSV tweet data.

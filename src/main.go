@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"runtime/pprof"
 	"sort"
 	"strings"
@@ -23,8 +22,10 @@ import (
 
 	"cursor-twitter/src/config"
 	"cursor-twitter/src/filter"
+	"cursor-twitter/src/logging"
 	"cursor-twitter/src/output"
 	"cursor-twitter/src/pipeline"
+	"cursor-twitter/src/regex"
 	"cursor-twitter/src/tweets"
 )
 
@@ -136,18 +137,9 @@ var (
 var globalWordFilter *filter.WordFilter
 
 // Pre-compiled regexes for tokenization (compiled once at startup)
-var (
-	urlRegex        *regexp.Regexp
-	apostropheRegex *regexp.Regexp
-	tokenizeRegex   *regexp.Regexp
-)
+// Global regex patterns for tokenization - now in regex package
 
-// init function to initialize regex variables for tests
-func init() {
-	urlRegex = regexp.MustCompile(`https?://[^\s]+|www\.[^\s]+`)
-	apostropheRegex = regexp.MustCompile(`'.*$`)
-	tokenizeRegex = regexp.MustCompile(`[^\w']+`)
-}
+// init function to initialize regex variables for tests - now in regex package
 
 // Add at the top-level globals:
 var clusterOutputFilePath string
@@ -358,7 +350,7 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 	slog.Info("Clustering: Starting batch analysis", "batch_number", batchNumber, "class_results", len(classResults), "recent_tweets", len(recentTweets))
 
 	// Print busy word summary
-	printBatchSummary(classResults, batchNumber, cfg)
+	logging.PrintBatchSummary(classResults, batchNumber, cfg)
 
 	// Collect all busy words from specified classes
 	allBusyWords := make(map[string]bool)
@@ -632,53 +624,44 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 	output.OutputClusterWithConfig(batchData, cfg)
 }
 
-// printBatchSummary prints a summary of all busy words found in a batch
-func printBatchSummary(classResults map[int][]string, batchNumber int64, cfg *config.Config) {
-	// Note: Busy word summary is now logged in the structured format in runClusteringForBatch
-	// This function is kept for compatibility but no longer outputs duplicate information
-}
-
 // getCurrentWorkingDir returns the current working directory for debugging
-func getCurrentWorkingDir() string {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "unknown"
-	}
-	return dir
-}
 
 // Helper: Initialize logger
-func initializeLogger(cfg *config.Config) (*slog.Logger, *os.File, error) {
-	// Set the slog level based on config
-	var slogLevel slog.Level
-	switch strings.ToUpper(cfg.LogLevel) {
-	case "DEBUG":
-		slogLevel = slog.LevelDebug // DEBUG shows all messages (DEBUG, INFO, WARN, ERROR)
-	case "INFO":
-		slogLevel = slog.LevelInfo // INFO shows INFO, WARN, ERROR
-	case "WARN":
-		slogLevel = slog.LevelWarn // WARN shows WARN, ERROR
-	case "ERROR":
-		slogLevel = slog.LevelError // ERROR shows only ERROR
-	default:
-		slogLevel = slog.LevelInfo
-	}
 
-	logger, logFile, err := setupLogger(cfg.LogDir, slogLevel)
-	if err != nil {
-		return nil, nil, err
-	}
+// printStats prints the current pipeline statistics and logs them as CSV.
+func printStats() {
+	// Get stats from FCT instead of accessing its internal TokenCounter
+	stats := fct.GetStats()
+	distinctTokens := stats["distinct_tokens"]
 
-	return logger, logFile, nil
+	// Get queue lengths
+	inboundQueueSize := inboundTokenQueue.Len()
+
+	// Get frequency class stats
+	freqClassQueueStats := freqClassProcessor.GetQueueStats()
+	freqClassProcessorStats := freqClassProcessor.GetProcessorStats()
+
+	// Call the logging package version
+	logging.PrintStats(
+		TotalTweetsRead,
+		TotalTokensCounted,
+		distinctTokens,
+		lastStatsTime,
+		pipelineStartTime,
+		lastTweetCount,
+		inboundQueueSize,
+		freqClassQueueStats,
+		freqClassProcessorStats,
+		freqClasses,
+		statsCSVPath,
+	)
+
+	// Update for next calculation
+	lastStatsTime = time.Now()
+	lastTweetCount = TotalTweetsRead
 }
 
 // Helper: Initialize stats CSV
-func initializeStatsCSV(cfg *config.Config) string {
-	statsCSVPath := filepath.Join(cfg.LogDir, "stats.csv")
-	ensureStatsCSVHeader(statsCSVPath)
-	return statsCSVPath
-}
-
 // Helper: Initialize word filter
 func initializeWordFilter(cfg *config.Config) (*filter.WordFilter, error) {
 	if cfg.Filter.Enabled {
@@ -830,7 +813,8 @@ func setupRabbitMQConsumer(ch *amqp.Channel, q amqp.Queue) (<-chan amqp.Delivery
 	return msgs, nil
 }
 
-func main() {
+// parseCommandLineFlags parses command line arguments and returns the flag values
+func parseCommandLineFlags() (*bool, *string, *string, *bool, *bool) {
 	// Add a command line flag to control printing of tweets
 	printTweets := flag.Bool("print-tweets", true, "Print each parsed tweet to the console")
 	configPath := flag.String("config", "config/config.yaml", "Path to YAML config file")
@@ -839,8 +823,12 @@ func main() {
 	enableProfiling := flag.Bool("profile", false, "Enable CPU profiling (creates cpu.prof)")
 	flag.Parse()
 
-	// Start CPU profiling if enabled
-	if *enableProfiling {
+	return printTweets, configPath, overridePath, loadState, enableProfiling
+}
+
+// setupCPUProfiling sets up CPU profiling if enabled
+func setupCPUProfiling(enableProfiling bool) {
+	if enableProfiling {
 		cpuProfile, err := os.Create("cpu.prof")
 		if err != nil {
 			log.Fatalf("Failed to create CPU profile: %v", err)
@@ -852,14 +840,16 @@ func main() {
 		defer pprof.StopCPUProfile()
 		slog.Info("CPU profiling enabled - will create cpu.prof file")
 	}
+}
 
-	// Load config from YAML file with path resolution and optional override.
+// loadConfiguration loads the configuration from YAML file with optional override
+func loadConfiguration(configPath, overridePath string) *config.Config {
 	var cfg *config.Config
 	var err error
-	if *overridePath != "" {
-		cfg, err = config.LoadConfigWithOverride(*configPath, *overridePath)
+	if overridePath != "" {
+		cfg, err = config.LoadConfigWithOverride(configPath, overridePath)
 	} else {
-		cfg, err = config.LoadConfig(*configPath)
+		cfg, err = config.LoadConfig(configPath)
 	}
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
@@ -873,10 +863,13 @@ func main() {
 	// Logging is now handled entirely by slog
 
 	slog.Info("*** CONFIG LOADED SUCCESSFULLY ***")
+	return cfg
+}
 
-	// Print key configuration values to stderr for user visibility
+// printStartupInfo prints key configuration values to stderr for user visibility
+func printStartupInfo(cfg *config.Config, configPath string, loadState, printTweets bool) {
 	fmt.Fprintf(os.Stderr, "\n=== TWITTER SUBJECT DETECTION PIPELINE STARTUP ===\n")
-	fmt.Fprintf(os.Stderr, "Config file: %s\n", *configPath)
+	fmt.Fprintf(os.Stderr, "Config file: %s\n", configPath)
 	fmt.Fprintf(os.Stderr, "Log level: %s\n", cfg.LogLevel)
 	fmt.Fprintf(os.Stderr, "\n--- Core Pipeline Settings ---\n")
 	fmt.Fprintf(os.Stderr, "Frequency classes: %d\n", cfg.FreqClasses)
@@ -912,25 +905,16 @@ func main() {
 	fmt.Fprintf(os.Stderr, "\n--- Filter Settings ---\n")
 	fmt.Fprintf(os.Stderr, "Filter enabled: %v\n", cfg.Filter.Enabled)
 	fmt.Fprintf(os.Stderr, "RabbitMQ: %s:%d/%s\n", cfg.MQHost, cfg.MQPort, cfg.MQQueue)
-	fmt.Fprintf(os.Stderr, "Load state: %v\n", *loadState)
-	fmt.Fprintf(os.Stderr, "Print tweets: %v\n", *printTweets)
+	fmt.Fprintf(os.Stderr, "Load state: %v\n", loadState)
+	fmt.Fprintf(os.Stderr, "Print tweets: %v\n", printTweets)
 	fmt.Fprintf(os.Stderr, "\n--- Additional Settings ---\n")
 	fmt.Fprintf(os.Stderr, "Token filtering parameters available in config.yaml (token_filters section)\n")
-	// Initialize logger first, before any slog calls
-	logger, logFile, err := initializeLogger(cfg)
-	if err != nil {
-		log.Fatalf("Failed to set up logger: %v", err)
-	}
-	defer logFile.Close()
-	slog.SetDefault(logger)
+}
 
-	fmt.Fprintf(os.Stderr, "\n=== STARTUP PROGRESS ===\n")
-	fmt.Fprintf(os.Stderr, "Building frequency class filters... (this may take a few minutes)\n")
-	fmt.Fprintf(os.Stderr, "Progress: ")
-
-	// Also log the same config information to the log file
+// logStartupInfo logs the same configuration information to the log file in structured format
+func logStartupInfo(cfg *config.Config, configPath string, loadState, printTweets bool) {
 	slog.Info("=== TWITTER SUBJECT DETECTION PIPELINE STARTUP ===")
-	slog.Info("Config file", "path", *configPath)
+	slog.Info("Config file", "path", configPath)
 	slog.Info("Log level", "level", cfg.LogLevel)
 	slog.Info("--- Core Pipeline Settings ---")
 	slog.Info("Frequency classes", "count", cfg.FreqClasses)
@@ -968,13 +952,44 @@ func main() {
 		slog.Info("Repetitive pattern threshold", "threshold", cfg.Analysis.RepetitivePatternThreshold)
 	}
 	slog.Info("RabbitMQ", "host", cfg.MQHost, "port", cfg.MQPort, "queue", cfg.MQQueue)
-	slog.Info("Load state", "enabled", *loadState)
-	slog.Info("Print tweets", "enabled", *printTweets)
+	slog.Info("Load state", "enabled", loadState)
+	slog.Info("Print tweets", "enabled", printTweets)
 	slog.Info("--- Additional Settings ---")
 	slog.Info("Token filtering parameters available in config.yaml (token_filters section)")
+}
 
-	slog.Info("=== STARTUP PROGRESS ===")
-	slog.Info("Building frequency class filters... (this may take a few minutes)")
+// printStartupProgress prints startup progress information to stderr
+func printStartupProgress() {
+	fmt.Fprintf(os.Stderr, "\n=== STARTUP PROGRESS ===\n")
+	fmt.Fprintf(os.Stderr, "Building frequency class filters... (this may take a few minutes)\n")
+	fmt.Fprintf(os.Stderr, "Progress: ")
+}
+
+func main() {
+	// Parse command line flags
+	printTweets, configPath, overridePath, loadState, enableProfiling := parseCommandLineFlags()
+
+	// Start CPU profiling if enabled
+	setupCPUProfiling(*enableProfiling)
+
+	// Load configuration
+	cfg := loadConfiguration(*configPath, *overridePath)
+
+	// Print startup information
+	printStartupInfo(cfg, *configPath, *loadState, *printTweets)
+	// Initialize logger first, before any slog calls
+	logger, logFile, err := logging.InitializeLogger(cfg)
+	if err != nil {
+		log.Fatalf("Failed to set up logger: %v", err)
+	}
+	defer logFile.Close()
+	slog.SetDefault(logger)
+
+	// Print startup progress
+	printStartupProgress()
+
+	// Log startup information to structured log
+	logStartupInfo(cfg, *configPath, *loadState, *printTweets)
 
 	// Log z-score array
 	slog.Info("Z-scores per frequency class", "scores", cfg.ZScores)
@@ -985,7 +1000,7 @@ func main() {
 		"print_tweets", *printTweets,
 		"load_state", *loadState)
 
-	statsCSVPath = initializeStatsCSV(cfg)
+	statsCSVPath = logging.InitializeStatsCSV(cfg.LogDir)
 
 	globalWordFilter, err = initializeWordFilter(cfg)
 	if err != nil {
@@ -997,16 +1012,13 @@ func main() {
 		slog.Info("Word filter is nil (disabled)")
 	}
 
-	// Initialize pre-compiled regexes for tokenization
-	urlRegex = regexp.MustCompile(`(https?://[^\s]+|www\.[^\s]+)`)
-	apostropheRegex = regexp.MustCompile(`'.*`)
-	tokenizeRegex = regexp.MustCompile(`[^\w']+`)
+	// Initialize pre-compiled regexes for tokenization - now in regex package
 
 	// TODO: Analysis thread will handle tweet window management
 
 	initializeGlobalState()
 
-	startStatsPrinter()
+	logging.StartStatsPrinter(printStats)
 
 	err = initializePipeline(cfg)
 	if err != nil {
@@ -1375,148 +1387,6 @@ func processBatchPersistence(batchWindow []*Batch, cfg *config.Config) {
 
 }
 
-// setupLogger creates the log directory if needed and returns a slog.Logger that writes to a file.
-func setupLogger(logDir string, level slog.Level) (*slog.Logger, *os.File, error) {
-	// No default! logDir must be set by config and checked in main()
-	if logDir == "" {
-		return nil, nil, fmt.Errorf("logDir must be set in config; refusing to use a default")
-	}
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return nil, nil, err
-	}
-
-	// Create timestamped log filename for sortability
-	timestamp := time.Now().Format("20060102_150405")
-	logPath := filepath.Join(logDir, fmt.Sprintf("pipeline_%s.log", timestamp))
-
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return nil, nil, err
-	}
-	logger := slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{
-		Level: level,
-	}))
-	return logger, logFile, nil
-}
-
-// startStatsPrinter launches a goroutine that prints stats every 30 seconds.
-func startStatsPrinter() {
-	lastStatsTime = time.Now()
-	lastTweetCount = 0
-	pipelineStartTime = time.Now() // Initialize pipeline start time
-	ticker := time.NewTicker(5 * time.Second)
-	go func() {
-		for range ticker.C {
-			printStats()
-		}
-	}()
-}
-
-// ensureStatsCSVHeader creates the stats CSV file and writes the header if it doesn't exist.
-func ensureStatsCSVHeader(path string) {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err != nil {
-			log.Printf("Failed to create stats CSV: %v", err)
-			return
-		}
-		defer f.Close()
-		writer := csv.NewWriter(f)
-		writer.Write([]string{"timestamp", "total_tweets", "total_tokens", "distinct_tokens"})
-		writer.Flush()
-	}
-}
-
-// printStats prints the current pipeline statistics and logs them as CSV.
-func printStats() {
-	now := time.Now()
-	timestamp := now.Format(time.RFC3339)
-	totalTweets := TotalTweetsRead
-	totalTokens := TotalTokensCounted
-	// Get stats from FCT instead of accessing its internal TokenCounter
-	stats := fct.GetStats()
-	distinctTokens := stats["distinct_tokens"]
-
-	// Calculate processing rate (recent period)
-	timeDiff := now.Sub(lastStatsTime).Seconds()
-	tweetDiff := totalTweets - lastTweetCount
-	processingRate := float64(tweetDiff) / timeDiff
-
-	// Calculate total rate for the whole run
-	totalTimeDiff := now.Sub(pipelineStartTime).Seconds()
-	totalRate := float64(totalTweets) / totalTimeDiff
-
-	// Get sliding window stats
-	// tweetQueueMu.RLock()
-	// windowSize := len(tweetQueue)
-	// tweetQueueMu.RUnlock()
-
-	// Get queue lengths
-	inboundQueueSize := inboundTokenQueue.Len()
-
-	// Get frequency class stats
-	freqClassQueueStats := freqClassProcessor.GetQueueStats()
-	freqClassProcessorStats := freqClassProcessor.GetProcessorStats()
-
-	// TODO: Token filter statistics will be handled by analysis thread
-
-	// fmt.Printf("\n--- Pipeline Stats ---\n")
-	// fmt.Printf("Total tweets read: %d\n", totalTweets)
-	// fmt.Printf("Distinct tokens: %d\n", distinctTokens)
-	// fmt.Printf("Inbound token queue size: %d\n", inboundQueueSize)
-	// fmt.Printf("Processing rate: %.2f tweets/sec\n", processingRate)
-	// fmt.Printf("--- Token Filter Stats ---\n")
-	// fmt.Printf("Token filter statistics will be handled by analysis thread\n")
-
-	// Print frequency class stats (ordered from lowest to highest class number)
-	slog.Debug("--- Frequency Class Stats ---")
-	for i := 0; i < freqClasses; i++ {
-		queueKey := fmt.Sprintf("freq_class_%d_queue_size", i)
-		processorKey := fmt.Sprintf("freq_class_%d_tokens_processed", i)
-		queueSize := freqClassQueueStats[queueKey]
-		tokensProcessed := freqClassProcessorStats[processorKey]
-
-		// Get distinct token count for this frequency class
-		// Note: distinct token count is no longer available since we removed the old filter system
-		distinctTokens := 0
-
-		// Use lazy evaluation for expensive formatting
-		classIndex := i
-		slog.Debug("Frequency Class Stats", "class", classIndex, "queue", queueSize, "processed", tokensProcessed, "distinct", distinctTokens)
-	}
-	slog.Debug("----------------------")
-
-	// Also log to slog
-	slog.Info("Pipeline stats",
-		"tweets", totalTweets,
-		"tokens", totalTokens,
-		"distinct", distinctTokens,
-		// "window_size", windowSize, // Removed tweet-based window size
-		"inbound_queue_size", inboundQueueSize,
-		"total_rate_tweets_per_sec", totalRate,
-		"processing_rate_tweets_per_sec", processingRate)
-
-	// Update for next calculation
-	lastStatsTime = now
-	lastTweetCount = totalTweets
-
-	// Log as CSV for machine consumption
-	f, err := os.OpenFile(statsCSVPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		log.Printf("Failed to open stats CSV: %v", err)
-		return
-	}
-	defer f.Close()
-	writer := csv.NewWriter(f)
-	writer.Write([]string{
-		timestamp,
-		fmt.Sprintf("%d", totalTweets),
-		fmt.Sprintf("%d", totalTokens),
-		fmt.Sprintf("%d", distinctTokens),
-	})
-	writer.Flush()
-}
-
 // parseCSVToTweet parses a CSV row string into a Tweet struct,
 // tokenizes the text, generates ThreePartKeys, and updates the global
 // token counter.
@@ -1603,7 +1473,7 @@ func parseCSVToTweet(row string, cfg *config.Config) (*tweets.Tweet, error) {
 func simpleTokenize(text string, cfg *config.Config) []string {
 	// Use regex to split on non-word characters (including periods, commas, etc.)
 	// This matches the approach used in analyze_tokens.go
-	tokens := tokenizeRegex.Split(strings.ToLower(text), -1)
+	tokens := regex.TokenizeRegex.Split(strings.ToLower(text), -1)
 
 	// Process each token individually
 	var processedTokens []string
@@ -1632,7 +1502,7 @@ func simpleTokenize(text string, cfg *config.Config) []string {
 				// Leave token as-is
 			case "truncate":
 				// Remove from apostrophe onwards (e.g., "don't" -> "don", "Harry's" -> "Harry")
-				token = apostropheRegex.ReplaceAllString(token, "")
+				token = regex.ApostropheRegex.ReplaceAllString(token, "")
 				if token == "" {
 					// rejectedByMinLength++ // TODO: Statistics tracking moved to analysis thread
 					continue
