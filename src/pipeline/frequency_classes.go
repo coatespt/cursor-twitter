@@ -12,6 +12,14 @@ import (
 	"unsafe"
 )
 
+// Global frequency classes count (set from main.go)
+var GlobalFreqClasses int = 24 // Default, will be set from config
+
+// SetGlobalFreqClasses sets the global frequency classes count
+func SetGlobalFreqClasses(freqClasses int) {
+	GlobalFreqClasses = freqClasses
+}
+
 // TokenCount holds a token and its count.
 type TokenCount struct {
 	Token string
@@ -216,19 +224,27 @@ func SetGlobalFilters(filters []FreqClassFilter) {
 }
 
 // whatClass is the only function the main pipeline should call
-// It returns a frequency class (0-24) for any token, with no coordination needed
+// It returns a frequency class [0,freq_class-1] for any token, with no
+// coordination needed
 
 // WhatClass returns the frequency class for a token - only atomic pointer read, no locks
 func WhatClass(token string) int {
 	ptr := atomic.LoadPointer(&activeTokenToClassPtr)
 	if ptr == nil {
-		return 24 // Default to least frequent class if no mapping yet
+		// No mapping available yet - return the highest valid frequency class
+		// This should be (GlobalFreqClasses-1) since classes are numbered 0 to (GlobalFreqClasses-1)
+		// This ensures new tokens get assigned to the lowest frequency class
+		return GlobalFreqClasses - 1
 	}
 	tokenToClass := *(*map[string]int)(ptr)
 	if class, exists := tokenToClass[token]; exists {
 		return class
 	}
-	return 24 // Default to least frequent class if token not found
+	// Token not found in mapping - this means it's a new token never seen before
+	// New tokens should be assigned to the lowest frequency class (highest class number)
+	// since they are the least frequently seen (never seen before)
+	// Return (GlobalFreqClasses-1) to put them in the lowest frequency class
+	return GlobalFreqClasses - 1
 }
 
 // GetTokenInfo returns both the 3PK and frequency class for a token in a single operation

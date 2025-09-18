@@ -21,9 +21,11 @@ Other documentation:
 
 Paste this into Cursor when starting a new chat.
 
-Before doing anything that changes code, please ask me any questions you have about this before you begin.
+Never make a code change without explicitly asking me. That means per-change. In the past I have asked for a single change and you go off searching the entire code base making changes all over the place. Disaster predictably ensues.
 
-Never, under any circumstances do any git operation for any reason until we have explicitly discussed the operation you contemplate. Assume you misunderstood me. 
+If something seems to require work beyond the strictest interpretation of what you are asked, stop. Do nothing at all until you clarify what you think needs doing and get my buy-in.  Over and over we are completely derailed by you running off and implementing nonsense, changing code all over the place.  100% of the time you should err on the side of doing too little, not too much.
+
+Never, under any circumstances do any git operation for any reason until we have explicitly discussed the operation you contemplate. If you think you should do a git operation, assume everty time you misunderstood me and verify that I know what suicidally insane act you are about to undertake. 
 
 Don't run the program yourself without asking. The program runs forever and I have to kill it to get your attention back. I will handle running the program. 
 
@@ -38,8 +40,9 @@ For any significant code change, we must run the test suite!
 When a test doesn't pass, we have to look at why before changing anything. No removing tests because they don't pass unless we agree the test is obsolete.
 
 If any changes seem to involve multiple threads, be sure to get my agreement before doing anything. Anytime there thread safety constructs like mutex, etc., always check. We keep getting into trouble with unnecessary and incorrect thread complexity.
+Virtually everthing involving concurrency goes disastrously wrong.
 
-Apparently you are under the impression that I want happy sunny output. No! Be as critical as possible.
+Apparently you are under the impression that I want happy sunny output. No! Be as critical of what I say as possible.
 
 # Input and Output
 
@@ -100,7 +103,7 @@ Not sure what happens if the analysis thread is overwhelmed.
 
 
 # The Heuristic
-This section explains the core heuristic for finding the busywords at a minimal level to make TTD items comprehensible.
+This section explains the core heuristic for finding the busywords at a minimal level to make fixit items comprehensible.
 
 ## Word Frequency Computations
 
@@ -491,98 +494,23 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 
 # TTD and Direction
 
-## The rabbit v disk modes are implemented as the entire pipeline. 
+## Remove the superfluous debugs, 
+On the console we get these.
+*** FCT REBUILD STARTED at 18:26:01 ***
+*** FCT REBUILD COMPLETED at 18:26:02 (duration: 857.015865ms, token files written: 473430) ***
 
-We copied the entire pipeline to add reading from disk. 
-
-The problem is we have two paths in the main pipeline where there should be one.
-
-The problem is, the logic for getting the next tweet is muddied up with the processing of the tweets.  We have now tried to fix this twice and toally destroyed to program each time.
-
-DO NOT TOUCH ANYTHING IN THE processFromFiles() or processCSVFIle() function without express permission. Not one single semicolon. Nothing.
-
-We are going to write the getNextTweet() method without touching anything else.
-
-The processFromFiles(cfg *Config, printTweets bool) is fundamentally and irrmediably broken. It iterates over a list of files and calls processCSVFile() on each one. 
-
-Do NOT CHANGE ANY OF THAT FOR ANY REASON WHATSOEVER. We are toing to write a new method to get tweets from scratch.  Do not touch a single line of existing code. Zero. None.
-
-- First step is to isolate getting tweets behind a single method called getNextTweet() which is called at the beginning of the pipeline.  
-
-  - getNextTweet takes no argument and returns just a line of CSV.
-  - It entirely hides the source of the CSV from the caller, which may be the main pipeline method or it may be a test routine.
-    - If config says get it from Rabbit, it accesses Rabbit. 
-    - If config says get it from disk, it gets it from disk. 
-    - It must be impossible for the main pipeline to know where the CSV comes from or be influenced in any way by the source of the CSV.
-    - It must be impossible for the getNextTweet() method to do anything other than obtain and return a single line of CSV.
- - This method, getNextTweet() will be implemented and tested first without changing anything else. 
-
- When getNextTweet() is called in file access mode, it's initialization is somewhat like what processFromFiles() does, which is get a list of files from the directory.
-
- In file access mode, it is going to take each file in turn, opening it and returning a single CSV row each time it is called. Reading the actual file is now INCORRECTLY done in processCSVFIle().
-
- The reading of the individual files should now be in the code that backs getNextTweet() This code should do evertthing that the first 26 lines of processCSVFile() does except that returns the row.  
-
- The file access mode behind getNextTweet() not parse the row into a Tweet as is done in proceessCSVFile().
- Neither does the Rabbit mode. The simply return the row to the caller.
-
-The caller,  which will normally be the main processing loop, will execute the function
- parseCSVToTweet(row, cfg) REGARDLESS OF WHERE THE ROW CAME FROM.
-
-### Absolutely Critical
- Note that ALL OF THE REST OF THE CODE THAT IS NOW IN processCSVFile() Will ultimately be in the main Processing loop and will be identical regardless of where the csv came from 
+In the log we get these
 
 
-## We will ultimately discard the RABBIT path and integrate this call only in what is currently called the Disk access path.  The rabbit path should be completely unnecessary after we do this because config will decide where getNextTweet() gets its tweets.
+## Fix the AI loader so it can restart on the same dataset.
 
-Ok. Do you understand the part of the requirements about creating a new main pipeline function. It does everthing from the processCSVFIle() from 1471, 	tweet, err := parseCSVToTweet(row, cfg) except the last line that says slog.Info("Completed processing file", "file", filePath).  The new pipeline method knows nothing about files, remember?   So we should be able to make the new processTweets() method EXACTLY like processCSVFile() except that it doesn't need the arguments, and instead of the first part down to (but not including) parseCSVToTweet() it just has getNextTweet() along with any error checking it might need, etc.
-
-### Batches with no tweets.
-
-WARNING: Cluster 0 in batch 4590 has no tweets!
-
-### Batches with Tweets but no clusters and no busy words, but have tweets
-
-DEBUG: Batch 4601 has 0 clusters but 164 total tweets. Raw data: clusters=[], total_clusters=0
-Processed batch 4601: 0 clusters, 164 tweets, 0 busy words
-
-The clustering algorithm produces batches with many tweets but no clusters.  Fiddling with the values in the override file to see it the clustering algorithm is just tuned wrong.
-
-This is not an sql_loader problem. The batches are like that in the main zfilters program.
-
-This may or may not be be correct clustering behavior but it's intuitively not what we want. If you have a bunch of tweets in a batch, they should be at least one cluster on that basis.
-
-### Clusters with no tweets. 
-Note, cluster 0 has no Tweets but there are other clusters in the batch that are fine.
-
-WARNING: Cluster 0 in batch 4830 has no tweets!
-Processed batch 4830: 10 clusters, 1929 tweets, 71 busy words
-
-If the clustering doesn't find clusters, then surely the entire batch of tweets is the cluster, right?  This case may have to be caught explicitly.   If so, it needs to be marked in the data so that we can see that is what happened.
-
-Processed batch 1280: 0 clusters, 147 tweets, 0 busy words
-  DEBUG: Batch 1281 has 0 clusters but 93 total tweets. Raw data: clusters=[], total_clusters=0
-Processed batch 1281: 0 clusters, 93 tweets, 0 busy words
-Failed to parse JSON object: invalid character '{' after top-level value
-Failed to parse JSON object: unexpected end of JSON input
-Processed batch 2154: 1 clusters, 318 tweets, 4 busy words
-Processed batch 2155: 2 clusters, 112 tweets, 5 busy words
-
-
-## window_batches might be the wrong multiple to compute the minimum number of tokens to leave in the queue for removal from the 3pk mapping. Think it through.
+## Refactor the insanely large main into a reasonable structure.
 
 ## Global configs on the graphical output. 
 It would be nice to see global parameters on the output screen so you could see things like:
 - How big a batch is.
 - How much clock time is represented by each batch
 - Some values we aren't yet computing or displaying like, the quality of a cluster.
-
-## Look back over AI results.
-
-NOTE: This is pending getting a big dataset build. That is running now as of lunchtime on September 4 2025.  It should take a couple of days to get the full SQL inserts, but the AI part will take a week or to to get it all.
-
-We have an AI Display for lookingn back, but it gives poor results. This may be because of a bug that was causing a lot of empty batches. That is fixed now so we shall see how the display seems to run when we get some data.
-
 
 ## Clustering Improvement By Weighting Frequency Classes
 Would clustering be improved by weighting the frequency classes?

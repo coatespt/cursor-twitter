@@ -876,6 +876,10 @@ func initializePipeline(cfg *Config) error {
 		return fmt.Errorf("freq_classes must be > 0 in config, got %d", freqClasses)
 	}
 
+	// Set the global frequency classes count in the pipeline package
+	// This allows WhatClass() function to use the correct value instead of hardcoded 24
+	pipeline.SetGlobalFreqClasses(freqClasses)
+
 	// Initialize the FrequencyComputationThread
 	fct = pipeline.NewFrequencyComputationThread(
 		pipeline.NewTokenCounter(),
