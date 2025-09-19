@@ -693,7 +693,7 @@ go build -o ai_feeder main.go
 
 **Run:**
 ```bash
-./ai_feeder ../../config/ai_feeder.yaml
+./ai_feeder "run-name" ../../config/ai_feeder.yaml
 ```
 
 **Key Features:**

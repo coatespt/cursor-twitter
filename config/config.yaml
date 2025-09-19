@@ -1,17 +1,19 @@
 
-# This is the basic configuration file for the back end. 
+# This is the basic configuration file for the z-filters back end. 
+# Think before changing this. The override file e.g. ptc_config_override.yaml is 
+#    ususally the best place to twiddle values. You can make override files for 
+#    specific purposes and name them accordingly.
+#
 # There is a separate front-end configuration file in the display directory.
-# Analytics thread lag detection removed - barrier synchronization handles throttling
+#
+# Note that analytics thread lag detection removed - barrier synchronization handles throttling
 #
 # This is the only documentation for some of the parameters.
 # 
-# Note, there is an override mechanism available where you can change just
-# use an override file with and parameters you want to experiment with or 
-# use for some specific purpose.
-#
 # See README_config_files.txt for details.
 
 # Input mode: "mqj" for RabbitMQ, "files" for direct file reading
+# TODO: Test mqj. It hasn't been used in a while.
 mode: files
 
 # RabbitMQ settings (used when mode: mqj)
@@ -26,67 +28,49 @@ file_src_dir: ../twits/test_language_detect_out/
 # The number of tokens (not tweets) in the rolling window. This needs to be big
 # enough to give realistic background word frequency stats, but you don't 
 # want it so big that it takes forever to age out the effects of surges or
-# covers too much clock time, causing time-of-day effects to be washed out.
+# wall clock time. 
 # 
-# Note that the frequency partitioning filters are update much more frequently
-# than than once a window, but the window is the ballast determining how fast you
-# forget surges.
+# Note that the frequency partitioning filters typically update much more frequently
+# than than once a window, but the window is the ballast determining how fast you 
+# fully forget surges.
 # 
-# The full firehose is 5k/second average, so 300,000 Tweets per minute.
-# That makes 3,000,000 for ten minutes and 9,000,000 for half an hour of clock
-# time. Flat-out reading from disk can be 10x as fast in tweets/second..
-#
-window: 3000000
+window: 5000000
 
 # We roll tokens out of the token window (above) file-by-file. This is the number
-# of token files in the window(see above) so the size of a file is
-# window/token_persist_files. Once token_persist_files files have been written
-# the contents of the oldest file are aged out of the the window's counters.  
-# 
-# The number of files affects the fluidity of aging out surges in word use.
+# of token files in a window(see above) so the size of a file is
+# window/token_persist_files.
 #
 token_persist_files: 50
 
-# Frequency class rebuild interval. The current window is broken into
-# token_persist_files pieces, and every time rebuild_every_files files have
-# been written, the frequency filters get rebuilt. 
+# Frequency class rebuild interval. The current window is broken into token_persist_files 
+# pieces, and each time rebuild_every_files files have been written, the frequency 
+# filters get rebuilt. 
 #
 # This affects the fluidity with which surges in word use are aged out. 
 # 
-# Smaller is logically more accurate, but a small number has an impact on 
-# performance, as rebuilding frequency filters is a compute-intensive operation.
-# 50 files with a rebuild every 20 has worked, but a smaller number might 
-# be better.  Try 10.
+# Smaller is logically more accurate, but a small number may have an impact on performance, 
+# as rebuilding frequency filters is a compute-intensive operation.
+#
 rebuild_every_files: 10
 
 # The number of tweets to process in each busy-word process cycle. 
-# Every time batch number of tweets is read, the busy-word processors kick off
-# their Z computation and compute busy words.
+# This number affects the sensitivity to usage anomalies. Too big, and they get harder 
+# to see, too small and you see things that aren't there. It also greatly affect the
+# amount of output.
 #
-# This number affects the sensitivity to usage anomalies. Too big, and they 
-# get harder to see, too small and you see things that aren't there.
-#
-#batch: 13000
-batch: 30000     
+batch: 50000     
 
-# Number of batches to keep in the sliding Tweet window. This window is whole
-# Tweets for the batches, not tokens. It is used for clustering recent tweets by 
-# busy words and exposing the persistence of clusters.
+# Number of batches of Tweets to keep in the sliding Tweet window. This window is whole Tweets 
+# not tokens. It is used by the analytics thread for clustering recent tweets according
+# to busy words and for exposing the persistence of clusters.
 #
 # It's just what we keep, not what we necessarily use, so bigger just means 
 # more memory usage and a modest CPU hit for copying the set to another 
-# thread for analysis. Also, it affect the promptness of discarding obsolet 
-# 3pk's. It is copied to minimize contention between the main thread and the 
-# analysis thread. Tweets in memory are batch * window_batches.
+# thread for analysis. 
 window_batches: 5
 
-# Whether to log to the console
-# This may be obsolete or have it's precise meaning changed because we no longer
-# log anything to the console other than the JSON output.
-# TODO: This might be obsolete. Only legit output goes to stdout now. All 
-# other screen output should go to stderr.
-
-# The directory to log to. 
+# The directory to log to. It defaults to within the project, which is not optimal 
+# Change it in your overrid file.
 log_dir: ./logs
 
 # DEBUG shows all messages including frequent operational details
@@ -95,26 +79,29 @@ log_dir: ./logs
 # ERROR shows only error messages
 log_level: INFO
 
-# Array of z-scores for each frequency class (must match freq_classes count)
+# Array of threshhold z-scores for each frequency class (must match freq_classes count)
 # Higher values = more restrictive (require bigger surges to be "busy")
 # Lower values = less restrictive (easier to detect anomalies) 
+#
 # Number is the 5-6 range should exclude almost any count that isn't consistent
-#   with random variation.  The logs give some information on what Z's are 
-#   actually seen F-class by F-class in real life .
-# The bubble console gives a visual idea of what classes are producing the 
+# with random variation.
+#
+# To tune this, the bubble console gives a visual idea of what classes are producing the 
 # busy words and what kinds of words they are producing.
 #
 z_scores: [6.0, 6.0, 7.0, 6.5, 6.5, 5.5, 5.5, 5.5, 5.5, 5.5, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0,5.0,5.0,5.0,5.0] 
 
-# The number of frequency classes to create
-# Fewer gives increased variation in the underlying frequencies of words in a 
-# frequency class, while too many is burdensome computationally in memory and CPU.
+# The number of frequency classes to create.
+# The more f-classes, the less background variability among the words.
 # This has run with as few as 7, but I'm using 24 or more for less variability.
+# The Z-Filters algorithm is not a huge computation hog, so don't cheap out here.
 freq_classes: 24
 
 # The length of the busy word processor counter arrays and the 3pk range (they must be equal.)
-# This quantity cubed is the size of the 3pk space. 1000^3 = 1 billion.
-#  1250 gives a space of just under two billion distinct keys.
+# This quantity cubed is the size of the 3pk space. 1000^3 = 1 billion, 1250 gives a space 
+# of just under two billion distinct keys. Bigger value means lower counts per counter and
+# greater variation, lower value means more collisions.  Optimal value an open question,
+# so we rely on the wet finger in the air method for choosing the value. 
 bw_array_len: 1250
 
 # List of frequency classes (1-based) to skip for busy word detection. 
@@ -123,6 +110,7 @@ bw_array_len: 1250
 #   of useful information. Words like "the", "an", "lol" muddy things up while still costing
 #   compute cycles. This would have a similar effect to putting huge values in 
 #   the z_scores table above but it skips the computation entirely
+# 
 # TODO: This seems redundant given busyword_classes (below). Investigate.
 skip_frequency_classes: [1]  
 
@@ -143,7 +131,6 @@ filter:
   # numerous tokens that are so offensive that you probably don't want them used
   # as busy words. Many of these start with the letter 'n'.  This directory is hugely
   # effective, as most words are junk, e.g., "an", "and", "lol", etc. 
-  # It's the miracle of the Ziph distribution.
   enabled: true
 
   # Path to directory containing .txt files with words to filter out
@@ -153,6 +140,7 @@ filter:
 persistence:
   # Directory for storing state files (counts, filters) for fast restarts
   # TODO: This entire piece of functionality is probably obsolete because of the speed increases.
+  # It now takes a few seconds to start generating busy words.
   state_dir: "../data/state"
 
 

@@ -493,6 +493,8 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 - "Start and internet business"
 
 # TTD and Direction
+## Need Utility to find batches and cluster count distributions 
+I feel like we're getting insane numbers of clusters now.
 
 ## Remove the superfluous debugs, 
 On the console we get these.
