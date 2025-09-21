@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"testing"
+
+	"cursor-twitter/src/config"
 )
 
 // TestConfigOverride tests the config override mechanism
@@ -40,7 +42,7 @@ rebuild_every_files: 10
 	defer os.Remove(overrideConfigPath)
 
 	// Test the override mechanism
-	cfg, err := loadConfigWithOverride(baseConfigPath, overrideConfigPath)
+	cfg, err := config.LoadConfigWithOverride(baseConfigPath, overrideConfigPath)
 	if err != nil {
 		t.Fatalf("Failed to load config with override: %v", err)
 	}
@@ -90,7 +92,7 @@ log_level: INFO
 	defer os.Remove(baseConfigPath)
 
 	// Test loading without override
-	cfg, err := loadConfigWithOverride(baseConfigPath, "")
+	cfg, err := config.LoadConfigWithOverride(baseConfigPath, "")
 	if err != nil {
 		t.Fatalf("Failed to load config without override: %v", err)
 	}
@@ -161,7 +163,7 @@ analysis:
 	defer os.Remove(overrideConfigPath)
 
 	// Test the override mechanism
-	cfg, err := loadConfigWithOverride(baseConfigPath, overrideConfigPath)
+	cfg, err := config.LoadConfigWithOverride(baseConfigPath, overrideConfigPath)
 	if err != nil {
 		t.Fatalf("Failed to load config with override: %v", err)
 	}

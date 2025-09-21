@@ -348,7 +348,6 @@ func startAnalysisThread(cfg *config.Config, loadedState map[string]int) {
 
 // runClusteringForBatch runs clustering analysis for a batch of busy words and tweets
 func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets.Tweet, batchNumber int64, cfg *config.Config) {
-	fmt.Fprintf(os.Stderr, "DEBUG: runClusteringForBatch called for batch %d\n", batchNumber)
 	slog.Info("Clustering: Starting batch analysis", "batch_number", batchNumber, "class_results", len(classResults), "recent_tweets", len(recentTweets))
 
 	// Print busy word summary
@@ -386,7 +385,6 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 	if minBusyWords <= 0 {
 		minBusyWords = 1
 	}
-	fmt.Fprintf(os.Stderr, "DEBUG: Using minBusyWords = %d (from config: %d)\n", minBusyWords, cfg.Analysis.MinBusyWordsPerTweet)
 
 	var tweetsWithBusyWords []*tweets.Tweet
 	for _, tweet := range recentTweets {
@@ -401,16 +399,12 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 		if busyWordCount >= minBusyWords {
 			tweetsWithBusyWords = append(tweetsWithBusyWords, tweet)
 		} else {
-			// Debug: Show tweets that were filtered out
-			if len(busyTokens) > 0 {
-				fmt.Fprintf(os.Stderr, "DEBUG: Filtered out tweet with %d busy words: %v\n", busyWordCount, busyTokens)
-			}
 		}
 	}
 
 	// Debug: Show filtering results
-	fmt.Fprintf(os.Stderr, "DEBUG: Tweet filtering results - total_tweets: %d, tweets_with_busy_words: %d, min_busy_words: %d, total_busy_words: %d\n",
-		len(recentTweets), len(tweetsWithBusyWords), minBusyWords, len(allBusyWords))
+	fmt.Fprintf(os.Stderr, "DEBUG: Tweet filtering results - total_tweets: %d, tweets_after_filtering: %d, tweets_filtered_out: %d, min_busy_words: %d, total_busy_words: %d\n",
+		len(recentTweets), len(tweetsWithBusyWords), len(recentTweets)-len(tweetsWithBusyWords), minBusyWords, len(allBusyWords))
 	slog.Info("Tweet filtering results", "total_tweets", len(recentTweets), "tweets_with_busy_words", len(tweetsWithBusyWords), "min_busy_words", minBusyWords, "total_busy_words", len(allBusyWords))
 
 	// Sanity checks before proceeding with clustering

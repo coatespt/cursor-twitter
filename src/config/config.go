@@ -245,23 +245,70 @@ func LoadAndValidateConfigWithPathResolution(configPath string) (*Config, error)
 
 // LoadConfigWithOverride loads a base config and optionally applies an override config
 func LoadConfigWithOverride(baseConfigPath, overrideConfigPath string) (*Config, error) {
-	// Load the base config
-	cfg, err := LoadAndValidateConfigWithPathResolution(baseConfigPath)
+	// Parse base config into a map
+	baseData, err := os.ReadFile(baseConfigPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read base config file: %v", err)
 	}
 
-	// If no override specified, return the base config
+	var baseMap map[string]interface{}
+	if err := yaml.Unmarshal(baseData, &baseMap); err != nil {
+		return nil, fmt.Errorf("failed to parse base config YAML: %v", err)
+	}
+
+	// If no override specified, just unmarshal the base config
 	if overrideConfigPath == "" {
-		return cfg, nil
+		var cfg Config
+		if err := yaml.Unmarshal(baseData, &cfg); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal base config: %v", err)
+		}
+		return &cfg, nil
 	}
 
-	// Apply override values directly from the YAML file
-	if err := applyOverrideFromYAML(cfg, overrideConfigPath); err != nil {
-		return nil, fmt.Errorf("failed to apply override config: %v", err)
+	// Parse override config into a map
+	overrideData, err := os.ReadFile(overrideConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read override config file: %v", err)
 	}
 
-	return cfg, nil
+	var overrideMap map[string]interface{}
+	if err := yaml.Unmarshal(overrideData, &overrideMap); err != nil {
+		return nil, fmt.Errorf("failed to parse override config YAML: %v", err)
+	}
+
+	// Recursively merge override map into base map
+	mergeMaps(baseMap, overrideMap)
+
+	// Marshal the merged map back to YAML
+	mergedYAML, err := yaml.Marshal(baseMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal merged config: %v", err)
+	}
+
+	// Unmarshal into Config struct
+	var cfg Config
+	if err := yaml.Unmarshal(mergedYAML, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal merged config: %v", err)
+	}
+
+	return &cfg, nil
+}
+
+// mergeMaps recursively merges override map into base map
+func mergeMaps(base, override map[string]interface{}) {
+	for key, overrideValue := range override {
+		if baseValue, exists := base[key]; exists {
+			// If both values are maps, recursively merge them
+			if baseMap, ok := baseValue.(map[string]interface{}); ok {
+				if overrideMap, ok := overrideValue.(map[string]interface{}); ok {
+					mergeMaps(baseMap, overrideMap)
+					continue
+				}
+			}
+		}
+		// Otherwise, override wins (including replacing maps with non-maps)
+		base[key] = overrideValue
+	}
 }
 
 // applyOverrideFromYAML applies only the values that are present in the override YAML file
