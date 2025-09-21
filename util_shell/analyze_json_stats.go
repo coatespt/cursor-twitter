@@ -50,6 +50,7 @@ func main() {
 	var allBatches []Batch
 	var clusterCounts []int
 	var tweetCounts []int
+	var actualTweetCounts []int // Count of tweets actually in JSON
 	var clustersAboveMin []int
 	var firstBatchTime, lastBatchTime string
 
@@ -70,6 +71,18 @@ func main() {
 			actualClusterCount := len(batch.Data.Clusters)
 			clusterCounts = append(clusterCounts, actualClusterCount)
 			tweetCounts = append(tweetCounts, batch.Data.TotalTweets)
+
+			// Count actual tweets in the JSON clusters
+			actualTweetsInBatch := 0
+			for _, clusterInterface := range batch.Data.Clusters {
+				if clusterMap, ok := clusterInterface.(map[string]interface{}); ok {
+					if tweetsInterface, ok := clusterMap["tweets"].([]interface{}); ok {
+						actualTweetsInBatch += len(tweetsInterface)
+					}
+				}
+			}
+			actualTweetCounts = append(actualTweetCounts, actualTweetsInBatch)
+
 			clustersAboveMin = append(clustersAboveMin, batch.Data.ClustersAboveMinSize)
 
 			if firstBatchTime == "" {
@@ -100,27 +113,43 @@ func main() {
 	fmt.Printf("   Standard deviation: %.2f\n", clusterStdev)
 	fmt.Println()
 
-	// Calculate tweet statistics
+	// Calculate tweet statistics (total tweets in batch)
 	tweetMin, tweetMax := minMax(tweetCounts)
 	tweetAvg := average(tweetCounts)
 	tweetStdev := standardDeviation(tweetCounts)
 
-	fmt.Println("📈 Tweet statistics per batch:")
+	fmt.Println("📈 Tweet statistics per batch (total tweets in batch):")
 	fmt.Printf("   Min tweets: %d\n", tweetMin)
 	fmt.Printf("   Max tweets: %d\n", tweetMax)
 	fmt.Printf("   Average tweets: %.0f\n", tweetAvg)
 	fmt.Printf("   Standard deviation: %.0f\n", tweetStdev)
 	fmt.Println()
 
+	// Calculate actual tweets in JSON statistics
+	actualTweetMin, actualTweetMax := minMax(actualTweetCounts)
+	actualTweetAvg := average(actualTweetCounts)
+	actualTweetStdev := standardDeviation(actualTweetCounts)
+
+	fmt.Println("📈 Actual tweets in JSON per batch:")
+	fmt.Printf("   Min tweets: %d\n", actualTweetMin)
+	fmt.Printf("   Max tweets: %d\n", actualTweetMax)
+	fmt.Printf("   Average tweets: %.0f\n", actualTweetAvg)
+	fmt.Printf("   Standard deviation: %.0f\n", actualTweetStdev)
+	fmt.Println()
+
 	// Summary statistics
 	totalTweets := sum(tweetCounts)
+	totalActualTweets := sum(actualTweetCounts)
 	totalClusters := sum(clusterCounts)
 	avgTweetsPerCluster := float64(totalTweets) / float64(totalClusters)
+	avgActualTweetsPerCluster := float64(totalActualTweets) / float64(totalClusters)
 
 	fmt.Println("📊 Summary statistics:")
 	fmt.Printf("   Total tweets processed: %d\n", totalTweets)
+	fmt.Printf("   Total tweets in JSON: %d\n", totalActualTweets)
 	fmt.Printf("   Total clusters created: %d\n", totalClusters)
-	fmt.Printf("   Average tweets per cluster: %.1f\n", avgTweetsPerCluster)
+	fmt.Printf("   Average tweets per cluster (total): %.1f\n", avgTweetsPerCluster)
+	fmt.Printf("   Average tweets per cluster (in JSON): %.1f\n", avgActualTweetsPerCluster)
 	fmt.Println()
 
 	// Time analysis

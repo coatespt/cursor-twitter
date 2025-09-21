@@ -966,18 +966,18 @@ Cleans up old build artifacts and temporary files.
 - Cleans temporary files
 - Frees disk space
 
-### 4. JSON Output Analysis (`util_shell/analyze_json_output.sh`)
+### 4. JSON Output Analysis (`util_shell/analyze_json_stats.go`)
 
-Comprehensive analysis tool for Twitter pipeline JSON output files. Provides detailed statistics about batches, clusters, tweets, and file structure.
+Comprehensive Go-based analysis tool for Twitter pipeline JSON output files. Provides detailed statistics about batches, clusters, tweets, and file structure with high performance.
 
 **Usage:**
 ```bash
-./util_shell/analyze_json_output.sh <json_file>
+go run util_shell/analyze_json_stats.go <json_file>
 ```
 
 **Example:**
 ```bash
-./util_shell/analyze_json_output.sh september_18.json
+go run util_shell/analyze_json_stats.go september_18.json
 ```
 
 **Features:**
@@ -987,6 +987,7 @@ Comprehensive analysis tool for Twitter pipeline JSON output files. Provides det
 - **Performance Metrics**: Total tweets processed, clusters created, processing rates
 - **Data Validation**: File structure validation, error detection
 - **Summary Statistics**: Clusters above minimum size, batch time ranges
+- **High Performance**: Go-based implementation for fast processing of large files
 
 **Output Example:**
 ```
@@ -1007,7 +1008,7 @@ Comprehensive analysis tool for Twitter pipeline JSON output files. Provides det
 📊 Summary statistics:
    Total tweets processed: 1125000
    Total clusters created: 375
-   Average clusters per tweet: 0.0003
+   Average tweets per cluster: 3000.0
 ⏰ Time analysis:
    First batch: 2012-01-28T15:56:35Z
    Last batch: 2012-01-28T18:23:45Z
@@ -1015,7 +1016,7 @@ Comprehensive analysis tool for Twitter pipeline JSON output files. Provides det
    Average clusters above min size per batch: 6.1
    Total clusters above min size: 275
 🔍 File structure validation:
-   Data types found: ["batch"]
+   Data types found: [batch]
    ✅ No error entries found
 ```
 
@@ -1027,8 +1028,8 @@ Comprehensive analysis tool for Twitter pipeline JSON output files. Provides det
 - **Reporting**: Generate statistics for research or documentation
 
 **Dependencies:**
-- `jq` (JSON processor) - install with `brew install jq` or `apt-get install jq`
-- `bc` (basic calculator) - usually pre-installed on Unix systems
+- Go 1.21+ (no external dependencies)
+- Built-in JSON processing and mathematical functions
 
 ---
 

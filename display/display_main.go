@@ -170,14 +170,8 @@ var (
 )
 
 func main() {
-	// Get config path from command line or use default
-	configPath := "config.yaml"
-	if len(os.Args) > 1 {
-		configPath = os.Args[1]
-	}
-
-	// Load configuration with path resolution
-	if err := loadConfigWithPathResolution(configPath); err != nil {
+	// Load configuration
+	if err := loadConfig(); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
@@ -523,23 +517,41 @@ func handleChartData(w http.ResponseWriter, r *http.Request) {
 
 		fmt.Printf("Cluster %d: ID=%v, Size=%v\n", i, clusterID, size)
 
-		// Extract busy words
-		busyWordsInterface, _ := clusterMap["busy_words"].([]interface{})
+		// Extract busy words - handle new map structure
 		var busyWords []string
-		for _, word := range busyWordsInterface {
-			if wordStr, ok := word.(string); ok {
-				busyWords = append(busyWords, wordStr)
+		if busyWordsMap, ok := clusterMap["busy_words"].(map[string]interface{}); ok {
+			// New format: busy_words is a map
+			for word := range busyWordsMap {
+				busyWords = append(busyWords, word)
+			}
+		} else if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
+			// Old format: busy_words is an array (fallback)
+			for _, word := range busyWordsInterface {
+				if wordStr, ok := word.(string); ok {
+					busyWords = append(busyWords, wordStr)
+				}
 			}
 		}
 
 		fmt.Printf("Cluster %d: Found %d busy words: %v\n", i, len(busyWords), busyWords)
 
-		// Extract tweet texts
-		tweetTextsInterface, _ := clusterMap["tweet_texts"].([]interface{})
+		// Extract tweet texts - handle new tweets structure
 		var tweetTexts []string
-		for _, tweet := range tweetTextsInterface {
-			if tweetStr, ok := tweet.(string); ok {
-				tweetTexts = append(tweetTexts, tweetStr)
+		if tweetsInterface, ok := clusterMap["tweets"].([]interface{}); ok {
+			// New format: tweets is an array of objects
+			for _, tweetInterface := range tweetsInterface {
+				if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
+					if text, ok := tweetMap["text"].(string); ok {
+						tweetTexts = append(tweetTexts, text)
+					}
+				}
+			}
+		} else if tweetTextsInterface, ok := clusterMap["tweet_texts"].([]interface{}); ok {
+			// Old format: tweet_texts is an array of strings (fallback)
+			for _, tweet := range tweetTextsInterface {
+				if tweetStr, ok := tweet.(string); ok {
+					tweetTexts = append(tweetTexts, tweetStr)
+				}
 			}
 		}
 
@@ -771,7 +783,17 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 		fmt.Printf("computeGridData: cluster %d ID=%v size=%v\n", i, clusterID, size)
 
 		// Extract busy words
-		busyWordsInterface, _ := cluster["busy_words"].([]interface{})
+		// Handle new map structure for busy_words
+		var busyWordsInterface []interface{}
+		if busyWordsMap, ok := cluster["busy_words"].(map[string]interface{}); ok {
+			// New format: convert map keys to array
+			for word := range busyWordsMap {
+				busyWordsInterface = append(busyWordsInterface, word)
+			}
+		} else {
+			// Old format: already an array
+			busyWordsInterface, _ = cluster["busy_words"].([]interface{})
+		}
 		fmt.Printf("computeGridData: cluster %d busy_words type: %T, value: %v\n", i, busyWordsInterface, busyWordsInterface)
 		var busyWords []string
 		for j, wordInterface := range busyWordsInterface {
@@ -911,7 +933,17 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 						continue
 					}
 
-					busyWordsInterface, _ := clusterMap["busy_words"].([]interface{})
+					// Handle new map structure for busy_words
+					var busyWordsInterface []interface{}
+					if busyWordsMap, ok := clusterMap["busy_words"].(map[string]interface{}); ok {
+						// New format: convert map keys to array
+						for word := range busyWordsMap {
+							busyWordsInterface = append(busyWordsInterface, word)
+						}
+					} else {
+						// Old format: already an array
+						busyWordsInterface, _ = clusterMap["busy_words"].([]interface{})
+					}
 					for _, wordInterface := range busyWordsInterface {
 						historicalWord, ok := wordInterface.(string)
 						if ok && historicalWord == word {
@@ -1458,15 +1490,34 @@ func computeMedoidData(batchNum, historicalBatches, minClusterSize int) MedoidDa
 			continue
 		}
 
-		// Extract medoid text
+		// Extract medoid text - handle new structure
 		medoidText := ""
 		if medoid, ok := clusterMap["medoid"].(string); ok {
+			// Old format: medoid field exists
 			medoidText = medoid
+		} else if medoidTweet, ok := clusterMap["medoid_tweet"].(string); ok {
+			// Alternative medoid field
+			medoidText = medoidTweet
+		} else if tweetsInterface, ok := clusterMap["tweets"].([]interface{}); ok {
+			// New format: find medoid in tweets array (first tweet is typically the medoid)
+			if len(tweetsInterface) > 0 {
+				if tweetMap, ok := tweetsInterface[0].(map[string]interface{}); ok {
+					if text, ok := tweetMap["text"].(string); ok {
+						medoidText = text
+					}
+				}
+			}
 		}
 
 		// Extract busy words
 		var busyWords []string
-		if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
+		if busyWordsMap, ok := clusterMap["busy_words"].(map[string]interface{}); ok {
+			// New format: busy_words is a map
+			for word := range busyWordsMap {
+				busyWords = append(busyWords, word)
+			}
+		} else if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
+			// Old format: busy_words is an array (fallback)
 			for _, word := range busyWordsInterface {
 				if wordStr, ok := word.(string); ok {
 					busyWords = append(busyWords, wordStr)
@@ -1692,7 +1743,19 @@ func computeBubbleData(batchNum, historicalBatches, minClusterSize int) map[stri
 			}
 
 			// Get busy words and their frequency classes
-			if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
+			// Handle new map structure for busy_words
+			var busyWordsInterface []interface{}
+			if busyWordsMap, ok := clusterMap["busy_words"].(map[string]interface{}); ok {
+				// New format: convert map keys to array
+				for word := range busyWordsMap {
+					busyWordsInterface = append(busyWordsInterface, word)
+				}
+			} else if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
+				// Old format: already an array
+				busyWordsInterface = busyWordsInterface
+			}
+
+			if len(busyWordsInterface) > 0 {
 				busyWordClasses, _ := clusterMap["busy_word_classes"].(map[string]interface{})
 
 				for _, wordInterface := range busyWordsInterface {
@@ -1761,7 +1824,13 @@ func computeBubbleData(batchNum, historicalBatches, minClusterSize int) map[stri
 				}
 
 				var busyWords []string
-				if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
+				if busyWordsMap, ok := clusterMap["busy_words"].(map[string]interface{}); ok {
+					// New format: busy_words is a map
+					for word := range busyWordsMap {
+						busyWords = append(busyWords, word)
+					}
+				} else if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
+					// Old format: busy_words is an array (fallback)
 					for _, word := range busyWordsInterface {
 						if wordStr, ok := word.(string); ok {
 							busyWords = append(busyWords, wordStr)

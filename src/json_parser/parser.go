@@ -21,12 +21,25 @@ type Batch struct {
 	} `json:"data"`
 }
 
+// Tweet represents a single tweet with full data
+type Tweet struct {
+	IDStr        string `json:"id_str"`
+	Unix         int64  `json:"unix"`
+	CreatedAt    string `json:"created_at"`
+	UserIDStr    string `json:"user_id_str"`
+	Text         string `json:"text"`
+	Retweeted    bool   `json:"retweeted"`
+	RetweetCount int    `json:"retweet_count"`
+	Lang         string `json:"lang"`
+	BatchID      int    `json:"batch_id"`
+}
+
 // Cluster represents a parsed cluster with its data
 type Cluster struct {
 	ClusterID       int                    `json:"cluster_id"`
 	Size            int                    `json:"size"`
-	BusyWords       []string               `json:"busy_words"`
-	TweetTexts      []string               `json:"tweet_texts"`
+	BusyWords       map[string]bool        `json:"busy_words"`             // Changed from []string to map
+	Tweets          []Tweet                `json:"tweets"`                 // Changed from TweetTexts to full tweet objects
 	Medoid          string                 `json:"medoid,omitempty"`       // Primary medoid field
 	MedoidTweet     string                 `json:"medoid_tweet,omitempty"` // Alternative medoid field (will be merged with Medoid)
 	QualityScore    float64                `json:"quality_score,omitempty"`
@@ -168,22 +181,31 @@ func extractClusterFromMap(clusterMap map[string]interface{}) *Cluster {
 		size = 0 // Default to 0 if missing
 	}
 
-	// Extract busy words - handle missing or invalid data gracefully
-	var busyWords []string
-	if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
-		for _, word := range busyWordsInterface {
-			if wordStr, ok := word.(string); ok {
-				busyWords = append(busyWords, wordStr)
-			}
+	// Extract busy words - handle new map structure
+	busyWords := make(map[string]bool)
+	if busyWordsInterface, ok := clusterMap["busy_words"].(map[string]interface{}); ok {
+		for word := range busyWordsInterface {
+			busyWords[word] = true
 		}
 	}
 
-	// Extract tweet texts - handle missing or invalid data gracefully
-	var tweetTexts []string
-	if tweetTextsInterface, ok := clusterMap["tweet_texts"].([]interface{}); ok {
-		for _, tweet := range tweetTextsInterface {
-			if tweetStr, ok := tweet.(string); ok {
-				tweetTexts = append(tweetTexts, tweetStr)
+	// Extract tweets - handle new array of objects structure
+	var tweets []Tweet
+	if tweetsInterface, ok := clusterMap["tweets"].([]interface{}); ok {
+		for _, tweetInterface := range tweetsInterface {
+			if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
+				tweet := Tweet{
+					IDStr:        getString(tweetMap, "id_str"),
+					Unix:         getInt64(tweetMap, "unix"),
+					CreatedAt:    getString(tweetMap, "created_at"),
+					UserIDStr:    getString(tweetMap, "user_id_str"),
+					Text:         getString(tweetMap, "text"),
+					Retweeted:    getBool(tweetMap, "retweeted"),
+					RetweetCount: getInt(tweetMap, "retweet_count"),
+					Lang:         getString(tweetMap, "lang"),
+					BatchID:      getInt(tweetMap, "batch_id"),
+				}
+				tweets = append(tweets, tweet)
 			}
 		}
 	}
@@ -198,12 +220,41 @@ func extractClusterFromMap(clusterMap map[string]interface{}) *Cluster {
 		ClusterID:       clusterID,
 		Size:            int(size),
 		BusyWords:       busyWords,
-		TweetTexts:      tweetTexts,
+		Tweets:          tweets,
 		Medoid:          medoid,
 		MedoidTweet:     medoidTweet,
 		QualityScore:    qualityScore,
 		BusyWordClasses: busyWordClasses,
 	}
+}
+
+// Helper functions for safe type conversion
+func getString(m map[string]interface{}, key string) string {
+	if val, ok := m[key].(string); ok {
+		return val
+	}
+	return ""
+}
+
+func getInt(m map[string]interface{}, key string) int {
+	if val, ok := m[key].(float64); ok {
+		return int(val)
+	}
+	return 0
+}
+
+func getInt64(m map[string]interface{}, key string) int64 {
+	if val, ok := m[key].(float64); ok {
+		return int64(val)
+	}
+	return 0
+}
+
+func getBool(m map[string]interface{}, key string) bool {
+	if val, ok := m[key].(bool); ok {
+		return val
+	}
+	return false
 }
 
 // LoadInitialData loads the first few chunks to get initial data

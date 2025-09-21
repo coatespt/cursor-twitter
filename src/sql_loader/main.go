@@ -390,10 +390,10 @@ func (sl *SQLLoader) InsertBatch(batch json_parser.Batch) (int, error) {
 func (sl *SQLLoader) InsertCluster(batchID int, cluster json_parser.Cluster) (int, error) {
 	var clusterID int
 	err := sl.db.QueryRow(`
-		INSERT INTO new_clusters (batch_id, size, quality_score)
-		VALUES ($1, $2, $3)
-		RETURNING cluster_id
-	`, batchID, cluster.Size, cluster.QualityScore).Scan(&clusterID)
+		INSERT INTO new_clusters (batch_id, cluster_id, size, quality_score)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id
+	`, batchID, cluster.ClusterID, cluster.Size, cluster.QualityScore).Scan(&clusterID)
 
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert cluster %d: %v", cluster.ClusterID, err)
@@ -406,37 +406,46 @@ func (sl *SQLLoader) InsertCluster(batchID int, cluster json_parser.Cluster) (in
 func (sl *SQLLoader) InsertTweets(clusterID int, cluster json_parser.Cluster) error {
 	medoidText := cluster.GetMedoidText()
 
+	// Get tweets from the new JSON structure
+	tweets := cluster.Tweets
+	if tweets == nil {
+		return fmt.Errorf("no tweets found in cluster")
+	}
+
 	// Limit number of tweets if configured
-	tweetCount := len(cluster.TweetTexts)
+	tweetCount := len(tweets)
 	if sl.config.MaxTweetsPerCluster > 0 && tweetCount > sl.config.MaxTweetsPerCluster {
 		fmt.Printf("    Limiting cluster %d from %d to %d tweets\n", cluster.ClusterID, tweetCount, sl.config.MaxTweetsPerCluster)
 		tweetCount = sl.config.MaxTweetsPerCluster
 	}
 
 	for i := 0; i < tweetCount; i++ {
-		tweetText := cluster.TweetTexts[i]
-		isMedoid := (tweetText == medoidText)
+		tweet := tweets[i]
+		isMedoid := (tweet.Text == medoidText)
 
-		// First, insert the tweet into the tweets table
+		// Parse the created_at timestamp
+		var createdAtTweet *time.Time
+		if tweet.CreatedAt != "" {
+			if parsed, err := time.Parse("2006-01-02 15:04:05 UTC", tweet.CreatedAt); err == nil {
+				createdAtTweet = &parsed
+			}
+		}
+
+		// Insert the tweet with all the rich data
 		var tweetID int
 		err := sl.db.QueryRow(`
-			INSERT INTO new_tweets (tweet_text)
-			VALUES ($1)
-			RETURNING tweet_id
-		`, tweetText).Scan(&tweetID)
+			INSERT INTO new_tweets (
+				cluster_id, tweet_id_str, unix_timestamp, created_at_tweet, 
+				user_id_str, tweet_text, retweeted, retweet_count, 
+				lang, batch_id, tweet_order, is_medoid
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			RETURNING id
+		`, clusterID, tweet.IDStr, tweet.Unix, createdAtTweet,
+			tweet.UserIDStr, tweet.Text, tweet.Retweeted, tweet.RetweetCount,
+			tweet.Lang, tweet.BatchID, i+1, isMedoid).Scan(&tweetID)
 
 		if err != nil {
 			return fmt.Errorf("failed to insert tweet %d: %v", i+1, err)
-		}
-
-		// Then, link the tweet to the cluster
-		_, err = sl.db.Exec(`
-			INSERT INTO new_tweet_clusters (tweet_id, cluster_id, tweet_order, is_medoid)
-			VALUES ($1, $2, $3, $4)
-		`, tweetID, clusterID, i+1, isMedoid)
-
-		if err != nil {
-			return fmt.Errorf("failed to link tweet %d to cluster %d: %v", tweetID, cluster.ClusterID, err)
 		}
 	}
 
@@ -445,7 +454,9 @@ func (sl *SQLLoader) InsertTweets(clusterID int, cluster json_parser.Cluster) er
 
 // InsertBusyWords inserts all busy words for a cluster
 func (sl *SQLLoader) InsertBusyWords(clusterID int, cluster json_parser.Cluster) error {
-	for i, word := range cluster.BusyWords {
+	// Handle new busy_words map structure
+	wordOrder := 1
+	for word := range cluster.BusyWords {
 		// Get frequency class from busy_word_classes map, default to 12 if not found
 		frequencyClass := 12
 		if cluster.BusyWordClasses != nil {
@@ -459,11 +470,12 @@ func (sl *SQLLoader) InsertBusyWords(clusterID int, cluster json_parser.Cluster)
 		_, err := sl.db.Exec(`
 			INSERT INTO new_busy_words (cluster_id, word, word_order, frequency_class)
 			VALUES ($1, $2, $3, $4)
-		`, clusterID, word, i+1, frequencyClass)
+		`, clusterID, word, wordOrder, frequencyClass)
 
 		if err != nil {
 			return fmt.Errorf("failed to insert busy word %s in cluster %d: %v", word, cluster.ClusterID, err)
 		}
+		wordOrder++
 	}
 
 	return nil
@@ -496,7 +508,7 @@ func (sl *SQLLoader) ProcessBatch(batch json_parser.Batch) error {
 			if len(cluster.BusyWords) == 0 {
 				fmt.Printf("  WARNING: Cluster %d in batch %d has no busy words!\n", cluster.ClusterID, batch.Data.BatchNumber)
 			}
-			if len(cluster.TweetTexts) == 0 {
+			if cluster.Tweets == nil || len(cluster.Tweets) == 0 {
 				fmt.Printf("  WARNING: Cluster %d in batch %d has no tweets!\n", cluster.ClusterID, batch.Data.BatchNumber)
 			}
 		}
@@ -730,7 +742,7 @@ func main() {
 
 	// Check for expected tables using pg_tables (more direct)
 	fmt.Println("\nChecking for expected tables (using pg_tables):")
-	expectedTables := []string{"batches", "clusters", "tweets", "busy_words"}
+	expectedTables := []string{"new_batches", "new_clusters", "new_tweets", "new_busy_words"}
 	for _, tableName := range expectedTables {
 		var tableExists bool
 		err = loader.db.QueryRow(`

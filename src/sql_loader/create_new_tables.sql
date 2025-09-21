@@ -57,7 +57,15 @@ CREATE TABLE IF NOT EXISTS new_clusters (
 CREATE TABLE IF NOT EXISTS new_tweets (
     id SERIAL PRIMARY KEY,
     cluster_id INTEGER NOT NULL REFERENCES new_clusters(id) ON DELETE CASCADE,
-    tweet_text TEXT NOT NULL,
+    tweet_id_str TEXT NOT NULL, -- Original tweet ID from Twitter
+    unix_timestamp BIGINT NOT NULL, -- Unix timestamp
+    created_at_tweet TIMESTAMP WITH TIME ZONE, -- Tweet creation time
+    user_id_str TEXT, -- User ID from Twitter
+    tweet_text TEXT NOT NULL, -- Tweet content
+    retweeted BOOLEAN DEFAULT FALSE,
+    retweet_count INTEGER DEFAULT 0,
+    lang VARCHAR(10), -- Language code
+    batch_id INTEGER, -- Original batch ID from pipeline
     tweet_order INTEGER NOT NULL, -- Order within cluster
     is_medoid BOOLEAN DEFAULT FALSE, -- Marks this tweet as the cluster medoid
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
