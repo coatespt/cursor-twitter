@@ -382,7 +382,7 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 	}
 
 	// Filter tweets that contain at least minBusyWords busy words
-	minBusyWords := 3  // Hardcoded for testing
+	minBusyWords := 3 // Hardcoded for testing
 	if minBusyWords <= 0 {
 		minBusyWords = 1
 	}
