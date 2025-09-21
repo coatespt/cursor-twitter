@@ -38,13 +38,19 @@ type Batch struct {
 	Clusters []pipeline.TweetCluster
 }
 
+// BusyWordClass represents a busy word with its frequency class
+type BusyWordClass struct {
+	Word  string `json:"word"`
+	Class int    `json:"class"`
+}
+
 // ClusterOutput represents a cluster for JSON output
 type ClusterOutput struct {
 	ClusterID        int             `json:"cluster_id"`
 	BatchID          int64           `json:"batch_id"`
 	Size             int             `json:"size"`
 	Tweets           []*tweets.Tweet `json:"tweets"`
-	BusyWords        []string        `json:"busy_words"`
+	BusyWords        map[string]bool `json:"busy_words"`
 	BusyWordClasses  map[string]int  `json:"busy_word_classes"`
 	FirstTweetTime   string          `json:"first_tweet_time"`
 	MostTypicalTweet *tweets.Tweet   `json:"most_typical_tweet"`
@@ -75,20 +81,20 @@ type MetaCluster struct {
 	Theme         string                   `json:"theme"`
 	TotalTweets   int                      `json:"total_tweets"`
 	Medoid        string                   `json:"medoid"`
-	BusyWords     []string                 `json:"busy_words"`
+	BusyWords     map[string]bool          `json:"busy_words"`
 	SubClusters   []map[string]interface{} `json:"sub_clusters"`
 }
 
 // IndividualCluster represents a standalone cluster
 type IndividualCluster struct {
-	Type            string   `json:"type"`
-	ClusterID       int      `json:"cluster_id"`
-	Size            int      `json:"size"`
-	Medoid          string   `json:"medoid"`
-	BusyWords       []string `json:"busy_words"`
-	TweetTexts      []string `json:"tweet_texts,omitempty"`
-	FallbackCluster bool     `json:"fallback_cluster,omitempty"`
-	ClusteringNote  string   `json:"clustering_note,omitempty"`
+	Type            string          `json:"type"`
+	ClusterID       int             `json:"cluster_id"`
+	Size            int             `json:"size"`
+	Medoid          string          `json:"medoid"`
+	BusyWords       map[string]bool `json:"busy_words"`
+	TweetTexts      []string        `json:"tweet_texts,omitempty"`
+	FallbackCluster bool            `json:"fallback_cluster,omitempty"`
+	ClusteringNote  string          `json:"clustering_note,omitempty"`
 }
 
 // shouldFilterRepetitiveCluster checks if a cluster should be filtered based on repetitive patterns
@@ -880,9 +886,14 @@ func ConvertToIndividualCluster(cluster map[string]interface{}) *IndividualClust
 		medoid = medoidText
 	}
 
-	busyWords := []string{}
+	busyWords := make(map[string]bool)
 	if words, ok := cluster["busy_words"].([]string); ok {
-		busyWords = words
+		// Convert slice to map
+		for _, word := range words {
+			busyWords[word] = true
+		}
+	} else if wordsMap, ok := cluster["busy_words"].(map[string]bool); ok {
+		busyWords = wordsMap
 	}
 
 	tweetTexts := []string{}
@@ -945,18 +956,20 @@ func createMetaCluster(subClusters []map[string]interface{}, totalTweets int) *M
 	allBusyWords := make(map[string]bool)
 	for _, cluster := range subClusters {
 		if busyWords, ok := cluster["busy_words"].([]string); ok {
+			// Convert slice to map
 			for _, word := range busyWords {
+				allBusyWords[word] = true
+			}
+		} else if busyWordsMap, ok := cluster["busy_words"].(map[string]bool); ok {
+			// Already a map, merge it
+			for word := range busyWordsMap {
 				allBusyWords[word] = true
 			}
 		}
 	}
 
-	// Convert to slice and sort for consistency
-	busyWords := make([]string, 0, len(allBusyWords))
-	for word := range allBusyWords {
-		busyWords = append(busyWords, word)
-	}
-	sort.Strings(busyWords)
+	// Use map for final display (reverted from sorted arrays)
+	busyWords := allBusyWords
 
 	// Generate theme from medoid (simple approach - could be enhanced)
 	theme := generateThemeFromMedoid(medoid)
@@ -1049,7 +1062,7 @@ func ConvertBatchToHumanReadable(batchMap map[string]interface{}, cfg *config.Co
 
 // convertIndividualClusterToHumanReadable converts individual cluster data to human-readable format
 // Returns nil if the cluster should be suppressed (not enough unique tweets after deduplication)
-func RunGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[string]bool, cfg *config.Config, batchNumber int64, classResults map[int][]string) {
+func RunGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[string]bool, cfg *config.Config, batchNumber int64, classResults map[int][]string, busyWordToClass map[string]int) {
 	// Perform optimized graph clustering
 	clusterer := pipeline.NewOptimizedTweetClusterer(
 		cfg.Analysis.MinJaccardSimilarity,
@@ -1092,18 +1105,22 @@ func RunGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 			}
 		}
 
-		// Convert to sorted slice for display
-		var busyWordsList []string
+		// Use maps for final display (reverted from sorted arrays)
+		busyWordsMap := make(map[string]bool)
 		for word := range clusterBusyWords {
-			busyWordsList = append(busyWordsList, word)
+			busyWordsMap[word] = true
 		}
-		sort.Strings(busyWordsList)
 
-		// Create frequency class mapping for busy words - optimized
-		busyWordClasses := make(map[string]int)
+		// Create frequency class map for busy words using real data
+		busyWordClassesMap := make(map[string]int)
 		for word := range clusterBusyWords {
-			// Simple assignment - assume all words are from class 23 for performance
-			busyWordClasses[word] = 23
+			if freqClass, exists := busyWordToClass[word]; exists {
+				busyWordClassesMap[word] = freqClass
+			} else {
+				// Fallback to class 23 if word not found (shouldn't happen)
+				busyWordClassesMap[word] = 23
+				slog.Warn("Busy word not found in frequency class mapping", "word", word)
+			}
 		}
 
 		// Find most typical tweet (medoid) - simplified for performance
@@ -1162,8 +1179,8 @@ func RunGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 			BatchID:          batchNumber,
 			Size:             len(cluster.Tweets), // Keep original size
 			Tweets:           displayedTweets,     // Cap the displayed tweets
-			BusyWords:        busyWordsList,
-			BusyWordClasses:  busyWordClasses,
+			BusyWords:        busyWordsMap,
+			BusyWordClasses:  busyWordClassesMap,
 			FirstTweetTime:   timeStr,
 			MostTypicalTweet: mostTypicalTweet,
 			PersistenceInfo:  persistenceInfo,
@@ -1190,20 +1207,25 @@ func RunGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 			fallbackSize = cfg.Analysis.MinClusterSize // Force it to meet minimum
 		}
 
-		// Convert allBusyWords from map to sorted slice for consistency with normal clusters
-		var fallbackBusyWords []string
+		// Use maps for fallback cluster (reverted from sorted arrays)
+		fallbackBusyWordsMap := make(map[string]bool)
+		fallbackBusyWordClassesMap := make(map[string]int)
 		for word := range allBusyWords {
-			fallbackBusyWords = append(fallbackBusyWords, word)
+			fallbackBusyWordsMap[word] = true
+			if freqClass, exists := busyWordToClass[word]; exists {
+				fallbackBusyWordClassesMap[word] = freqClass
+			} else {
+				fallbackBusyWordClassesMap[word] = 23
+			}
 		}
-		sort.Strings(fallbackBusyWords)
 
 		fallbackCluster := &ClusterOutput{
 			ClusterID:        0,
 			BatchID:          batchNumber,
 			Size:             fallbackSize,
 			Tweets:           tweetsWithBusyWords,
-			BusyWords:        fallbackBusyWords,
-			BusyWordClasses:  make(map[string]int),
+			BusyWords:        fallbackBusyWordsMap,
+			BusyWordClasses:  fallbackBusyWordClassesMap,
 			FirstTweetTime:   tweetsWithBusyWords[0].CreatedAt,
 			MostTypicalTweet: tweetsWithBusyWords[0],
 			PersistenceInfo:  "No clusters found - created fallback cluster",

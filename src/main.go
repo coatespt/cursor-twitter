@@ -304,7 +304,8 @@ func startAnalysisThread(cfg *config.Config, loadedState map[string]int) {
 			results := freqClassProcessor.Barrier.ConsumeBatch()
 
 			// Process the batch results
-			currentBatch := make(map[int][]string) // class -> busy words
+			currentBatch := make(map[int][]string)  // class -> busy words
+			busyWordToClass := make(map[string]int) // word -> frequency class
 			var batchNumber int64
 
 			for i, result := range results {
@@ -316,6 +317,8 @@ func startAnalysisThread(cfg *config.Config, loadedState map[string]int) {
 				for _, threePK := range result.BusyWord3PKs {
 					if word, exists := pipeline.GetWordFrom3PK(threePK); exists {
 						busyWords = append(busyWords, word)
+						// Build word -> frequency class mapping
+						busyWordToClass[word] = result.FrequencyClass
 					} else {
 						notFoundCount++
 					}
@@ -338,7 +341,7 @@ func startAnalysisThread(cfg *config.Config, loadedState map[string]int) {
 			// Process the batch
 			recentTweets := globalTweetQueue.GetRecentTweets(cfg.BatchSize)
 
-			runClusteringForBatch(currentBatch, recentTweets, batchNumber, cfg)
+			runClusteringForBatch(currentBatch, busyWordToClass, recentTweets, batchNumber, cfg)
 
 		}
 
@@ -347,7 +350,7 @@ func startAnalysisThread(cfg *config.Config, loadedState map[string]int) {
 }
 
 // runClusteringForBatch runs clustering analysis for a batch of busy words and tweets
-func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets.Tweet, batchNumber int64, cfg *config.Config) {
+func runClusteringForBatch(classResults map[int][]string, busyWordToClass map[string]int, recentTweets []*tweets.Tweet, batchNumber int64, cfg *config.Config) {
 	slog.Info("Clustering: Starting batch analysis", "batch_number", batchNumber, "class_results", len(classResults), "recent_tweets", len(recentTweets))
 
 	// Print busy word summary
@@ -424,216 +427,13 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 	}
 
 	// Only graph clustering is supported now
-	output.RunGraphClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber, classResults)
+	output.RunGraphClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber, classResults, busyWordToClass)
 
 	// Clustering cycle timing - diagnostic logging removed for cleaner output
 
 	// Update last clustering time
 	lastClusteringTime = time.Now()
 
-}
-
-// runGraphClustering is deprecated - using output.RunGraphClustering directly now
-func runGraphClusteringDeprecated(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[string]bool, cfg *config.Config, batchNumber int64, classResults map[int][]string) {
-	// Perform optimized graph clustering
-	clusterer := pipeline.NewOptimizedTweetClusterer(
-		cfg.Analysis.MinJaccardSimilarity,
-		cfg.Analysis.MaxTweetsToCluster,
-		cfg.Analysis.JaccardUseBusyWordsOnly,
-	)
-
-	result := clusterer.ClusterTweets(tweetsWithBusyWords, allBusyWords, cfg.Analysis.MinClusterSize)
-
-	// Create a batch from the clusters and add it to the window
-	batch := &Batch{
-		BatchID:  batchNumber,
-		Tweets:   tweetsWithBusyWords,
-		Clusters: result.Clusters,
-	}
-	addBatchToWindow(batch, cfg)
-
-	// Get the current batch window for persistence tracking
-	currentBatchWindow := getBatchWindow()
-
-	// Get timestamp for the batch
-	// var batchTimeStr string // unused
-	// if len(tweetsWithBusyWords) > 0 {
-	//	firstTweet := tweetsWithBusyWords[0]
-	//	batchTimeStr = time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05 UTC")
-	// } else {
-	//	batchTimeStr = time.Now().UTC().Format("2006-01-02 15:04:05 UTC")
-	// }
-
-	// Collect all clusters for this batch
-	var batchClusters []map[string]interface{}
-
-	for i, cluster := range result.Clusters {
-		// Get busy words for this cluster
-		clusterBusyWords := make(map[string]bool)
-		for _, tweet := range cluster.Tweets {
-			for _, token := range tweet.Tokens {
-				if allBusyWords[token] {
-					clusterBusyWords[token] = true
-				}
-			}
-		}
-
-		// Convert to sorted slice for display
-		var busyWordsList []string
-		for word := range clusterBusyWords {
-			busyWordsList = append(busyWordsList, word)
-		}
-		sort.Strings(busyWordsList)
-
-		// Create frequency class mapping for busy words
-		busyWordClasses := make(map[string]int)
-		for word := range clusterBusyWords {
-			// Find which frequency class this word belongs to
-			for classIndex, words := range classResults {
-				for _, classWord := range words {
-					if classWord == word {
-						busyWordClasses[word] = classIndex
-						break
-					}
-				}
-			}
-		}
-
-		// Find most typical tweet (medoid)
-		_, medoidIdx, _, _ := findMostTypicalTweets(cluster.Tweets, cfg.Analysis.MinJaccardSimilarity)
-		var mostTypicalTweet *tweets.Tweet
-		if len(cluster.Tweets) > 1 {
-			mostTypicalTweet = cluster.Tweets[medoidIdx]
-		} else {
-			mostTypicalTweet = cluster.Tweets[0]
-		}
-
-		// Get persistence information
-		persistenceInfo := getContinuationInfo(cluster, currentBatchWindow, batchNumber, cfg)
-
-		// Create cluster data for output
-		// Find the earliest tweet chronologically (not just the first in DFS order)
-		firstTweet := cluster.Tweets[0]
-		earliestTime := firstTweet.Unix
-		latestTime := firstTweet.Unix
-		for _, tweet := range cluster.Tweets {
-			if tweet.Unix < earliestTime {
-				earliestTime = tweet.Unix
-				firstTweet = tweet
-			}
-			if tweet.Unix > latestTime {
-				latestTime = tweet.Unix
-			}
-		}
-		timeStr := firstTweet.CreatedAt
-
-		// Debug: Log the time span of this cluster
-		timeSpan := latestTime - earliestTime
-		if timeSpan > 300 { // More than 5 minutes
-			slog.Warn("Large time span in cluster",
-				"cluster_id", i+1,
-				"time_span_seconds", timeSpan,
-				"earliest", time.Unix(earliestTime, 0).Format("2006-01-02 15:04:05 UTC"),
-				"latest", time.Unix(latestTime, 0).Format("2006-01-02 15:04:05 UTC"),
-				"cluster_size", len(cluster.Tweets))
-		}
-
-		// Cap the number of tweets displayed while preserving the actual size
-		var displayedTweets []*tweets.Tweet
-		maxTweets := cfg.Analysis.MaxTweetsDisplayed
-		if maxTweets <= 0 {
-			maxTweets = 10 // Default value
-		}
-
-		if len(cluster.Tweets) <= maxTweets {
-			displayedTweets = cluster.Tweets
-		} else {
-			displayedTweets = cluster.Tweets[:maxTweets]
-		}
-
-		clusterData := map[string]interface{}{
-			"cluster_id":         i + 1,
-			"size":               len(cluster.Tweets), // Keep original size
-			"tweets":             displayedTweets,     // Cap the displayed tweets
-			"busy_words":         busyWordsList,
-			"busy_word_classes":  busyWordClasses,
-			"first_tweet_time":   timeStr,
-			"most_typical_tweet": mostTypicalTweet,
-			"persistence_info":   persistenceInfo,
-		}
-		batchClusters = append(batchClusters, clusterData)
-	}
-
-	// Check if we need to create a fallback cluster
-	// First count clusters above minimum size
-	clustersAboveMinSize := 0
-	for _, cluster := range batchClusters {
-		if size, ok := cluster["size"].(int); ok {
-			if size >= cfg.Analysis.MinClusterSize {
-				clustersAboveMinSize++
-			}
-		}
-	}
-
-	// Fallback cluster check - diagnostic logging removed for cleaner output
-
-	if clustersAboveMinSize == 0 && len(tweetsWithBusyWords) > 0 && cfg.Analysis.CreateFallbackClusters {
-		// Create a fallback cluster with all tweets
-		// Ensure the fallback cluster meets minimum size requirement
-		fallbackSize := len(tweetsWithBusyWords)
-		if fallbackSize < cfg.Analysis.MinClusterSize {
-			fallbackSize = cfg.Analysis.MinClusterSize // Force it to meet minimum
-		}
-
-		// Convert allBusyWords from map to sorted slice for consistency with normal clusters
-		var fallbackBusyWords []string
-		for word := range allBusyWords {
-			fallbackBusyWords = append(fallbackBusyWords, word)
-		}
-		sort.Strings(fallbackBusyWords)
-
-		fallbackCluster := map[string]interface{}{
-			"type":             "fallback_cluster",
-			"cluster_id":       0,
-			"size":             fallbackSize,
-			"medoid":           tweetsWithBusyWords[0].Text,
-			"busy_words":       fallbackBusyWords,
-			"tweet_texts":      make([]string, len(tweetsWithBusyWords)),
-			"fallback_cluster": true,
-			"clustering_note":  "No clusters found - created fallback cluster",
-		}
-
-		// Add all tweet texts
-		for i, tweet := range tweetsWithBusyWords {
-			fallbackCluster["tweet_texts"].([]string)[i] = tweet.Text
-		}
-
-		batchClusters = append(batchClusters, fallbackCluster)
-		slog.Info("Fallback cluster created", "totalClusters", len(batchClusters))
-	}
-
-	// Create batch-level data structure
-	// totalClusters := len(batchClusters) // unused
-
-	// Recalculate clusters above min size after fallback cluster might have been added
-	clustersAboveMinSize = 0
-	for i, cluster := range batchClusters {
-		if size, ok := cluster["size"].(int); ok {
-			// Cluster size check - diagnostic logging removed for cleaner output
-			if size >= cfg.Analysis.MinClusterSize {
-				clustersAboveMinSize++
-			}
-		} else {
-			slog.Warn("Cluster size not found or not int", "clusterIndex", i, "cluster", cluster)
-		}
-	}
-
-	// ANALYTICS: About to output final batch data
-	// Analytics about to output final batch data - diagnostic logging removed for cleaner output
-
-	// Final batch data - diagnostic logging removed for cleaner output
-
-	// This function is deprecated - using output.RunGraphClustering directly now
 }
 
 // getCurrentWorkingDir returns the current working directory for debugging

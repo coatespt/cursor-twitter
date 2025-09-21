@@ -3,7 +3,6 @@ package pipeline
 import (
 	"cursor-twitter/src/tweets"
 	"log/slog"
-	"sort"
 	"time"
 )
 
@@ -364,12 +363,11 @@ func (c *OptimizedTweetClusterer) findSharedBusyWords(tweets []*tweets.Tweet, bu
 		}
 	}
 
-	// Convert to slice and sort alphabetically for consistent display
+	// Convert to slice (sorting removed - let output code handle sorting by frequency class)
 	var allWords []string
 	for word := range clusterWords {
 		allWords = append(allWords, word)
 	}
-	sort.Strings(allWords)
 
 	return allWords
 }
