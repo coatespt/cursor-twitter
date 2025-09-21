@@ -966,6 +966,70 @@ Cleans up old build artifacts and temporary files.
 - Cleans temporary files
 - Frees disk space
 
+### 4. JSON Output Analysis (`util_shell/analyze_json_output.sh`)
+
+Comprehensive analysis tool for Twitter pipeline JSON output files. Provides detailed statistics about batches, clusters, tweets, and file structure.
+
+**Usage:**
+```bash
+./util_shell/analyze_json_output.sh <json_file>
+```
+
+**Example:**
+```bash
+./util_shell/analyze_json_output.sh september_18.json
+```
+
+**Features:**
+- **File Statistics**: File size, total batches, time range analysis
+- **Cluster Analysis**: Min/max/average clusters per batch with standard deviation
+- **Tweet Analysis**: Min/max/average tweets per batch with standard deviation
+- **Performance Metrics**: Total tweets processed, clusters created, processing rates
+- **Data Validation**: File structure validation, error detection
+- **Summary Statistics**: Clusters above minimum size, batch time ranges
+
+**Output Example:**
+```
+=== JSON Output Analysis for: september_18.json ===
+
+📁 File size: 2.3M
+📊 Total batches: 45
+📈 Cluster statistics per batch:
+   Min clusters: 2
+   Max clusters: 18
+   Average clusters: 8.3
+   Standard deviation: 3.2
+📈 Tweet statistics per batch:
+   Min tweets: 25000
+   Max tweets: 25000
+   Average tweets: 25000
+   Standard deviation: 0
+📊 Summary statistics:
+   Total tweets processed: 1125000
+   Total clusters created: 375
+   Average clusters per tweet: 0.0003
+⏰ Time analysis:
+   First batch: 2012-01-28T15:56:35Z
+   Last batch: 2012-01-28T18:23:45Z
+📏 Clusters above minimum size analysis:
+   Average clusters above min size per batch: 6.1
+   Total clusters above min size: 275
+🔍 File structure validation:
+   Data types found: ["batch"]
+   ✅ No error entries found
+```
+
+**Use Cases:**
+- **Performance Analysis**: Understand processing efficiency and throughput
+- **Data Quality Assessment**: Verify cluster generation and tweet processing
+- **Experiment Comparison**: Compare results across different parameter sets
+- **Debugging**: Identify anomalies in output files
+- **Reporting**: Generate statistics for research or documentation
+
+**Dependencies:**
+- `jq` (JSON processor) - install with `brew install jq` or `apt-get install jq`
+- `bc` (basic calculator) - usually pre-installed on Unix systems
+
 ---
 
 ## Configuration

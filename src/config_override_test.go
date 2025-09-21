@@ -143,7 +143,7 @@ analysis:
   deduplicate_by_user: false
   create_fallback_clusters: true
   max_tweets_to_cluster: 2000
-  max_human_tweets_displayed: 15
+  max_tweets_displayed: 15
 `
 
 	// Write base config
@@ -201,8 +201,8 @@ analysis:
 		t.Errorf("Expected MaxTweetsToCluster to be 2000, got %d", cfg.Analysis.MaxTweetsToCluster)
 	}
 
-	if cfg.Analysis.MaxHumanTweetsDisplayed != 15 {
-		t.Errorf("Expected MaxHumanTweetsDisplayed to be 15, got %d", cfg.Analysis.MaxHumanTweetsDisplayed)
+	if cfg.Analysis.MaxTweetsDisplayed != 15 {
+		t.Errorf("Expected MaxTweetsDisplayed to be 15, got %d", cfg.Analysis.MaxTweetsDisplayed)
 	}
 
 	// Verify that non-analysis overrides were also applied
@@ -219,5 +219,5 @@ analysis:
 	fmt.Printf("   MinJaccardSimilarity: %f (expected 0.1)\n", cfg.Analysis.MinJaccardSimilarity)
 	fmt.Printf("   JaccardUseBusyWordsOnly: %t (expected true)\n", cfg.Analysis.JaccardUseBusyWordsOnly)
 	fmt.Printf("   CreateFallbackClusters: %t (expected true)\n", cfg.Analysis.CreateFallbackClusters)
-	fmt.Printf("   MaxHumanTweetsDisplayed: %d (expected 15)\n", cfg.Analysis.MaxHumanTweetsDisplayed)
+	fmt.Printf("   MaxTweetsDisplayed: %d (expected 15)\n", cfg.Analysis.MaxTweetsDisplayed)
 }

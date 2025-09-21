@@ -86,7 +86,7 @@ type Config struct {
 		// Method for determining cluster relationships across batches: "busy_words" or "full_text"
 		PersistenceClusteringMethod    string           `yaml:"persistence_clustering_method"` // Cross-batch relationship detection method
 		DropExcessiveQuestions         bool             `yaml:"drop_excessive_questions"`      // Drop tweets with excessive question marks
-		MaxHumanTweetsDisplayed        int              `yaml:"max_human_tweets_displayed"`    // Maximum number of tweets to display in human-readable format
+		MaxTweetsDisplayed             int              `yaml:"max_tweets_displayed"`          // Maximum number of tweets to display in JSON output
 		FilterRepetitivePatterns       bool             `yaml:"filter_repetitive_patterns"`    // Filter out clusters with repetitive meme-like patterns
 		BannedPhrasesDir               string           `yaml:"banned_phrases_dir"`            // Path to directory containing banned phrase files
 		BannedPhrasesFile              string           `yaml:"banned_phrases_file"`           // Path to file containing banned phrases (backward compatibility)
@@ -572,8 +572,8 @@ func mergeConfigs(base, override *Config) {
 	if override.Analysis.PersistenceClusteringMethod != "" {
 		base.Analysis.PersistenceClusteringMethod = override.Analysis.PersistenceClusteringMethod
 	}
-	if override.Analysis.MaxHumanTweetsDisplayed != 0 {
-		base.Analysis.MaxHumanTweetsDisplayed = override.Analysis.MaxHumanTweetsDisplayed
+	if override.Analysis.MaxTweetsDisplayed != 0 {
+		base.Analysis.MaxTweetsDisplayed = override.Analysis.MaxTweetsDisplayed
 	}
 	if override.Analysis.FilterRepetitivePatterns {
 		base.Analysis.FilterRepetitivePatterns = override.Analysis.FilterRepetitivePatterns

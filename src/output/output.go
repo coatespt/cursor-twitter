@@ -203,7 +203,7 @@ func ConvertIndividualClusterToHumanReadable(clusterMap map[string]interface{}, 
 
 	// Convert tweets to just their texts
 	var tweetTexts []string
-	maxToShow := cfg.Analysis.MaxHumanTweetsDisplayed
+	maxToShow := cfg.Analysis.MaxTweetsDisplayed
 	if maxToShow <= 0 {
 		maxToShow = 10 // Default value
 	}
@@ -1112,6 +1112,19 @@ func RunGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 		// Get persistence information - simplified for performance
 		persistenceInfo := " (new cluster)"
 
+		// Limit the number of tweets displayed while preserving the actual size
+		var displayedTweets []*tweets.Tweet
+		maxTweets := cfg.Analysis.MaxTweetsDisplayed
+		if maxTweets <= 0 {
+			maxTweets = 10 // Default value
+		}
+
+		if len(cluster.Tweets) <= maxTweets {
+			displayedTweets = cluster.Tweets
+		} else {
+			displayedTweets = cluster.Tweets[:maxTweets]
+		}
+
 		// Create cluster data for output
 		// Find the earliest tweet chronologically (not just the first in DFS order)
 		firstTweet := cluster.Tweets[0]
@@ -1147,8 +1160,8 @@ func RunGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 		clusterData := &ClusterOutput{
 			ClusterID:        i + 1,
 			BatchID:          batchNumber,
-			Size:             len(cluster.Tweets),
-			Tweets:           cluster.Tweets,
+			Size:             len(cluster.Tweets), // Keep original size
+			Tweets:           displayedTweets,     // Cap the displayed tweets
 			BusyWords:        busyWordsList,
 			BusyWordClasses:  busyWordClasses,
 			FirstTweetTime:   timeStr,

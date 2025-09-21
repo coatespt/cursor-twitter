@@ -538,10 +538,23 @@ func runGraphClusteringDeprecated(tweetsWithBusyWords []*tweets.Tweet, allBusyWo
 				"cluster_size", len(cluster.Tweets))
 		}
 
+		// Cap the number of tweets displayed while preserving the actual size
+		var displayedTweets []*tweets.Tweet
+		maxTweets := cfg.Analysis.MaxTweetsDisplayed
+		if maxTweets <= 0 {
+			maxTweets = 10 // Default value
+		}
+
+		if len(cluster.Tweets) <= maxTweets {
+			displayedTweets = cluster.Tweets
+		} else {
+			displayedTweets = cluster.Tweets[:maxTweets]
+		}
+
 		clusterData := map[string]interface{}{
 			"cluster_id":         i + 1,
-			"size":               len(cluster.Tweets),
-			"tweets":             cluster.Tweets,
+			"size":               len(cluster.Tweets), // Keep original size
+			"tweets":             displayedTweets,     // Cap the displayed tweets
 			"busy_words":         busyWordsList,
 			"busy_word_classes":  busyWordClasses,
 			"first_tweet_time":   timeStr,
