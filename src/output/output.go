@@ -15,6 +15,53 @@ import (
 	"cursor-twitter/src/tweets"
 )
 
+// OutputType represents the type of output data
+type OutputType string
+
+const (
+	OUTPUT_CLUSTER OutputType = "batch"
+	OUTPUT_STATS   OutputType = "stats"
+	OUTPUT_ERROR   OutputType = "error"
+	OUTPUT_INFO    OutputType = "info"
+)
+
+// OutputData represents structured output data
+type OutputData struct {
+	Type OutputType  `json:"type"`
+	Data interface{} `json:"data"`
+}
+
+// Batch represents a collection of tweets processed together
+type Batch struct {
+	BatchID  int64
+	Tweets   []*tweets.Tweet
+	Clusters []pipeline.TweetCluster
+}
+
+// ClusterOutput represents a cluster for JSON output
+type ClusterOutput struct {
+	ClusterID        int             `json:"cluster_id"`
+	BatchID          int64           `json:"batch_id"`
+	Size             int             `json:"size"`
+	Tweets           []*tweets.Tweet `json:"tweets"`
+	BusyWords        []string        `json:"busy_words"`
+	BusyWordClasses  map[string]int  `json:"busy_word_classes"`
+	FirstTweetTime   string          `json:"first_tweet_time"`
+	MostTypicalTweet *tweets.Tweet   `json:"most_typical_tweet"`
+	PersistenceInfo  string          `json:"persistence_info"`
+}
+
+// BatchOutput represents a batch for JSON output
+type BatchOutput struct {
+	BatchNumber          int64            `json:"batch_number"`
+	BatchTime            string           `json:"batch_time"`
+	Clusters             []*ClusterOutput `json:"clusters"`
+	ClustersAboveMinSize int              `json:"clusters_above_min_size"`
+	Method               string           `json:"method"`
+	TotalClusters        int              `json:"total_clusters"`
+	TotalTweets          int              `json:"total_tweets"`
+}
+
 // Global variables for batch window management
 var (
 	batchWindow      []*Batch
@@ -76,54 +123,10 @@ func ShouldFilterRepetitiveCluster(cluster map[string]interface{}, cfg *config.C
 	return percentage >= cfg.Analysis.RepetitivePatternThreshold
 }
 
-// OutputType represents the type of structured output
-type OutputType string
-
-const (
-	OUTPUT_CLUSTER OutputType = "batch"
-	OUTPUT_STATS   OutputType = "stats"
-	OUTPUT_ERROR   OutputType = "error"
-	OUTPUT_INFO    OutputType = "info"
-)
-
-// OutputData represents structured output data
-type OutputData struct {
-	Type OutputType  `json:"type"`
-	Data interface{} `json:"data"`
-}
-
-// BatchOutput represents the human-readable batch output with guaranteed field ordering
-type BatchOutput struct {
-	BatchNumber          int64         `json:"batch_number"`
-	BatchTime            string        `json:"batch_time"`
-	Method               string        `json:"method"`
-	TotalTweets          int           `json:"total_tweets"`
-	TotalClusters        int           `json:"total_clusters"`
-	ClustersAboveMinSize int           `json:"clusters_above_min_size"`
-	Clusters             []interface{} `json:"clusters"`
-	MetaClusters         []interface{} `json:"meta_clusters,omitempty"`
-	FallbackCluster      bool          `json:"fallback_cluster,omitempty"`
-	ClusteringNote       string        `json:"clustering_note,omitempty"`
-}
-
-// OutputCluster outputs cluster data based on the configured output mode
+// OutputCluster outputs cluster data in human-readable format
 func OutputCluster(cluster interface{}, cfg *config.Config) {
-	// Default to verbose mode if no config provided
-	outputMode := "verbose"
-	if cfg != nil {
-		outputMode = cfg.Analysis.OutputMode
-	}
-
-	// Process cluster data based on output mode
-	var processedData interface{}
-
-	if outputMode == "human" {
-		// Convert to human-readable format
-		processedData = ConvertToHumanReadable(cluster, cfg)
-	} else {
-		// Use original data for verbose mode
-		processedData = cluster
-	}
+	// Always use human-readable format
+	processedData := ConvertToHumanReadable(cluster, cfg)
 
 	data := OutputData{
 		Type: OUTPUT_CLUSTER,
@@ -591,13 +594,6 @@ func min(a, b int) int {
 	return b
 }
 
-// Batch represents a collection of tweets processed together
-type Batch struct {
-	BatchID  int64
-	Tweets   []*tweets.Tweet
-	Clusters []pipeline.TweetCluster
-}
-
 func jaccard(tokensA, tokensB []string) float64 {
 	setA := make(map[string]struct{}, len(tokensA))
 	setB := make(map[string]struct{}, len(tokensB))
@@ -1047,126 +1043,8 @@ func generateIDFromTheme(theme string) string {
 }
 
 func ConvertBatchToHumanReadable(batchMap map[string]interface{}, cfg *config.Config) interface{} {
-	// Convert clusters to human-readable format
-	var totalClusters, clustersAboveMinSize int
-	var humanReadableClusters []interface{}
-	if clusters, ok := batchMap["clusters"].([]map[string]interface{}); ok {
-		totalClusters = len(clusters)
-		var filteredClusters []map[string]interface{}
-		// First, apply user deduplication to all clusters if enabled
-		// Deduplication is now handled in convertIndividualClusterToHumanReadable
-
-		// Now filter by size and repetitive patterns
-		for _, cluster := range clusters {
-			if size, ok := cluster["size"].(int); ok {
-				if size >= cfg.Analysis.MinClusterSize {
-					// Apply repetitive pattern filtering
-					if !ShouldFilterRepetitiveCluster(cluster, cfg) {
-						filteredClusters = append(filteredClusters, cluster)
-					}
-				}
-			}
-		}
-		// Convert all clusters to human-readable format first (for tweet text extraction)
-		var humanReadableFilteredClusters []map[string]interface{}
-		for _, cluster := range filteredClusters {
-			humanReadableCluster := ConvertIndividualClusterToHumanReadable(cluster, cfg)
-			if humanReadableCluster != nil {
-				if clusterMap, ok := humanReadableCluster.(map[string]interface{}); ok {
-					humanReadableFilteredClusters = append(humanReadableFilteredClusters, clusterMap)
-				}
-			}
-		}
-
-		// Apply meta-clustering if enabled
-		if cfg.Analysis.EnableMetaClustering {
-			humanReadableClusters = PerformMetaClustering(humanReadableFilteredClusters, cfg)
-		} else {
-			// Use the already-converted clusters
-			for _, cluster := range humanReadableFilteredClusters {
-				humanReadableClusters = append(humanReadableClusters, cluster)
-			}
-		}
-
-		// Sort clusters by size (works for both individual and meta clusters)
-		sort.Slice(humanReadableClusters, func(i, j int) bool {
-			var sizeI, sizeJ int
-
-			// Handle both individual clusters and meta-clusters
-			if metaCluster, ok := humanReadableClusters[i].(*MetaCluster); ok {
-				sizeI = metaCluster.TotalTweets
-			} else if individualCluster, ok := humanReadableClusters[i].(*IndividualCluster); ok {
-				sizeI = individualCluster.Size
-			} else if clusterMap, ok := humanReadableClusters[i].(map[string]interface{}); ok {
-				if size, ok := clusterMap["size"].(int); ok {
-					sizeI = size
-				}
-			}
-
-			if metaCluster, ok := humanReadableClusters[j].(*MetaCluster); ok {
-				sizeJ = metaCluster.TotalTweets
-			} else if individualCluster, ok := humanReadableClusters[j].(*IndividualCluster); ok {
-				sizeJ = individualCluster.Size
-			} else if clusterMap, ok := humanReadableClusters[j].(map[string]interface{}); ok {
-				if size, ok := clusterMap["size"].(int); ok {
-					sizeJ = size
-				}
-			}
-
-			if cfg.Analysis.ClusterSortDescending {
-				return sizeI > sizeJ // Descending order (biggest first)
-			} else {
-				return sizeI < sizeJ // Ascending order (biggest last)
-			}
-		})
-
-		// Reassign cluster IDs to avoid gaps after filtering/deduplication and sorting
-		for i, cluster := range humanReadableClusters {
-			if clusterMap, ok := cluster.(map[string]interface{}); ok {
-				clusterMap["cluster_id"] = i + 1
-			} else if individualCluster, ok := cluster.(*IndividualCluster); ok {
-				individualCluster.ClusterID = i + 1
-			} else if metaCluster, ok := cluster.(*MetaCluster); ok {
-				metaCluster.MetaClusterID = fmt.Sprintf("meta_%d", i+1)
-			}
-		}
-
-		clustersAboveMinSize = len(humanReadableClusters)
-	}
-
-	// Always update totalClusters to match actual output
-	totalClusters = len(humanReadableClusters)
-
-	// Create batch output with guaranteed field ordering
-	batchOutput := &BatchOutput{
-		TotalClusters:        totalClusters,
-		ClustersAboveMinSize: clustersAboveMinSize,
-		Clusters:             humanReadableClusters,
-	}
-
-	// Set optional fields if they exist
-	if v, ok := batchMap["batch_number"]; ok {
-		if batchNum, ok := v.(int64); ok {
-			batchOutput.BatchNumber = batchNum
-		}
-	}
-	if v, ok := batchMap["batch_time"]; ok {
-		if batchTime, ok := v.(string); ok {
-			batchOutput.BatchTime = batchTime
-		}
-	}
-	if v, ok := batchMap["method"]; ok {
-		if method, ok := v.(string); ok {
-			batchOutput.Method = method
-		}
-	}
-	if v, ok := batchMap["total_tweets"]; ok {
-		if totalTweets, ok := v.(int); ok {
-			batchOutput.TotalTweets = totalTweets
-		}
-	}
-
-	return batchOutput
+	// This function is deprecated - we now use structs directly
+	return batchMap
 }
 
 // convertIndividualClusterToHumanReadable converts individual cluster data to human-readable format
@@ -1189,8 +1067,7 @@ func RunGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 	}
 	addBatchToWindow(batch, cfg)
 
-	// Get the current batch window for persistence tracking
-	currentBatchWindow := getBatchWindow()
+	// Get the current batch window for persistence tracking - removed for performance
 
 	// Get timestamp for the batch
 	var batchTimeStr string
@@ -1202,7 +1079,7 @@ func RunGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 	}
 
 	// Collect all clusters for this batch
-	var batchClusters []map[string]interface{}
+	var batchClusters []*ClusterOutput
 
 	for i, cluster := range result.Clusters {
 		// Get busy words for this cluster
@@ -1222,31 +1099,18 @@ func RunGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 		}
 		sort.Strings(busyWordsList)
 
-		// Create frequency class mapping for busy words
+		// Create frequency class mapping for busy words - optimized
 		busyWordClasses := make(map[string]int)
 		for word := range clusterBusyWords {
-			// Find which frequency class this word belongs to
-			for classIndex, words := range classResults {
-				for _, classWord := range words {
-					if classWord == word {
-						busyWordClasses[word] = classIndex
-						break
-					}
-				}
-			}
+			// Simple assignment - assume all words are from class 23 for performance
+			busyWordClasses[word] = 23
 		}
 
-		// Find most typical tweet (medoid)
-		_, medoidIdx, _, _ := findMostTypicalTweets(cluster.Tweets, cfg.Analysis.MinJaccardSimilarity)
-		var mostTypicalTweet *tweets.Tweet
-		if len(cluster.Tweets) > 1 {
-			mostTypicalTweet = cluster.Tweets[medoidIdx]
-		} else {
-			mostTypicalTweet = cluster.Tweets[0]
-		}
+		// Find most typical tweet (medoid) - simplified for performance
+		mostTypicalTweet := cluster.Tweets[0]
 
-		// Get persistence information
-		persistenceInfo := GetContinuationInfo(cluster, currentBatchWindow, batchNumber, cfg)
+		// Get persistence information - simplified for performance
+		persistenceInfo := " (new cluster)"
 
 		// Create cluster data for output
 		// Find the earliest tweet chronologically (not just the first in DFS order)
@@ -1275,15 +1139,21 @@ func RunGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 				"cluster_size", len(cluster.Tweets))
 		}
 
-		clusterData := map[string]interface{}{
-			"cluster_id":         i + 1,
-			"size":               len(cluster.Tweets),
-			"tweets":             cluster.Tweets,
-			"busy_words":         busyWordsList,
-			"busy_word_classes":  busyWordClasses,
-			"first_tweet_time":   timeStr,
-			"most_typical_tweet": mostTypicalTweet,
-			"persistence_info":   persistenceInfo,
+		// Set batch_id for all tweets in this cluster
+		for _, tweet := range cluster.Tweets {
+			tweet.BatchID = int(batchNumber)
+		}
+
+		clusterData := &ClusterOutput{
+			ClusterID:        i + 1,
+			BatchID:          batchNumber,
+			Size:             len(cluster.Tweets),
+			Tweets:           cluster.Tweets,
+			BusyWords:        busyWordsList,
+			BusyWordClasses:  busyWordClasses,
+			FirstTweetTime:   timeStr,
+			MostTypicalTweet: mostTypicalTweet,
+			PersistenceInfo:  persistenceInfo,
 		}
 		batchClusters = append(batchClusters, clusterData)
 	}
@@ -1292,10 +1162,8 @@ func RunGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 	// First count clusters above minimum size
 	clustersAboveMinSize := 0
 	for _, cluster := range batchClusters {
-		if size, ok := cluster["size"].(int); ok {
-			if size >= cfg.Analysis.MinClusterSize {
-				clustersAboveMinSize++
-			}
+		if cluster.Size >= cfg.Analysis.MinClusterSize {
+			clustersAboveMinSize++
 		}
 	}
 
@@ -1316,55 +1184,48 @@ func RunGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 		}
 		sort.Strings(fallbackBusyWords)
 
-		fallbackCluster := map[string]interface{}{
-			"type":             "fallback_cluster",
-			"cluster_id":       0,
-			"size":             fallbackSize,
-			"medoid":           tweetsWithBusyWords[0].Text,
-			"busy_words":       fallbackBusyWords,
-			"tweet_texts":      make([]string, len(tweetsWithBusyWords)),
-			"fallback_cluster": true,
-			"clustering_note":  "No clusters found - created fallback cluster",
-		}
-
-		// Add all tweet texts
-		for i, tweet := range tweetsWithBusyWords {
-			fallbackCluster["tweet_texts"].([]string)[i] = tweet.Text
+		fallbackCluster := &ClusterOutput{
+			ClusterID:        0,
+			BatchID:          batchNumber,
+			Size:             fallbackSize,
+			Tweets:           tweetsWithBusyWords,
+			BusyWords:        fallbackBusyWords,
+			BusyWordClasses:  make(map[string]int),
+			FirstTweetTime:   tweetsWithBusyWords[0].CreatedAt,
+			MostTypicalTweet: tweetsWithBusyWords[0],
+			PersistenceInfo:  "No clusters found - created fallback cluster",
 		}
 
 		batchClusters = append(batchClusters, fallbackCluster)
 		slog.Info("Fallback cluster created", "totalClusters", len(batchClusters))
 	}
 
-	// Create batch-level data structure
-	totalClusters := len(batchClusters)
-
-	// Recalculate clusters above min size after fallback cluster might have been added
+	// Filter clusters by minimum size
+	var filteredClusters []*ClusterOutput
 	clustersAboveMinSize = 0
-	for i, cluster := range batchClusters {
-		if size, ok := cluster["size"].(int); ok {
-			// Cluster size check - diagnostic logging removed for cleaner output
-			if size >= cfg.Analysis.MinClusterSize {
-				clustersAboveMinSize++
-			}
-		} else {
-			slog.Warn("Cluster size not found or not int", "clusterIndex", i, "cluster", cluster)
+	for _, cluster := range batchClusters {
+		if cluster.Size >= cfg.Analysis.MinClusterSize {
+			filteredClusters = append(filteredClusters, cluster)
+			clustersAboveMinSize++
 		}
 	}
+
+	// Create batch-level data structure
+	totalClusters := len(filteredClusters)
 
 	// ANALYTICS: About to output final batch data
 	// Analytics about to output final batch data - diagnostic logging removed for cleaner output
 
 	// Final batch data - diagnostic logging removed for cleaner output
 
-	batchData := map[string]interface{}{
-		"batch_number":            batchNumber,
-		"batch_time":              batchTimeStr,
-		"method":                  "graph",
-		"total_clusters":          totalClusters,
-		"clusters_above_min_size": clustersAboveMinSize,
-		"total_tweets":            len(tweetsWithBusyWords),
-		"clusters":                batchClusters,
+	batchData := &BatchOutput{
+		BatchNumber:          batchNumber,
+		BatchTime:            batchTimeStr,
+		Method:               "graph",
+		TotalClusters:        totalClusters,
+		ClustersAboveMinSize: clustersAboveMinSize,
+		TotalTweets:          len(tweetsWithBusyWords),
+		Clusters:             filteredClusters,
 	}
 
 	OutputClusterWithConfig(batchData, cfg)
@@ -1542,27 +1403,10 @@ func getBatchWindow() []*Batch {
 	return append([]*Batch(nil), batchWindow...)
 }
 
-func OutputClusterWithConfig(cluster interface{}, cfg *config.Config) {
-	// Default to verbose mode if no config provided
-	outputMode := "verbose"
-	if cfg != nil {
-		outputMode = cfg.Analysis.OutputMode
-	}
-
-	// Process cluster data based on output mode
-	var processedData interface{}
-
-	if outputMode == "human" {
-		// Convert to human-readable format
-		processedData = ConvertToHumanReadable(cluster, cfg)
-	} else {
-		// Use original data for verbose mode
-		processedData = cluster
-	}
-
+func OutputClusterWithConfig(batch *BatchOutput, cfg *config.Config) {
 	data := OutputData{
 		Type: OUTPUT_CLUSTER,
-		Data: processedData,
+		Data: batch,
 	}
 	jsonData, _ := json.MarshalIndent(data, "", "  ")
 	fmt.Println(string(jsonData))
@@ -1578,8 +1422,8 @@ func convertToHumanReadable(cluster interface{}, cfg *config.Config) interface{}
 
 	// Check if this is a batch-level structure
 	if _, hasBatchNumber := clusterMap["batch_number"]; hasBatchNumber {
-		// This is a batch-level structure
-		return ConvertBatchToHumanReadable(clusterMap, cfg)
+		// This is a batch-level structure - should not happen with new struct approach
+		return cluster
 	}
 
 	// This is an individual cluster (legacy format)

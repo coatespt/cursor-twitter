@@ -166,7 +166,6 @@ analysis:
 
   # Output mode: "verbose" (full tweet metadata) or "human" 
   #   (cluster metadata + tweet texts only)
-  output_mode: human   
 
 
   # Number of batches of recent tweets to use for clustering

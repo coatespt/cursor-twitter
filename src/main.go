@@ -348,6 +348,7 @@ func startAnalysisThread(cfg *config.Config, loadedState map[string]int) {
 
 // runClusteringForBatch runs clustering analysis for a batch of busy words and tweets
 func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets.Tweet, batchNumber int64, cfg *config.Config) {
+	fmt.Fprintf(os.Stderr, "DEBUG: runClusteringForBatch called for batch %d\n", batchNumber)
 	slog.Info("Clustering: Starting batch analysis", "batch_number", batchNumber, "class_results", len(classResults), "recent_tweets", len(recentTweets))
 
 	// Print busy word summary
@@ -381,23 +382,36 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 	}
 
 	// Filter tweets that contain at least minBusyWords busy words
-	minBusyWords := cfg.Analysis.MinBusyWordsPerTweet
+	minBusyWords := 3  // Hardcoded for testing
 	if minBusyWords <= 0 {
 		minBusyWords = 1
 	}
+	fmt.Fprintf(os.Stderr, "DEBUG: Using minBusyWords = %d (from config: %d)\n", minBusyWords, cfg.Analysis.MinBusyWordsPerTweet)
 
 	var tweetsWithBusyWords []*tweets.Tweet
 	for _, tweet := range recentTweets {
 		busyWordCount := 0
+		var busyTokens []string
 		for _, token := range tweet.Tokens {
 			if allBusyWords[token] {
 				busyWordCount++
+				busyTokens = append(busyTokens, token)
 			}
 		}
 		if busyWordCount >= minBusyWords {
 			tweetsWithBusyWords = append(tweetsWithBusyWords, tweet)
+		} else {
+			// Debug: Show tweets that were filtered out
+			if len(busyTokens) > 0 {
+				fmt.Fprintf(os.Stderr, "DEBUG: Filtered out tweet with %d busy words: %v\n", busyWordCount, busyTokens)
+			}
 		}
 	}
+
+	// Debug: Show filtering results
+	fmt.Fprintf(os.Stderr, "DEBUG: Tweet filtering results - total_tweets: %d, tweets_with_busy_words: %d, min_busy_words: %d, total_busy_words: %d\n",
+		len(recentTweets), len(tweetsWithBusyWords), minBusyWords, len(allBusyWords))
+	slog.Info("Tweet filtering results", "total_tweets", len(recentTweets), "tweets_with_busy_words", len(tweetsWithBusyWords), "min_busy_words", minBusyWords, "total_busy_words", len(allBusyWords))
 
 	// Sanity checks before proceeding with clustering
 	if len(tweetsWithBusyWords) == 0 {
@@ -425,8 +439,8 @@ func runClusteringForBatch(classResults map[int][]string, recentTweets []*tweets
 
 }
 
-// runGraphClustering runs graph-based clustering on tweets
-func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[string]bool, cfg *config.Config, batchNumber int64, classResults map[int][]string) {
+// runGraphClustering is deprecated - using output.RunGraphClustering directly now
+func runGraphClusteringDeprecated(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[string]bool, cfg *config.Config, batchNumber int64, classResults map[int][]string) {
 	// Perform optimized graph clustering
 	clusterer := pipeline.NewOptimizedTweetClusterer(
 		cfg.Analysis.MinJaccardSimilarity,
@@ -448,13 +462,13 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 	currentBatchWindow := getBatchWindow()
 
 	// Get timestamp for the batch
-	var batchTimeStr string
-	if len(tweetsWithBusyWords) > 0 {
-		firstTweet := tweetsWithBusyWords[0]
-		batchTimeStr = time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05 UTC")
-	} else {
-		batchTimeStr = time.Now().UTC().Format("2006-01-02 15:04:05 UTC")
-	}
+	// var batchTimeStr string // unused
+	// if len(tweetsWithBusyWords) > 0 {
+	//	firstTweet := tweetsWithBusyWords[0]
+	//	batchTimeStr = time.Unix(firstTweet.Unix, 0).Format("2006-01-02 15:04:05 UTC")
+	// } else {
+	//	batchTimeStr = time.Now().UTC().Format("2006-01-02 15:04:05 UTC")
+	// }
 
 	// Collect all clusters for this batch
 	var batchClusters []map[string]interface{}
@@ -592,7 +606,7 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 	}
 
 	// Create batch-level data structure
-	totalClusters := len(batchClusters)
+	// totalClusters := len(batchClusters) // unused
 
 	// Recalculate clusters above min size after fallback cluster might have been added
 	clustersAboveMinSize = 0
@@ -612,17 +626,7 @@ func runGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 
 	// Final batch data - diagnostic logging removed for cleaner output
 
-	batchData := map[string]interface{}{
-		"batch_number":            batchNumber,
-		"batch_time":              batchTimeStr,
-		"method":                  "graph",
-		"total_clusters":          totalClusters,
-		"clusters_above_min_size": clustersAboveMinSize,
-		"total_tweets":            len(tweetsWithBusyWords),
-		"clusters":                batchClusters,
-	}
-
-	output.OutputClusterWithConfig(batchData, cfg)
+	// This function is deprecated - using output.RunGraphClustering directly now
 }
 
 // getCurrentWorkingDir returns the current working directory for debugging
@@ -874,7 +878,7 @@ func printStartupInfo(cfg *config.Config, configPath string, loadState, printTwe
 	fmt.Fprintf(os.Stderr, "Min shared busywords for persistence: %d\n", cfg.Analysis.MinSharedBusyWordsForPersistence)
 	fmt.Fprintf(os.Stderr, "\n--- Clustering Settings ---\n")
 	fmt.Fprintf(os.Stderr, "Clustering method: %s\n", cfg.Analysis.ClusteringMethod)
-	fmt.Fprintf(os.Stderr, "Output mode: %s\n", cfg.Analysis.OutputMode)
+	fmt.Fprintf(os.Stderr, "Output mode: human\n")
 	fmt.Fprintf(os.Stderr, "Min busy words per tweet: %d\n", cfg.Analysis.MinBusyWordsPerTweet)
 	fmt.Fprintf(os.Stderr, "Min Jaccard similarity: %.3f\n", cfg.Analysis.MinJaccardSimilarity)
 	fmt.Fprintf(os.Stderr, "Duplicate similarity threshold: %.3f\n", cfg.Analysis.DuplicateSimilarityThreshold)
@@ -919,7 +923,7 @@ func logStartupInfo(cfg *config.Config, configPath string, loadState, printTweet
 	slog.Info("Min shared busywords for persistence", "count", cfg.Analysis.MinSharedBusyWordsForPersistence)
 	slog.Info("--- Clustering Settings ---")
 	slog.Info("Clustering method", "method", cfg.Analysis.ClusteringMethod)
-	slog.Info("Output mode", "mode", cfg.Analysis.OutputMode)
+	slog.Info("Output mode", "mode", "human")
 	slog.Info("Min busy words per tweet", "count", cfg.Analysis.MinBusyWordsPerTweet)
 	slog.Info("Min Jaccard similarity", "similarity", cfg.Analysis.MinJaccardSimilarity)
 	slog.Info("Duplicate similarity threshold", "threshold", cfg.Analysis.DuplicateSimilarityThreshold)

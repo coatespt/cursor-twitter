@@ -19,19 +19,23 @@ Other documentation:
 
 # Cursor Principles 
 
-Paste this into Cursor when starting a new chat.
+Please read #Cursor Principles in SESSION_NOTES.md before doing anything.
 
-Never make a code change without explicitly asking me. That means per-change. In the past I have asked for a single change and you go off searching the entire code base making changes all over the place. Disaster predictably ensues.
+After I ask you to read this, do not inform me about understanding it unless something is unclear. 
 
-If something seems to require work beyond the strictest interpretation of what you are asked, stop. Do nothing at all until you clarify what you think needs doing and get my buy-in.  Over and over we are completely derailed by you running off and implementing nonsense, changing code all over the place.  100% of the time you should err on the side of doing too little, not too much.
+Absolutely no debug, logging, informationals or other should be written to the main pipeline's standard out. STDOUT is only for the program output. Only standard error should be used for this kind of information.
 
-Never, under any circumstances do any git operation for any reason until we have explicitly discussed the operation you contemplate. If you think you should do a git operation, assume everty time you misunderstood me and verify that I know what suicidally insane act you are about to undertake. 
+Never make a code change without explicitly asking me. That means per-change.  Do not so much as add a single whitspace without explicit permission. 
+
+If something seems to require any change beyond the strictest possible interpretation of what you are asked, stop immediately. Do nothing at all until you clarify what you think needs doing and get my buy-in.  
+
+Never, under any circumstances do any git operation that modifies anything in the filesystem for any reason until we have explicitly discussed the operation you contemplate. If you think you should do a git operation, automatically assume **every** time that you have misunderstood me and verify that I know what suicidally insane act you are about to undertake. 
 
 Don't run the program yourself without asking. The program runs forever and I have to kill it to get your attention back. I will handle running the program. 
 
 If you are going to make changes that you cannot reliably rewind without getting further input from me, warn me so that I can commit everything in a working state.
 
-Do not implement anything without explicit approval. Sometimes I just want to talk about an approach. Asking a question or soliciting your opinion doesn't mean that I want to rewrite the codebase!
+Do not implement anything without explicit approval. Sometimes I just want to talk about an approach. Asking a question or soliciting your opinion doesn't mean that I want to rewrite the codebase on your own. Assume I am just asking a question unless I tell you to write code and/or you ask if you want code written.
 
 For every feature, we need to add unit tests.  The tests should be carefully commented about what is being tested and why the pass/fail conditions are what they are.
 
@@ -39,11 +43,120 @@ For any significant code change, we must run the test suite!
 
 When a test doesn't pass, we have to look at why before changing anything. No removing tests because they don't pass unless we agree the test is obsolete.
 
-If any changes seem to involve multiple threads, be sure to get my agreement before doing anything. Anytime there thread safety constructs like mutex, etc., always check. We keep getting into trouble with unnecessary and incorrect thread complexity.
-Virtually everthing involving concurrency goes disastrously wrong.
+If any changes seem to involve multiple threads in any way, or includes anything remotely related to concurrency protections, for instance, mutexes, be sure to get my agreement before doing anything. If you intend to write or touch code might do anything that can be seen by other threads, ask and ask again, then verify that I fully understand exactly what you propose to do.
 
 Apparently you are under the impression that I want happy sunny output. No! Be as critical of what I say as possible.
 
+
+# TTD 
+
+## Insandity of human display v other display 
+
+func OutputCluster(cluster interface{}, cfg *config.Config) at line 124 in output.go
+has to do wild type manipulations that don't work to get the batch_id value to be 
+recognized and print out.
+
+We're using these interfaces and such because why? It was two different display. Instead of making it the same all the way to the end, and then printing different subsets of the fields, cursor made two different structs and carry them all the way through. 
+
+There should be one struct, the one with all the data. At the very end, where they get printed out, there should be two methods, one for human mode, and one for machine mode.
+
+
+## Need Utility to find batches and cluster count distributions 
+I feel like we're getting insane numbers of clusters now.
+
+## Do we want these log lines gone?
+*** FCT REBUILD STARTED at 18:26:01 ***
+*** FCT REBUILD COMPLETED at 18:26:02 (duration: 857.015865ms, token files written: 473430) ***
+
+## The Config Override System is a mess.
+
+## Rabbit Not Tested With Refactored Code
+
+## Refactor the insanely large main into a reasonable structure.
+This is ongoing.
+
+## Global configs on the graphical output. 
+It would be nice to see global parameters on the output screen so you could see things like:
+- How big a batch is.
+- How much clock time is represented by each batch
+- Some values we aren't yet computing or displaying like, the quality of a cluster.
+
+## Clustering Improvement By Weighting Frequency Classes
+Would clustering be improved by weighting the frequency classes?
+
+- The rarer the word class, the more it is worth?
+- Or possibly the opposite?
+
+Not too hard to do if it seems worth it.
+
+- Make the frequency filters accessible to the analytic thread
+- Assign a weight to each busyword based on its F class
+- Weighted edges are amost certainly part of the graph algorithm. We probably use them now, but just defaulted to 1.
+
+Danger is, it's another configuration matter to try to figure out how to tune.
+There are a lot of them!
+
+## Meta-Cluster Quality Not Great
+See clustering improvement above.
+- We now have a choice between clustering on the busy words or clustering on all tokens. 
+- Investigate exactly how this is done. 
+- Does "all teh words" mean just the medioids or does it mean all the Tweets?
+
+## Dynamic Adjustment of Z Minima 
+Sometimes you see a gross inflation of the number of busy words. It is not clear why.  A facility to dynamically adjust the Z values to keep them at some optimim number might be useful.
+
+- Take the Z minima from config as a starting point 
+- Bump them up and down to seek a level that results in an average of B busywords for each frequency pipeline.
+
+### Considerations and Risks
+- There is considerable variance across batches 
+- There is considerable variance among batches
+- We don't actually know which frequency classes characterize clusters the best
+
+We save the busy words sets, so we could do some statistical analysis of them.  We might need to add to that to correlate them with the clusters.
+
+## Possible logic error
+We sometimes get notification in the logs of a burst of 3pk's not mapping to tokens. 
+This should be almost impossible (it says so right in the warning message.) 'Sup with that?
+
+Suspect this is a phenomenon of startup from token counts on disks.
+This needs to be confirmed.
+ 
+## Ongoing Items
+
+- Comments Key areas need to be commented to keep out, don't touch, etc.
+
+- Testing has been neglected. Make tests around everything.
+
+## Major: Improving Busy Word Detection Quality by Computing Redundantly
+
+This would be a significant effort.  Interesting idea, but it's not 100% clear that it's worth doing. We need some investigation.
+
+Consider that dual sets of pipelines, or even three sets, each with different hash functions, could do a much more accurate job of filtering out the true busy words for a given set of parameters.  
+ 
+It is not clear how big an impact this would have on performance. All the BW processors are doing is counting and periodically computing Z on a thousand values in each of the three counter arrays. 
+
+You'd have to 
+- Maintain 3 copies of the 3pk mappings
+- Three sets of queues
+- Three sets of busyword processors 
+- Add a piece to the analysis thread to take all three sets of sets of busywords and and decide on what the final set is. 
+- After that, it's the same.
+
+Risk. If multiplying the work in the busyword processors made them in aggregate slower than the combined main pipeline and the clustering, it would cause the queues to grow without bound and crash the program. You'd need to detect the problem and throttle the reads if this is a problem. Actually, this should probably be done anyway! Who knows if some combination of config parameters could cause this to happen.
+
+## Major: Clustering Across Batches
+
+Needs to be investigated for quality.
+
+Jacquard similarity for the clustering seems to be applied to all the tokens in the Tweets. 
+  - Is that true, and if so, is it correct? This may have been done.
+  - Maybe it should be only on the busywords. 
+  - Jacquard similarity might not be important. Maybe just the raw occurrences?
+
+## Consider Stripping K-Means Out Entirely
+It doesn't do any harm, but we're never going to use it and it could be confusing.
+   
 # Input and Output
 
 The input available for development purposes is two weeks of the decahose (about 500 Tweets/second.) It consists of JSON-formatted Tweets in files that have the file order encoded in the filenames as Unix start and end times. The files are about five minutes of Tweets at about 500 Tweets/second. The original files are unpacked into uncompressed CSV files.  
@@ -492,105 +605,6 @@ We now have a file called banned_phrases.txt that contains a number of phrases t
 - "Do you want more Followers" 
 - "Start and internet business"
 
-# TTD and Direction
-## Need Utility to find batches and cluster count distributions 
-I feel like we're getting insane numbers of clusters now.
-
-## Remove the superfluous debugs, 
-On the console we get these.
-*** FCT REBUILD STARTED at 18:26:01 ***
-*** FCT REBUILD COMPLETED at 18:26:02 (duration: 857.015865ms, token files written: 473430) ***
-
-In the log we get these
-
-## Rabbit Not Tested With Refactored Code
-
-## Fix the AI loader so it can restart on the same dataset.
-
-## Refactor the insanely large main into a reasonable structure.
-
-## Global configs on the graphical output. 
-It would be nice to see global parameters on the output screen so you could see things like:
-- How big a batch is.
-- How much clock time is represented by each batch
-- Some values we aren't yet computing or displaying like, the quality of a cluster.
-
-## Clustering Improvement By Weighting Frequency Classes
-Would clustering be improved by weighting the frequency classes?
-
-- The rarer the word class, the more it is worth?
-- Or possibly the opposite?
-
-Not too hard to do if it seems worth it.
-
-- Make the frequency filters accessible to the analytic thread
-- Assign a weight to each busyword based on its F class
-- Weighted edges are amost certainly part of the graph algorithm. We probably use them now, but just defaulted to 1.
-
-Danger is, it's another configuration matter to try to figure out how to tune.
-There are a lot of them!
-
-## Meta-Cluster Quality Not Great
-See clustering improvement above.
-- We now have a choice between clustering on the busy words or clustering on all tokens. 
-- Investigate exactly how this is done. 
-- Does "all teh words" mean just the medioids or does it mean all the Tweets?
-
-## Dynamic Adjustment of Z Minima 
-Sometimes you see a gross inflation of the number of busy words. It is not clear why.  A facility to dynamically adjust the Z values to keep them at some optimim number might be useful.
-
-- Take the Z minima from config as a starting point 
-- Bump them up and down to seek a level that results in an average of B busywords for each frequency pipeline.
-
-### Considerations and Risks
-- There is considerable variance across batches 
-- There is considerable variance among batches
-- We don't actually know which frequency classes characterize clusters the best
-
-We save the busy words sets, so we could do some statistical analysis of them.  We might need to add to that to correlate them with the clusters.
-
-## Possible logic error
-We sometimes get notification in the logs of a burst of 3pk's not mapping to tokens. 
-This should be almost impossible (it says so right in the warning message.) 'Sup with that?
-
-Suspect this is a phenomenon of startup from token counts on disks.
-This needs to be confirmed.
- 
-## Ongoing Items
-
-- Comments Key areas need to be commented to keep out, don't touch, etc.
-
-- Testing has been neglected. Make tests around everything.
-
-## Major: Improving Busy Word Detection Quality by Computing Redundantly
-
-This would be a significant effort.  Interesting idea, but it's not 100% clear that it's worth doing. We need some investigation.
-
-Consider that dual sets of pipelines, or even three sets, each with different hash functions, could do a much more accurate job of filtering out the true busy words for a given set of parameters.  
- 
-It is not clear how big an impact this would have on performance. All the BW processors are doing is counting and periodically computing Z on a thousand values in each of the three counter arrays. 
-
-You'd have to 
-- Maintain 3 copies of the 3pk mappings
-- Three sets of queues
-- Three sets of busyword processors 
-- Add a piece to the analysis thread to take all three sets of sets of busywords and and decide on what the final set is. 
-- After that, it's the same.
-
-Risk. If multiplying the work in the busyword processors made them in aggregate slower than the combined main pipeline and the clustering, it would cause the queues to grow without bound and crash the program. You'd need to detect the problem and throttle the reads if this is a problem. Actually, this should probably be done anyway! Who knows if some combination of config parameters could cause this to happen.
-
-## Major: Clustering Across Batches
-
-Needs to be investigated for quality.
-
-Jacquard similarity for the clustering seems to be applied to all the tokens in the Tweets. 
-  - Is that true, and if so, is it correct? This may have been done.
-  - Maybe it should be only on the busywords. 
-  - Jacquard similarity might not be important. Maybe just the raw occurrences?
-
-## Consider Stripping K-Means Out Entirely
-It doesn't do any harm, but we're never going to use it and it could be confusing.
-   
 # Miscelaneous Details
 
 ## Why a Big Token Window?

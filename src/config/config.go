@@ -76,7 +76,6 @@ type Config struct {
 		DuplicateSimilarityThreshold float64 `yaml:"duplicate_similarity_threshold"` // Similarity threshold for duplicates
 		LanguageFilter               string  `yaml:"language_filter"`                // Language filter: "en", "es", "all", etc.
 		ClusteringMethod             string  `yaml:"clustering_method"`              // Method for clustering: "graph" (only valid option)
-		OutputMode                   string  `yaml:"output_mode"`                    // Output mode: "verbose" or "human"
 		MinClusterSize               int     `yaml:"min_cluster_size"`               // Minimum number of tweets in a cluster for it to be included in the output
 		CreateFallbackClusters       bool    `yaml:"create_fallback_clusters"`       // Create fallback clusters when no clusters found but tweets exist
 		// Persistence window configuration for tracking clusters across multiple batches
