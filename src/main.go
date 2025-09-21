@@ -958,9 +958,6 @@ func main() {
 	// Parse command line flags
 	printTweets, configPath, overridePath, loadState, enableProfiling := parseCommandLineFlags()
 
-	// Start CPU profiling if enabled
-	setupCPUProfiling(*enableProfiling)
-
 	// Load configuration
 	cfg := loadConfiguration(*configPath, *overridePath)
 
@@ -1048,7 +1045,26 @@ func main() {
 	slog.Info("✓ Logs saved to", "dir", cfg.LogDir)
 	slog.Info("=== STARTUP COMPLETE ===")
 
+	// Initialize pipeline start time for total rate calculation
+	pipelineStartTime = time.Now()
+
 	setupSignalHandling()
+
+	// Setup CPU profiling if enabled (placed here so defer statements stay in scope)
+	var cpuProfile *os.File
+	if *enableProfiling {
+		var err error
+		cpuProfile, err = os.Create("cpu.prof")
+		if err != nil {
+			log.Fatalf("Failed to create CPU profile: %v", err)
+		}
+		defer cpuProfile.Close()
+		if err := pprof.StartCPUProfile(cpuProfile); err != nil {
+			log.Fatalf("Failed to start CPU profile: %v", err)
+		}
+		defer pprof.StopCPUProfile()
+		slog.Info("CPU profiling enabled - will create cpu.prof file")
+	}
 
 	// Process based on input mode
 	slog.Info("DEBUG: Config mode", "mode", cfg.Mode)
