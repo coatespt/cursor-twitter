@@ -47,13 +47,64 @@ If any changes seem to involve multiple threads in any way, or includes anything
 
 Apparently you are under the impression that I want happy sunny output. No! Be as critical of what I say as possible.
 
-
-
 # TTD 
+## Bubble View
+The bubble view computes the size of the bubbles completely wrongly. 
+The bubble size is computed as a direct function of the frequency class. Divergence of a word's frequency from the mean isn't even part of it!
 
-# Verify that the sequential screen of the AI display is doing the right stuff.
+The solution requres that we compute the information necessary to show this in the BWP's and pass it into the analytics thread as part of the BusyWordClass struct. Something like this:
+- In the BWP's we currently sift the busyword 3pk's out of the cartesian product of the high-z-score counts.
+- At that point, we have all we need:
+  - The 3pk's 
+  - The z-scores for each of their keys (indices) 
+  - The counts for each of their keys (indices)
+  - The mean of all the counters 
+- The 3pk values are the indexes, so we can get the Z-scores.
 
-# There are somethign like eighty functions that are unused or duplicated. 
+Note that more than one busyword can land on an index so the three Z-scores for a given token might not be approximately the same. However, it is unlikely that more than one busyword will land on all three. Therefore, we take the lowest of the three z-scores for the three indices.
+
+Add fields to the BusyWordClass for
+- Z-Score (lowest of the three)
+- Mean count 
+- Actual count (lowest of the three)
+This can be done without changing anything that now exists--we are just adding three fields to the busyword object we pass to analytics.
+
+In the analytics phase, these three values should be added to the busyword in the JSON output.
+
+This adds data to the JSON, and must be properly parsed and put in the SQL that is stored for the busyword.
+
+In the non-AI display, it must be parsed out made available in the bubbles.
+
+We can take these things one at a time.  
+- In the BWP's we can obtain the values and print them out in a debug statment to get it right before modifyinng the object passed to Analytics.
+- Test to be sure we didn't break anything
+- We modify type BusyWordClass struct to have three more fields: 
+  - The lowest z-score or the 3pk 
+  - The mean for all counters
+  - The lowest counter value for 3pk
+- Test to be sure we didn't break anything
+- We pass them to Analytics in the busyword object.
+- Test to be sure we didn't break anything
+- Then we can modify the JSON
+- Test to be sure we didn't break anything
+- When the JSON passes muster, then we can modify the display to show the correct divergence of the busyword from the typical value for the class.
+  - There are multiple possibilites for computing this
+  - E.g., make the diameter a function of the Z
+  - Make the diameter a function of the ratio of mean to actual
+  - Probably we should offer a choice in config
+- Test to be sure we didn't break anything
+- When that all works, we can modify the SQL Loader
+- Test to be sure we didn't break anything
+- When it is going into Postgres correctly, we can do anything necessary in the AI_loader part. (this may not need changes)
+- Test to be sure we didn't break anything
+
+  
+
+  
+
+## Verify that the sequential screen of the AI display is doing the right stuff.
+
+## There are somethign like eighty functions that are unused or duplicated. 
 As of september 21 there are 12,697 lines of Go in the pipeline compilation.  We'll see how many can be removed.
 
 jaccard() is an example. 
