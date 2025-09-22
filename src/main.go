@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"log/slog"
-	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -69,35 +68,8 @@ var (
 )
 
 // addBatchToWindow adds a new batch to the global batch window and maintains the window size
-func addBatchToWindow(batch *Batch, cfg *config.Config) {
-	batchWindowMutex.Lock()
-	defer batchWindowMutex.Unlock()
-
-	// Add the new batch
-	batchWindow = append(batchWindow, batch)
-
-	// Maintain window size by removing old batches
-	maxBatches := cfg.Analysis.WindowBatchesPersistence
-	if maxBatches <= 0 {
-		maxBatches = 6 // Default value
-	}
-
-	// Remove oldest batches if we exceed the window size
-	for len(batchWindow) > maxBatches {
-		batchWindow = batchWindow[1:]
-	}
-}
 
 // getBatchWindow returns a copy of the current batch window
-func getBatchWindow() []*Batch {
-	batchWindowMutex.RLock()
-	defer batchWindowMutex.RUnlock()
-
-	// Return a copy to avoid race conditions
-	result := make([]*Batch, len(batchWindow))
-	copy(result, batchWindow)
-	return result
-}
 
 // Global stats counters
 var (
@@ -622,21 +594,6 @@ func parseCommandLineFlags() (*bool, *string, *string, *bool, *bool) {
 	return printTweets, configPath, overridePath, loadState, enableProfiling
 }
 
-// setupCPUProfiling sets up CPU profiling if enabled
-func setupCPUProfiling(enableProfiling bool) {
-	if enableProfiling {
-		cpuProfile, err := os.Create("cpu.prof")
-		if err != nil {
-			log.Fatalf("Failed to create CPU profile: %v", err)
-		}
-		defer cpuProfile.Close()
-		if err := pprof.StartCPUProfile(cpuProfile); err != nil {
-			log.Fatalf("Failed to start CPU profile: %v", err)
-		}
-		defer pprof.StopCPUProfile()
-		slog.Info("CPU profiling enabled - will create cpu.prof file")
-	}
-}
 
 // loadConfiguration loads the configuration from YAML file with optional override
 func loadConfiguration(configPath, overridePath string) *config.Config {
@@ -1056,148 +1013,7 @@ func processTweets(cfg *config.Config, printTweets bool) {
 	}
 }
 
-// createBatchFromClusters creates a batch from clustering results and adds it to the batch window
-func createBatchFromClusters(clusters []pipeline.TweetCluster, batchNumber int, cfg *config.Config) {
-	// Collect all tweets that were actually clustered
-	var clusteredTweets []*tweets.Tweet
-	for _, cluster := range clusters {
-		// Assign batch ID to each tweet in the cluster
-		for _, tweet := range cluster.Tweets {
-			tweet.BatchID = batchNumber
-		}
-		clusteredTweets = append(clusteredTweets, cluster.Tweets...)
-	}
 
-	// TODO: Batch creation will be handled by analysis thread
-
-	// TODO: Batch window management will be handled by analysis thread
-}
-
-// getContinuationInfo returns continuation information for a cluster
-func getContinuationInfo(currentCluster pipeline.TweetCluster, batchWindow []*Batch, currentBatchID int64, cfg *config.Config) string {
-	var continuationBatches []int64
-
-	// Check each previous batch in the window
-	for _, pastBatch := range batchWindow {
-		if pastBatch.BatchID >= currentBatchID {
-			continue // Skip current and future batches
-		}
-
-		// Check if any cluster in the past batch is similar to the current cluster
-		for _, pastCluster := range pastBatch.Clusters {
-			if clustersAreRelated(currentCluster, pastCluster, cfg) {
-				continuationBatches = append(continuationBatches, pastBatch.BatchID)
-				break // Found a continuation, no need to check other clusters in this batch
-			}
-		}
-	}
-
-	// Sort and deduplicate continuation batches
-	if len(continuationBatches) > 0 {
-		continuationBatches = deduplicateAndSort(continuationBatches)
-		return fmt.Sprintf(" (continues from batches %v, current: %d)", continuationBatches, currentBatchID)
-	}
-
-	return " (new cluster)"
-}
-
-// clustersAreRelated checks if two clusters are related (similar busy words and tweets)
-func clustersAreRelated(cluster1, cluster2 pipeline.TweetCluster, cfg *config.Config) bool {
-	// Default to busy_words method if not specified
-	method := cfg.Analysis.PersistenceClusteringMethod
-	if method == "" {
-		method = "busy_words"
-	}
-
-	switch method {
-	case "full_text":
-		return clustersAreRelatedByFullText(cluster1, cluster2, cfg)
-	case "busy_words":
-		fallthrough
-	default:
-		return clustersAreRelatedByBusyWords(cluster1, cluster2, cfg)
-	}
-}
-
-func clustersAreRelatedByBusyWords(cluster1, cluster2 pipeline.TweetCluster, cfg *config.Config) bool {
-	// Check if they share busy words
-	sharedWords := 0
-	for _, word1 := range cluster1.BusyWords {
-		for _, word2 := range cluster2.BusyWords {
-			if word1 == word2 {
-				sharedWords++
-				break
-			}
-		}
-	}
-
-	// Use configurable threshold for relationship strength
-	minSharedWords := cfg.Analysis.MinSharedBusyWordsForPersistence
-	if len(cluster1.BusyWords) < 3 || len(cluster2.BusyWords) < 3 {
-		// Lower threshold for small clusters (use 1 if config value is higher)
-		if minSharedWords > 1 {
-			minSharedWords = 1
-		}
-	}
-
-	return sharedWords >= minSharedWords
-}
-
-func clustersAreRelatedByFullText(cluster1, cluster2 pipeline.TweetCluster, cfg *config.Config) bool {
-	// Get all unique token sets from both clusters
-	tokenSets1 := make(map[string]bool)
-	tokenSets2 := make(map[string]bool)
-
-	for _, tweet := range cluster1.Tweets {
-		// Use the already normalized and filtered tokens
-		tokenKey := strings.Join(tweet.Tokens, " ")
-		tokenSets1[tokenKey] = true
-	}
-
-	for _, tweet := range cluster2.Tweets {
-		// Use the already normalized and filtered tokens
-		tokenKey := strings.Join(tweet.Tokens, " ")
-		tokenSets2[tokenKey] = true
-	}
-
-	// Count shared token sets (equivalent to shared normalized texts)
-	sharedTokenSets := 0
-	for tokenSet := range tokenSets1 {
-		if tokenSets2[tokenSet] {
-			sharedTokenSets++
-		}
-	}
-
-	// Consider clusters related if they share at least one token set
-	// This is equivalent to the previous text comparison but much faster
-	return sharedTokenSets >= 1
-}
-
-// deduplicateAndSort removes duplicates and sorts a slice of integers
-func deduplicateAndSort(slice []int64) []int64 {
-	seen := make(map[int64]bool)
-	var result []int64
-
-	for _, item := range slice {
-		if !seen[item] {
-			seen[item] = true
-			result = append(result, item)
-		}
-	}
-
-	sort.Slice(result, func(i, j int) bool {
-		return result[i] < result[j]
-	})
-	return result
-}
-
-// processBatchPersistence analyzes the batch window for persistent clusters
-func processBatchPersistence(batchWindow []*Batch, cfg *config.Config) {
-	// TODO: This function should be moved to the analysis thread
-	// The analysis thread should handle persistence tracking
-	return
-
-}
 
 // parseCSVToTweet parses a CSV row string into a Tweet struct,
 // tokenizes the text, generates ThreePartKeys, and updates the global
@@ -1469,16 +1285,6 @@ func simpleTokenize(text string, cfg *config.Config) []string {
 	return processedTokens
 }
 
-// removePunctuation removes punctuation from a token while preserving alphanumeric characters
-func removePunctuation(token string) string {
-	var result strings.Builder
-	for _, char := range token {
-		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') {
-			result.WriteRune(char)
-		}
-	}
-	return result.String()
-}
 
 // Normalize all whitespace to a single space
 func normalizeWhitespace(s string) string {
@@ -1583,45 +1389,6 @@ func shouldFilterToken(token string, cfg *config.Config) bool {
 	return false
 }
 
-// manageSlidingWindow adds a new tweet to the queue and removes old tweets that fall outside the window
-func manageSlidingWindow(tweet *tweets.Tweet, windowSize int) {
-	// This function is no longer needed as the tweet queue is removed.
-	// The FCT handles the sliding window for tokens.
-}
-
-// setupBloomFilterParams returns the expected number of tokens and number of hashes for each frequency class.
-// This allows for different Bloom filter sizes based on the expected number of tokens in each class.
-func setupBloomFilterParams(numClasses int) ([]int, []uint) {
-	// Expected number of tokens in each frequency class (from most frequent to least frequent)
-	// Based on actual data showing exponential growth: 15, 90, 576, 6076, 60373 for 5 classes
-	expectedTokens := make([]int, numClasses)
-	hashCounts := make([]uint, numClasses)
-
-	// Use exponential growth based on actual data pattern
-	// For 5 classes: 15, 90, 576, 6076, 60373
-	// Growth factor is approximately 6x per class
-	baseTokens := 15
-	growthFactor := 6.0
-
-	for i := 0; i < numClasses; i++ {
-		expectedTokens[i] = int(float64(baseTokens) * math.Pow(growthFactor, float64(i)))
-
-		// Number of hash functions - higher counts for larger filters to maintain low false positive rate
-		if expectedTokens[i] < 100 {
-			hashCounts[i] = 7
-		} else if expectedTokens[i] < 1000 {
-			hashCounts[i] = 8
-		} else if expectedTokens[i] < 10000 {
-			hashCounts[i] = 10
-		} else if expectedTokens[i] < 100000 {
-			hashCounts[i] = 12
-		} else {
-			hashCounts[i] = 14
-		}
-	}
-
-	return expectedTokens, hashCounts
-}
 
 // loadPersistedState loads the persisted data structures from files and logs statistics
 func loadPersistedState(stateDir string, freqClasses int, cfg *config.Config) map[string]int {

@@ -48,32 +48,28 @@ If any changes seem to involve multiple threads in any way, or includes anything
 Apparently you are under the impression that I want happy sunny output. No! Be as critical of what I say as possible.
 
 
+
 # TTD 
 
-## Insandity of human display v other display 
+# Verify that the sequential screen of the AI display is doing the right stuff.
 
-func OutputCluster(cluster interface{}, cfg *config.Config) at line 124 in output.go
-has to do wild type manipulations that don't work to get the batch_id value to be 
-recognized and print out.
+# There are somethign like eighty functions that are unused or duplicated. 
+As of september 21 there are 12,697 lines of Go in the pipeline compilation.  We'll see how many can be removed.
 
-We're using these interfaces and such because why? It was two different display. Instead of making it the same all the way to the end, and then printing different subsets of the fields, cursor made two different structs and carry them all the way through. 
-
-There should be one struct, the one with all the data. At the very end, where they get printed out, there should be two methods, one for human mode, and one for machine mode.
-
-
-## Need Utility to find batches and cluster count distributions 
-I feel like we're getting insane numbers of clusters now.
+jaccard() is an example. 
 
 ## Do we want these log lines gone?
 *** FCT REBUILD STARTED at 18:26:01 ***
 *** FCT REBUILD COMPLETED at 18:26:02 (duration: 857.015865ms, token files written: 473430) ***
 
 ## The Config Override System is a mess.
+This has supposedly been fixed and any value can go in the override file. We shall see.
 
 ## Rabbit Not Tested With Refactored Code
 
 ## Refactor the insanely large main into a reasonable structure.
-This is ongoing.
+
+This is ongoing. It has been shrunk by about 1/3 already.
 
 ## Global configs on the graphical output. 
 It would be nice to see global parameters on the output screen so you could see things like:
@@ -749,3 +745,120 @@ There is a multi-threaded utility to identify the actual language and set the fi
 if by far the most expensive part of the processing, outweighing everything else put together buy a multiple.
 
 We have a set of the CSV files that have been post-processed to have this more reliable lang: field. 
+
+# Candidate Functions That May Be Duplicated. 91 possibles! Insane.
+
+These functions are all possible duplicates. Apparently cursor was not deleting
+them as they were moved during refactoring.  (Despite having been cautioned to do
+so repeatedly.)
+
+### Main Pipeline Functions (src/main.go)
+addBatchToWindow
+getBatchWindow
+TweetQueue.Len
+setupCPUProfiling
+createBatchFromClusters
+getContinuationInfo
+clustersAreRelated
+clustersAreRelatedByBusyWords
+clustersAreRelatedByFullText
+deduplicateAndSort
+processBatchPersistence
+removePunctuation
+shouldFilterToken
+manageSlidingWindow
+setupBloomFilterParams
+jaccard ⚠️ DUPLICATE (also in output.go)
+findMostTypicalTweets
+removeNearDuplicates
+levenshteinDistance
+wordDistance
+normalizedWordDistance
+
+### RabbitMQ Functions (src/rabbitmq.go)
+NewRabbitMQ
+RabbitMQ.Close
+RabbitMQ.GetQueueInfo
+
+### Config Functions (src/config/config.go)
+LoadAndValidateConfig
+resolvePathRelativeToConfig
+resolvePathsInConfig
+LoadAndValidateConfigWithPathResolution
+LoadConfigWithoutValidation
+
+### Filter Functions (src/filter/word_filter.go)
+WordFilter.AddWord
+WordFilter.RemoveWord
+
+
+### Logging Functions (src/logging/stats.go)
+GetCurrentWorkingDir
+
+### Output Functions (src/output/output.go)
+ShouldFilterRepetitiveCluster
+OutputCluster
+OutputStats
+OutputError
+OutputInfo
+OutputRaw
+ConvertToHumanReadable
+ConvertIndividualClusterToHumanReadable
+removeNearDuplicates ⚠️ DUPLICATE (also in main.go)
+findMostTypicalTweets ⚠️ DUPLICATE (also in main.go)
+abs
+max
+levenshteinDistance ⚠️ DUPLICATE (also in main.go)
+wordDistance ⚠️ DUPLICATE (also in main.go)
+normalizedWordDistance ⚠️ DUPLICATE (also in main.go)
+min
+jaccard ⚠️ DUPLICATE (also in main.go)
+clusterSimilarity
+PerformMetaClustering
+PerformUnionMetaClustering
+ConvertToIndividualCluster
+createMetaCluster
+calculateMedoidSimilarity
+calculateBusyWordSimilarity
+generateThemeFromMedoid
+generateIDFromTheme
+ConvertBatchToHumanReadable
+CreateBatchFromClusters
+GetContinuationInfo
+ClustersAreRelated
+ClustersAreRelatedByBusyWords
+ClustersAreRelatedByFullText
+deduplicateAndSort
+ProcessBatchPersistence
+getBatchWindow
+convertToHumanReadable
+
+### Pipeline Functions (src/pipeline/)
+NewFrequencyClassProcessor
+FrequencyClassProcessor.writeToCSV
+FrequencyClassProcessor.printBatchSummary
+FrequencyClassProcessor.convert3PKsToWords
+FrequencyClassProcessor.getWordFrom3PK
+BusyWordProcessor.performZComputation
+CleanupQueue.Enqueue
+CleanupQueue.Dequeue
+CleanupQueue.Size
+CleanupQueue.IsEmpty
+NewSetFilter
+GetTokenFrequencyClass
+AddWordTo3PKMapping
+AddToCleanupQueue
+GetCleanupQueueSize
+GetAndResetTokensAddedToCleanupQueue
+GetDynamicCleanupLeaveAtLeast
+
+### Regex Functions (src/regex/)
+LoadBannedPhrasesFromFile
+LoadBannedPhrasesFromDirectory
+CompileBannedPhrasePattern
+
+### Utils Functions (src/utils/math.go)
+Abs
+Max
+Min
+Note: I found 91 functions, not 80. The functions marked with ⚠️ DUPLICATE are confirmed duplicates that exist in both files.
