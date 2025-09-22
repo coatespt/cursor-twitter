@@ -327,19 +327,19 @@ func (af *AIFeeder) GetClustersForAnalysis(sessionID int, runID int) ([]ClusterD
 
 	query := `
 		SELECT 
-			c.cluster_id, c.cluster_id, b.batch_number, b.batch_time, c.size, c.quality_score,
-			(SELECT array_agg(t.tweet_text ORDER BY tc.tweet_order) FROM new_tweets t JOIN new_tweet_clusters tc ON t.tweet_id = tc.tweet_id WHERE tc.cluster_id = c.cluster_id) as tweets,
-			(SELECT t.tweet_text FROM new_tweets t JOIN new_tweet_clusters tc ON t.tweet_id = tc.tweet_id WHERE tc.cluster_id = c.cluster_id AND tc.is_medoid = true LIMIT 1) as medoid_tweet,
-			(SELECT array_agg(word ORDER BY word_order) FROM new_busy_words WHERE cluster_id = c.cluster_id) as busy_words,
-			(SELECT frequency_class FROM new_busy_words WHERE cluster_id = c.cluster_id LIMIT 1) as frequency_class
+			c.id, c.cluster_id, b.batch_number, b.batch_time, c.size, c.quality_score,
+			(SELECT array_agg(t.tweet_text ORDER BY t.tweet_order) FROM new_tweets t WHERE t.cluster_id = c.id) as tweets,
+			(SELECT t.tweet_text FROM new_tweets t WHERE t.cluster_id = c.id AND t.is_medoid = true LIMIT 1) as medoid_tweet,
+			(SELECT array_agg(word ORDER BY word_order) FROM new_busy_words WHERE cluster_id = c.id) as busy_words,
+			(SELECT frequency_class FROM new_busy_words WHERE cluster_id = c.id LIMIT 1) as frequency_class
 		FROM new_clusters c
 		JOIN new_batches b ON c.batch_id = b.id
 		WHERE b.run_id = $1
 		AND c.cluster_id >= $2
-		AND c.cluster_id NOT IN (
+		AND c.id NOT IN (
 			SELECT cluster_id FROM ai_analysis_results WHERE session_id = $3
 		)
-		ORDER BY c.cluster_id
+		ORDER BY b.batch_number, c.cluster_id
 	`
 
 	// Add limit if specified
@@ -549,9 +549,9 @@ func (af *AIFeeder) StoreAnalysisResult(sessionID int, clusterID int, prompt str
 	// Insert result
 	_, err = af.db.Exec(`
 		INSERT INTO ai_analysis_results (
-			session_id, cluster_id, prompt_text, response_text, response_metadata, processing_time_ms
-		) VALUES ($1, $2, $3, $4, $5, $6)
-	`, sessionID, clusterID, prompt, cleanedResponse, responseMetadataJSON, int(processingTime.Milliseconds()))
+			session_id, cluster_id, prompt_text, response_text, response_metadata, processing_time_ms, analysis_text
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, sessionID, clusterID, prompt, cleanedResponse, responseMetadataJSON, int(processingTime.Milliseconds()), cleanedResponse)
 
 	if err != nil {
 		return fmt.Errorf("failed to insert analysis result: %v", err)

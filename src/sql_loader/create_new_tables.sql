@@ -106,29 +106,40 @@ CREATE TABLE IF NOT EXISTS ai_analysis_sessions (
     session_id SERIAL PRIMARY KEY,
     run_id INTEGER NOT NULL REFERENCES new_experiment_runs(run_id) ON DELETE CASCADE,
     session_name TEXT NOT NULL,
+    ai_model VARCHAR(100) NOT NULL, -- e.g., "llama3.1:8b", "gpt-4"
+    ai_endpoint VARCHAR(255) NOT NULL, -- e.g., "http://localhost:11434/api/generate"
+    prompt_template TEXT NOT NULL, -- The template used for generating prompts
+    analysis_type VARCHAR(50) NOT NULL, -- e.g., "cluster_summary", "trend_analysis", "anomaly_detection"
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    status VARCHAR(20) DEFAULT 'active',
-    total_clusters INTEGER,
-    processed_clusters INTEGER DEFAULT 0
+    completed_at TIMESTAMP WITH TIME ZONE,
+    status VARCHAR(20) DEFAULT 'running', -- 'running', 'completed', 'failed', 'paused'
+    total_clusters INTEGER DEFAULT 0,
+    processed_clusters INTEGER DEFAULT 0,
+    failed_clusters INTEGER DEFAULT 0,
+    
+    UNIQUE(run_id, session_name)
 );
 
 CREATE TABLE IF NOT EXISTS ai_analysis_results (
     result_id SERIAL PRIMARY KEY,
     session_id INTEGER NOT NULL REFERENCES ai_analysis_sessions(session_id) ON DELETE CASCADE,
     cluster_id INTEGER NOT NULL REFERENCES new_clusters(id) ON DELETE CASCADE,
-    analysis_text TEXT NOT NULL,
+    prompt_text TEXT NOT NULL, -- The actual prompt sent to AI
+    response_text TEXT NOT NULL, -- The AI's response
+    response_metadata JSONB, -- Additional metadata (tokens used, timing, etc.)
+    analysis_metadata JSONB, -- Extracted structured data from response
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    processing_time_ms INTEGER, -- Time taken for this analysis
     
-    -- Ensure one analysis per cluster per session
     UNIQUE(session_id, cluster_id)
 );
 
 CREATE TABLE IF NOT EXISTS ai_insights (
     insight_id SERIAL PRIMARY KEY,
-    session_id INTEGER NOT NULL REFERENCES ai_analysis_sessions(session_id) ON DELETE CASCADE,
-    insight_type VARCHAR(50) NOT NULL,
-    insight_text TEXT NOT NULL,
-    confidence_score DECIMAL(3,2),
+    result_id INTEGER NOT NULL REFERENCES ai_analysis_results(result_id) ON DELETE CASCADE,
+    insight_type VARCHAR(50) NOT NULL, -- e.g., "topic", "sentiment", "key_entities", "trend"
+    insight_value TEXT NOT NULL,
+    confidence_score DECIMAL(3,2), -- AI confidence in this insight (0.0-1.0)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
@@ -156,9 +167,15 @@ COMMENT ON TABLE new_clusters IS 'Cluster information extracted from each batch'
 COMMENT ON TABLE new_tweets IS 'Individual tweets within each cluster';
 COMMENT ON TABLE new_tweet_clusters IS 'Many-to-many relationship between tweets and clusters';
 COMMENT ON TABLE new_busy_words IS 'Busy words identified in each cluster with their frequency classes';
-COMMENT ON TABLE ai_analysis_sessions IS 'AI analysis sessions for experiment runs';
-COMMENT ON TABLE ai_analysis_results IS 'AI analysis results for individual clusters';
-COMMENT ON TABLE ai_insights IS 'AI-generated insights from analysis sessions';
+COMMENT ON TABLE ai_analysis_sessions IS 'Tracks AI analysis sessions for experiment runs';
+COMMENT ON TABLE ai_analysis_results IS 'Individual AI analysis requests and responses for clusters';
+COMMENT ON TABLE ai_insights IS 'Structured insights extracted from AI analysis responses';
+
+COMMENT ON COLUMN ai_analysis_sessions.ai_model IS 'The AI model used for analysis (e.g., llama3.1:8b)';
+COMMENT ON COLUMN ai_analysis_sessions.prompt_template IS 'Template used to generate prompts for clusters';
+COMMENT ON COLUMN ai_analysis_results.response_metadata IS 'JSON metadata from AI response (tokens, timing, etc.)';
+COMMENT ON COLUMN ai_analysis_results.analysis_metadata IS 'Structured data extracted from AI response';
+COMMENT ON COLUMN ai_insights.confidence_score IS 'AI confidence in this insight (0.0-1.0)';
 
 COMMENT ON COLUMN new_tweets.is_medoid IS 'Marks this tweet as the cluster medoid';
 COMMENT ON COLUMN new_clusters.quality_score IS 'Computed quality score for the cluster';
