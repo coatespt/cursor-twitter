@@ -885,82 +885,43 @@ func findNextBatchWithData(startIndex int, direction int, minClusterSize int) in
 	}
 }
 
-// computeGridData creates the grid data structure for the busy word display
-func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSize int) GridData {
-	fmt.Printf("computeGridData: called for batch %d, currently have %d batches\n", currentBatchIndex, len(allBatches))
-	if currentBatchIndex < 0 {
-		return GridData{}
-	}
-
-	// Load more chunks if needed
-	if currentBatchIndex >= len(allBatches) {
-		fmt.Printf("computeGridData: batch %d >= %d, loading more chunks\n", currentBatchIndex, len(allBatches))
-		if err := loadMoreChunks(currentBatchIndex); err != nil {
-			fmt.Printf("computeGridData: error loading chunks: %v\n", err)
-			return GridData{}
-		}
-	}
-
-	if currentBatchIndex >= len(allBatches) {
-		fmt.Printf("computeGridData: still no data for batch %d\n", currentBatchIndex)
-		return GridData{}
-	}
-
-	currentBatch := allBatches[currentBatchIndex]
-
-	// Extract clusters from current batch
-	// Note: Clusters field is still interface{} in Batch struct, need to handle this properly
-	clustersInterface, ok := currentBatch.Data.Clusters.([]interface{})
+// extractClustersFromBatch extracts and validates clusters from a batch
+func extractClustersFromBatch(batch Batch, minClusterSize int) []map[string]interface{} {
+	clustersInterface, ok := batch.Data.Clusters.([]interface{})
 	if !ok {
-		fmt.Printf("computeGridData: batch %d - clusters not a []interface{}\n", currentBatchIndex)
-		return GridData{}
+		fmt.Printf("extractClustersFromBatch: clusters not a []interface{}\n")
+		return []map[string]interface{}{}
 	}
 
-	fmt.Printf("computeGridData: batch %d has %d clusters\n", currentBatchIndex, len(clustersInterface))
-
-	// Convert to typed clusters and filter by size
 	var clusters []map[string]interface{}
 	for i, clusterInterface := range clustersInterface {
 		clusterMap, ok := clusterInterface.(map[string]interface{})
 		if !ok {
-			fmt.Printf("computeGridData: batch %d cluster %d not a map\n", currentBatchIndex, i)
+			fmt.Printf("extractClustersFromBatch: cluster %d not a map\n", i)
 			continue
 		}
 
 		size, _ := clusterMap["size"].(float64)
-		fmt.Printf("computeGridData: batch %d cluster %d size %v (min required: %d)\n", currentBatchIndex, i, size, minClusterSize)
 		if int(size) >= minClusterSize {
-			fmt.Printf("computeGridData: batch %d cluster %d meets minimum size, adding to clusters\n", currentBatchIndex, i)
 			clusters = append(clusters, clusterMap)
-		} else {
-			fmt.Printf("computeGridData: batch %d cluster %d below minimum size, skipping\n", currentBatchIndex, i)
 		}
 	}
 
-	fmt.Printf("computeGridData: batch %d filtered to %d clusters >= min size\n", currentBatchIndex, len(clusters))
+	return clusters
+}
 
-	// Sort clusters by size (largest first)
-	sort.Slice(clusters, func(i, j int) bool {
-		sizeI, _ := clusters[i]["size"].(float64)
-		sizeJ, _ := clusters[j]["size"].(float64)
-		return sizeI > sizeJ
-	})
-
-	// Build grid rows from current batch clusters
+// buildGridRowsFromClusters creates GridRow structs from cluster data
+func buildGridRowsFromClusters(clusters []map[string]interface{}) ([]GridRow, []ClusterTweetData) {
 	var gridRows []GridRow
 	var clusterTweetData []ClusterTweetData
 
-	fmt.Printf("computeGridData: processing %d clusters\n", len(clusters))
-	for i, cluster := range clusters {
-		fmt.Printf("computeGridData: processing cluster %d\n", i)
+	for _, cluster := range clusters {
 		clusterID, _ := cluster["cluster_id"].(float64)
 		size, _ := cluster["size"].(float64)
-		fmt.Printf("computeGridData: cluster %d ID=%v size=%v\n", i, clusterID, size)
 
-		// Extract busy words from struct - using BusyWord struct
+		// Extract busy words
 		busyWordsInterface, ok := cluster["busy_words"].([]interface{})
 		if !ok {
-			fmt.Printf("computeGridData: cluster %d has no busy_words array\n", i)
 			continue
 		}
 
@@ -971,7 +932,6 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 				continue
 			}
 
-			// Extract BusyWord struct fields
 			word, ok := wordObj["word"].(string)
 			if !ok {
 				continue
@@ -983,7 +943,7 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 				Word:           word,
 				ClusterID:      int(clusterID),
 				ClusterSize:    int(size),
-				QualityScore:   0.0, // Will be calculated after historical data is filled
+				QualityScore:   0.0,
 				HistoricalData: make(map[string]string),
 			}
 			gridRows = append(gridRows, gridRow)
@@ -991,11 +951,8 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 
 		// Extract tweet data
 		var tweets []TweetData
-
-		// Get medoid tweet
 		medoidInterface, _ := cluster["medoid_tweet"].(string)
 		if medoidInterface != "" {
-			// Strip timestamp from medoid tweet
 			medoidText := stripTimestamp(medoidInterface)
 			tweets = append(tweets, TweetData{
 				Text:     medoidText,
@@ -1003,7 +960,6 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 			})
 		}
 
-		// Get sample tweets - using Tweet struct
 		tweetsInterface, _ := cluster["tweets"].([]interface{})
 		var tweetTexts []string
 		for _, tweetInterface := range tweetsInterface {
@@ -1014,28 +970,22 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 			}
 		}
 
-		// Calculate how many tweets to show (N total, where N = number of busy words)
 		numBusyWords := len(busyWords)
 		numTweetsToShow := numBusyWords
-
-		// If we have fewer tweets than busy words, show all available tweets
 		if len(tweetTexts) < numTweetsToShow {
 			numTweetsToShow = len(tweetTexts)
 		}
 
-		// Add sample tweets (skip the first one if it's the same as medoid)
 		tweetsAdded := 0
 		for _, tweetText := range tweetTexts {
 			if tweetsAdded >= numTweetsToShow {
 				break
 			}
 
-			// Skip if this tweet is the same as the medoid
 			if medoidInterface != "" && tweetText == medoidInterface {
 				continue
 			}
 
-			// Strip timestamp from sample tweet
 			cleanTweetText := stripTimestamp(tweetText)
 			tweets = append(tweets, TweetData{
 				Text:     cleanTweetText,
@@ -1044,7 +994,6 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 			tweetsAdded++
 		}
 
-		// Add cluster tweet data
 		clusterTweetData = append(clusterTweetData, ClusterTweetData{
 			ClusterID: int(clusterID),
 			Size:      int(size),
@@ -1053,31 +1002,23 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 		})
 	}
 
-	// Build historical batch numbers
-	var historicalBatchNumbers []int
-	for i := 1; i <= historicalBatches; i++ {
-		historicalIndex := currentBatchIndex - i
-		if historicalIndex >= 0 {
-			historicalBatchNumbers = append(historicalBatchNumbers, historicalIndex)
-		}
-	}
+	return gridRows, clusterTweetData
+}
 
-	// Fill in historical data and recurrence data for each row
+// processHistoricalData fills in historical data for grid rows
+func processHistoricalData(gridRows []GridRow, clusters []map[string]interface{}, historicalBatchNumbers []int, currentBatchIndex int) {
 	for i := range gridRows {
 		word := gridRows[i].Word
 		clusterID := gridRows[i].ClusterID
 
-		// Initialize recurrence data map
 		gridRows[i].RecurrenceData = make(map[string]bool)
 
-		// Get current cluster's medoid for comparison
 		var currentMedoid string
 		for _, cluster := range clusters {
 			if int(cluster["cluster_id"].(float64)) == clusterID {
 				if medoid, ok := cluster["medoid_tweet"].(string); ok {
 					currentMedoid = stripTimestamp(medoid)
 				} else {
-					// Fallback: use first tweet if no medoid
 					if tweets, ok := cluster["tweets"].([]interface{}); ok && len(tweets) > 0 {
 						if tweetMap, ok := tweets[0].(map[string]interface{}); ok {
 							if text, ok := tweetMap["text"].(string); ok {
@@ -1094,7 +1035,6 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 			if historicalIndex >= 0 && historicalIndex < len(allBatches) {
 				historicalBatch := allBatches[historicalIndex]
 
-				// Check if word appears in this historical batch
 				historicalClustersInterface, ok := historicalBatch.Data.Clusters.([]interface{})
 				if !ok {
 					gridRows[i].HistoricalData[fmt.Sprintf("%d", historicalIndex)] = ""
@@ -1111,7 +1051,6 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 						continue
 					}
 
-					// Handle BusyWord struct format
 					busyWordsInterface, ok := clusterMap["busy_words"].([]interface{})
 					if !ok {
 						continue
@@ -1125,15 +1064,12 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 						if ok && historicalWord == word {
 							found = true
 
-							// Check for recurrence by comparing tweets
 							if currentMedoid != "" {
 								if config.RecurrenceStrategy == "medoid_only" {
-									// Strategy 1: Compare only medoids
 									var historicalMedoidClean string
 									if historicalMedoid, ok := clusterMap["medoid_tweet"].(string); ok {
 										historicalMedoidClean = stripTimestamp(historicalMedoid)
 									} else {
-										// Fallback: use first tweet if no medoid
 										if tweets, ok := clusterMap["tweets"].([]interface{}); ok && len(tweets) > 0 {
 											if tweetMap, ok := tweets[0].(map[string]interface{}); ok {
 												if text, ok := tweetMap["text"].(string); ok {
@@ -1150,19 +1086,15 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 										}
 									}
 								} else {
-									// Strategy 2: Compare to all tweets (default)
 									if tweets, ok := clusterMap["tweets"].([]interface{}); ok {
-										fmt.Printf("DEBUG: Comparing current medoid '%s' to %d historical tweets\n", currentMedoid, len(tweets))
-										for i, tweetInterface := range tweets {
+										for _, tweetInterface := range tweets {
 											if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
 												if text, ok := tweetMap["text"].(string); ok {
 													historicalTweetClean := stripTimestamp(text)
 													distance := calculateNormalizedLevenshtein(currentMedoid, historicalTweetClean)
-													fmt.Printf("  Tweet %d: '%s' -> distance %.3f\n", i, historicalTweetClean, distance)
 													if distance <= config.RecurrenceThreshold {
 														recurrenceFound = true
-														fmt.Printf("  RECURRENCE DETECTED! (distance %.3f <= %.3f)\n", distance, config.RecurrenceThreshold)
-														break // Found a match, no need to check more tweets
+														break
 													}
 												}
 											}
@@ -1187,15 +1119,16 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 			}
 		}
 	}
+}
 
-	// Calculate quality scores for each row
+// calculateQualityScores computes quality scores for all grid rows
+func calculateQualityScores(gridRows []GridRow, clusters []map[string]interface{}, historicalBatchNumbers []int) {
 	maxClusterSize := 0
 	maxTweetCount := 0
 	for _, row := range gridRows {
 		if row.ClusterSize > maxClusterSize {
 			maxClusterSize = row.ClusterSize
 		}
-		// Get tweet count for this cluster
 		for _, cluster := range clusters {
 			if int(cluster["cluster_id"].(float64)) == row.ClusterID {
 				if tweets, ok := cluster["tweets"].([]interface{}); ok {
@@ -1210,14 +1143,12 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 	}
 
 	for i := range gridRows {
-		// Get current medoid for this row's cluster
 		var currentMedoid string
 		for _, cluster := range clusters {
 			if int(cluster["cluster_id"].(float64)) == gridRows[i].ClusterID {
 				if medoid, ok := cluster["medoid_tweet"].(string); ok {
 					currentMedoid = stripTimestamp(medoid)
 				} else {
-					// Fallback: use first tweet if no medoid
 					if tweets, ok := cluster["tweets"].([]interface{}); ok && len(tweets) > 0 {
 						if tweetMap, ok := tweets[0].(map[string]interface{}); ok {
 							if text, ok := tweetMap["text"].(string); ok {
@@ -1230,7 +1161,6 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 			}
 		}
 
-		// Get tweet count for this row's cluster
 		tweetCount := 0
 		for _, cluster := range clusters {
 			if int(cluster["cluster_id"].(float64)) == gridRows[i].ClusterID {
@@ -1252,12 +1182,63 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 			historicalBatchNumbers,
 		)
 	}
+}
+
+// computeGridData creates the grid data structure for the busy word display
+func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSize int) GridData {
+	fmt.Printf("computeGridData: called for batch %d, currently have %d batches\n", currentBatchIndex, len(allBatches))
+	if currentBatchIndex < 0 {
+		return GridData{}
+	}
+
+	// Load more chunks if needed
+	if currentBatchIndex >= len(allBatches) {
+		fmt.Printf("computeGridData: batch %d >= %d, loading more chunks\n", currentBatchIndex, len(allBatches))
+		if err := loadMoreChunks(currentBatchIndex); err != nil {
+			fmt.Printf("computeGridData: error loading chunks: %v\n", err)
+			return GridData{}
+		}
+	}
+
+	if currentBatchIndex >= len(allBatches) {
+		fmt.Printf("computeGridData: still no data for batch %d\n", currentBatchIndex)
+		return GridData{}
+	}
+
+	currentBatch := allBatches[currentBatchIndex]
+
+	// Extract clusters from current batch
+	clusters := extractClustersFromBatch(currentBatch, minClusterSize)
+	fmt.Printf("computeGridData: batch %d filtered to %d clusters >= min size\n", currentBatchIndex, len(clusters))
+
+	// Sort clusters by size (largest first)
+	sort.Slice(clusters, func(i, j int) bool {
+		sizeI, _ := clusters[i]["size"].(float64)
+		sizeJ, _ := clusters[j]["size"].(float64)
+		return sizeI > sizeJ
+	})
+
+	// Build grid rows from clusters
+	gridRows, clusterTweetData := buildGridRowsFromClusters(clusters)
+
+	// Build historical batch numbers
+	var historicalBatchNumbers []int
+	for i := 1; i <= historicalBatches; i++ {
+		historicalIndex := currentBatchIndex - i
+		if historicalIndex >= 0 {
+			historicalBatchNumbers = append(historicalBatchNumbers, historicalIndex)
+		}
+	}
+
+	// Process historical data
+	processHistoricalData(gridRows, clusters, historicalBatchNumbers, currentBatchIndex)
+
+	// Calculate quality scores
+	calculateQualityScores(gridRows, clusters, historicalBatchNumbers)
 
 	// Calculate batch duration if we have previous batch
 	var batchDuration string
 	if currentBatchIndex > 0 && currentBatchIndex < len(allBatches) {
-		// For now, we'll just show a placeholder since we need to parse timestamps
-		// In a real implementation, you'd parse the timestamps and calculate the difference
 		batchDuration = "~10 seconds" // Placeholder
 	} else {
 		batchDuration = "N/A"
