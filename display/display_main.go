@@ -1637,10 +1637,8 @@ func handleMedoidDataAPI(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func computeMedoidData(batchNum, historicalBatches, minClusterSize int) MedoidData {
-	batch := allBatches[batchNum]
-
-	// Get historical batch numbers
+// buildHistoricalBatchNumbers generates the list of historical batch numbers
+func buildHistoricalBatchNumbers(batchNum, historicalBatches int) []int {
 	historicalBatchNumbers := make([]int, 0)
 	for i := 1; i <= historicalBatches; i++ {
 		histBatch := batchNum - i
@@ -1648,10 +1646,129 @@ func computeMedoidData(batchNum, historicalBatches, minClusterSize int) MedoidDa
 			historicalBatchNumbers = append(historicalBatchNumbers, histBatch)
 		}
 	}
+	return historicalBatchNumbers
+}
 
-	// Extract clusters from batch data
+// extractMedoidClustersFromBatch extracts clusters from batch for medoid data
+func extractMedoidClustersFromBatch(batch Batch) ([]map[string]interface{}, error) {
 	clustersInterface, ok := batch.Data.Clusters.([]interface{})
 	if !ok {
+		return nil, fmt.Errorf("invalid clusters data format")
+	}
+
+	var clusters []map[string]interface{}
+	for _, clusterInterface := range clustersInterface {
+		clusterMap, ok := clusterInterface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		clusters = append(clusters, clusterMap)
+	}
+
+	return clusters, nil
+}
+
+// processMedoidCluster processes a single cluster for medoid data
+func processMedoidCluster(clusterMap map[string]interface{}, batchNum int, batchTime string, minClusterSize int, historicalBatchNumbers []int) *MedoidRow {
+	// Extract cluster data
+	clusterID, _ := clusterMap["cluster_id"].(float64)
+	size, _ := clusterMap["size"].(float64)
+
+	// Skip clusters below minimum size
+	if int(size) < minClusterSize {
+		return nil
+	}
+
+	// Extract medoid text - handle new structure
+	medoidText := ""
+	if medoid, ok := clusterMap["medoid"].(string); ok {
+		// Old format: medoid field exists
+		medoidText = medoid
+	} else if medoidTweet, ok := clusterMap["medoid_tweet"].(string); ok {
+		// Alternative medoid field
+		medoidText = medoidTweet
+	} else if tweetsInterface, ok := clusterMap["tweets"].([]interface{}); ok {
+		// New format: find medoid in tweets array (first tweet is typically the medoid)
+		if len(tweetsInterface) > 0 {
+			if tweetMap, ok := tweetsInterface[0].(map[string]interface{}); ok {
+				if text, ok := tweetMap["text"].(string); ok {
+					medoidText = text
+				}
+			}
+		}
+	}
+
+	// Extract busy words using BusyWord struct format
+	var busyWords []string
+	busyWordsInterface, ok := clusterMap["busy_words"].([]interface{})
+	if ok {
+		for _, wordInterface := range busyWordsInterface {
+			wordObj, ok := wordInterface.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			word, ok := wordObj["word"].(string)
+			if !ok {
+				continue
+			}
+
+			busyWords = append(busyWords, word)
+		}
+	}
+
+	// Calculate persistence data (how many batches back this cluster can be traced)
+	persistenceData := make(map[string]int)
+	for _, histBatch := range historicalBatchNumbers {
+		if histBatch >= 0 && histBatch < len(allBatches) {
+			// Simple persistence calculation - could be enhanced with LD method
+			persistenceCount := calculatePersistence(int(clusterID), histBatch, batchNum)
+			persistenceData[fmt.Sprintf("%d", histBatch)] = persistenceCount
+		}
+	}
+
+	medoidRow := &MedoidRow{
+		BatchNumber:     batchNum,
+		BatchTime:       batchTime,
+		ClusterID:       int(clusterID),
+		ClusterSize:     int(size),
+		MedoidText:      medoidText,
+		BusyWords:       busyWords,
+		PersistenceData: persistenceData,
+	}
+
+	return medoidRow
+}
+
+// buildMedoidDataFromClusters builds the complete medoid data from clusters
+func buildMedoidDataFromClusters(clusters []map[string]interface{}, batchNum int, batchTime string, minClusterSize int, historicalBatchNumbers []int) MedoidData {
+	var medoidRows []MedoidRow
+
+	for _, clusterMap := range clusters {
+		medoidRow := processMedoidCluster(clusterMap, batchNum, batchTime, minClusterSize, historicalBatchNumbers)
+		if medoidRow != nil {
+			medoidRows = append(medoidRows, *medoidRow)
+		}
+	}
+
+	return MedoidData{
+		CurrentBatch:      batchNum,
+		BatchTime:         batchTime,
+		HistoricalBatches: historicalBatchNumbers,
+		Rows:              medoidRows,
+		MinClusterSize:    minClusterSize,
+	}
+}
+
+func computeMedoidData(batchNum, historicalBatches, minClusterSize int) MedoidData {
+	batch := allBatches[batchNum]
+
+	// Build historical batch numbers
+	historicalBatchNumbers := buildHistoricalBatchNumbers(batchNum, historicalBatches)
+
+	// Extract clusters from batch
+	clusters, err := extractMedoidClustersFromBatch(batch)
+	if err != nil {
 		return MedoidData{
 			CurrentBatch:      batchNum,
 			BatchTime:         batch.Data.BatchTime,
@@ -1661,91 +1778,8 @@ func computeMedoidData(batchNum, historicalBatches, minClusterSize int) MedoidDa
 		}
 	}
 
-	var medoidRows []MedoidRow
-
-	for _, clusterInterface := range clustersInterface {
-		clusterMap, ok := clusterInterface.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		// Extract cluster data
-		clusterID, _ := clusterMap["cluster_id"].(float64)
-		size, _ := clusterMap["size"].(float64)
-
-		// Skip clusters below minimum size
-		if int(size) < minClusterSize {
-			continue
-		}
-
-		// Extract medoid text - handle new structure
-		medoidText := ""
-		if medoid, ok := clusterMap["medoid"].(string); ok {
-			// Old format: medoid field exists
-			medoidText = medoid
-		} else if medoidTweet, ok := clusterMap["medoid_tweet"].(string); ok {
-			// Alternative medoid field
-			medoidText = medoidTweet
-		} else if tweetsInterface, ok := clusterMap["tweets"].([]interface{}); ok {
-			// New format: find medoid in tweets array (first tweet is typically the medoid)
-			if len(tweetsInterface) > 0 {
-				if tweetMap, ok := tweetsInterface[0].(map[string]interface{}); ok {
-					if text, ok := tweetMap["text"].(string); ok {
-						medoidText = text
-					}
-				}
-			}
-		}
-
-		// Extract busy words using BusyWord struct format
-		var busyWords []string
-		busyWordsInterface, ok := clusterMap["busy_words"].([]interface{})
-		if ok {
-			for _, wordInterface := range busyWordsInterface {
-				wordObj, ok := wordInterface.(map[string]interface{})
-				if !ok {
-					continue
-				}
-
-				word, ok := wordObj["word"].(string)
-				if !ok {
-					continue
-				}
-
-				busyWords = append(busyWords, word)
-			}
-		}
-
-		// Calculate persistence data (how many batches back this cluster can be traced)
-		persistenceData := make(map[string]int)
-		for _, histBatch := range historicalBatchNumbers {
-			if histBatch >= 0 && histBatch < len(allBatches) {
-				// Simple persistence calculation - could be enhanced with LD method
-				persistenceCount := calculatePersistence(int(clusterID), histBatch, batchNum)
-				persistenceData[fmt.Sprintf("%d", histBatch)] = persistenceCount
-			}
-		}
-
-		medoidRow := MedoidRow{
-			BatchNumber:     batchNum,
-			BatchTime:       batch.Data.BatchTime,
-			ClusterID:       int(clusterID),
-			ClusterSize:     int(size),
-			MedoidText:      medoidText,
-			BusyWords:       busyWords,
-			PersistenceData: persistenceData,
-		}
-
-		medoidRows = append(medoidRows, medoidRow)
-	}
-
-	return MedoidData{
-		CurrentBatch:      batchNum,
-		BatchTime:         batch.Data.BatchTime,
-		HistoricalBatches: historicalBatchNumbers,
-		Rows:              medoidRows,
-		MinClusterSize:    minClusterSize,
-	}
+	// Build medoid data from clusters
+	return buildMedoidDataFromClusters(clusters, batchNum, batch.Data.BatchTime, minClusterSize, historicalBatchNumbers)
 }
 
 func calculatePersistence(clusterID, histBatch, currentBatch int) int {
