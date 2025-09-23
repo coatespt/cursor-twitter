@@ -1689,7 +1689,7 @@ func computeMedoidData(batchNum, historicalBatches, minClusterSize int) MedoidDa
 			}
 		}
 
-		// Extract busy words from new struct format
+		// Extract busy words using BusyWord struct format
 		var busyWords []string
 		busyWordsInterface, ok := clusterMap["busy_words"].([]interface{})
 		if ok {
