@@ -16,6 +16,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// BusyWord represents a single busy word with its statistical data
+type BusyWord struct {
+	Word   string  `json:"word"`
+	Class  int     `json:"class"`
+	ZScore float64 `json:"z_score"`
+	Count  int     `json:"count"`
+	Mean   float64 `json:"mean"`
+}
+
+// Helper function to get keys from a map
+func getKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // Config holds the server configuration
 type Config struct {
 	InputFile           string  `yaml:"input_file"`
@@ -169,6 +187,85 @@ var (
 	partialJSON string // Store partial JSON data between chunks
 )
 
+// Global variables for batch navigation
+var currentBatchIndex int = 0
+var maxBatchesInMemory = 200 // Keep only last 200 batches in memory
+
+// getNextBatch returns the next batch in the sequence, loading more if needed
+func getNextBatch() *Batch {
+	// If we can get current batch, return it and increment
+	if currentBatchIndex < len(allBatches) {
+		result := &allBatches[currentBatchIndex]
+		currentBatchIndex++
+		return result
+	}
+
+	// Try to load more batches from file
+	fmt.Printf("Loading more batches from file...\n")
+	if err := loadMoreBatches(); err != nil {
+		fmt.Printf("Failed to load more batches: %v\n", err)
+		return nil
+	}
+
+	// If we loaded more batches, return current and increment
+	if currentBatchIndex < len(allBatches) {
+		result := &allBatches[currentBatchIndex]
+		currentBatchIndex++
+		return result
+	}
+
+	return nil // No more batches available
+}
+
+// loadMoreBatches loads another 100 batches from the file
+func loadMoreBatches() error {
+	// Load 100 more batches
+	chunkSize := 100
+	loadedCount := 0
+
+	for loadedCount < chunkSize {
+		// Try to load one batch at a time using existing logic
+		if err := loadNextChunk(); err != nil {
+			if err == io.EOF {
+				fmt.Printf("Reached end of file after loading %d batches\n", loadedCount)
+				break
+			}
+			return err
+		}
+		loadedCount++
+	}
+
+	fmt.Printf("Loaded %d more batches, total: %d\n", loadedCount, len(allBatches))
+
+	// Implement sliding window: discard old batches if we exceed limit
+	if len(allBatches) > maxBatchesInMemory {
+		discardCount := len(allBatches) - maxBatchesInMemory
+		allBatches = allBatches[discardCount:]
+		currentBatchIndex -= discardCount
+		fmt.Printf("Discarded %d old batches, kept %d, current index: %d\n",
+			discardCount, len(allBatches), currentBatchIndex)
+	}
+
+	return nil
+}
+
+// getPreviousBatch returns the previous batch in the sequence
+func getPreviousBatch() *Batch {
+	if currentBatchIndex > 0 {
+		currentBatchIndex--
+		return &allBatches[currentBatchIndex]
+	}
+	return nil // No previous batches
+}
+
+// getCurrentBatch returns the current batch
+func getCurrentBatch() *Batch {
+	if currentBatchIndex < len(allBatches) {
+		return &allBatches[currentBatchIndex]
+	}
+	return nil
+}
+
 func main() {
 	// Load configuration
 	if err := loadConfig(); err != nil {
@@ -179,6 +276,35 @@ func main() {
 	if err := loadData(); err != nil {
 		log.Fatalf("Failed to load data: %v", err)
 	}
+
+	fmt.Printf("Loaded %d batches, testing navigation functions:\n", len(allBatches))
+
+	// Test getNext() for 30 calls to test on-demand loading
+	fmt.Printf("\n=== Testing getNext() 30 times (with on-demand loading) ===\n")
+	for i := 0; i < 30; i++ {
+		next := getNextBatch()
+		if next != nil {
+			fmt.Printf("getNext() %d: batch %d\n", i+1, next.Data.BatchNumber)
+		} else {
+			fmt.Printf("getNext() %d: no more batches\n", i+1)
+			break
+		}
+	}
+
+	// Test getPrevious() for 21 calls
+	fmt.Printf("\n=== Testing getPrevious() 21 times ===\n")
+	for i := 0; i < 21; i++ {
+		prev := getPreviousBatch()
+		if prev != nil {
+			fmt.Printf("getPrevious() %d: batch %d\n", i+1, prev.Data.BatchNumber)
+		} else {
+			fmt.Printf("getPrevious() %d: no previous batches\n", i+1)
+			break
+		}
+	}
+
+	fmt.Printf("\nDone testing navigation functions!\n")
+	os.Exit(0)
 
 	// Parse templates with custom functions
 	templates = template.New("").Funcs(template.FuncMap{
@@ -252,6 +378,12 @@ func loadData() error {
 			return err
 		}
 		fmt.Printf("Loaded chunk %d, now have %d batches\n", i+1, len(allBatches))
+
+		// Stop after 100 batches (or all available)
+		if len(allBatches) >= 100 {
+			fmt.Printf("Reached 100 batches, stopping\n")
+			break
+		}
 	}
 
 	fmt.Printf("Initial load complete: %d batches loaded\n", len(allBatches))

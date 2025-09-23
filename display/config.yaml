@@ -1,4 +1,4 @@
-input_file: "../sept_21_fixes.json"
+input_file: "../tmp.json"
 batch_size: 10
 historical_batches: 15 
 min_cluster_size: 3
@@ -6,3 +6,5 @@ recurrence_threshold: 0.8
 recurrence_strategy: "all_tweets"  # Options: "medoid_only" or "all_tweets"
 bubble_batches: 10  # Number of batches to show in bubble graph
 bubble_color: "blue"  # Base color for bubbles (blue, green, purple, etc.)
+bubble_size_method: "zscore"  # Options: "zscore" or "count_ratio"
+freq_classes: 24  # Number of frequency classes (must match main config)

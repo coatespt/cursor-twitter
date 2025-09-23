@@ -356,7 +356,7 @@
                     tableHTML += `<td class="cluster-id">${row.cluster_id}</td>`;
                     tableHTML += `<td class="cluster-size">${row.cluster_size}</td>`;
                     tableHTML += `<td class="medoid-text" onmouseover="showTweetPopup(event, ${row.batch_number}, ${row.cluster_id}, ${index})" onmouseout="hideTweetPopup()">${escapeHtml(row.medoid_text)}</td>`;
-                    tableHTML += `<td class="busy-words">${row.busy_words.join(', ')}</td>`;
+                    tableHTML += `<td class="busy-words">${row.busy_words.map(bw => bw.word).join(', ')}</td>`;
                     
                     // Historical persistence columns (newest to oldest, left to right)
                     for (let i = 0; i < historicalBatches.length; i++) {

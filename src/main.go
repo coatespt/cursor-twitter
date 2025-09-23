@@ -276,21 +276,35 @@ func startAnalysisThread(cfg *config.Config, loadedState map[string]int) {
 			results := freqClassProcessor.Barrier.ConsumeBatch()
 
 			// Process the batch results
-			currentBatch := make(map[int][]string)  // class -> busy words
-			busyWordToClass := make(map[string]int) // word -> frequency class
+			currentBatch := make(map[int][]string)      // class -> busy words
+			busyWordToClass := make(map[string]int)     // word -> frequency class
+			busyWordZScores := make(map[string]float64) // word -> min z-score
+			busyWordCounts := make(map[string]int)      // word -> min count
 			var batchNumber int64
+			var batchMean float64
 
 			for i, result := range results {
 				resultCount++
 
-				// Convert 3PKs to actual words
+				// Store batch mean (same for all words in this batch)
+				if i == 0 {
+					batchMean = result.Mean
+				}
+
+				// Convert 3PKs to actual words and capture statistical data
 				busyWords := make([]string, 0, len(result.BusyWord3PKs))
 				notFoundCount := 0
-				for _, threePK := range result.BusyWord3PKs {
+				for j, threePK := range result.BusyWord3PKs {
 					if word, exists := pipeline.GetWordFrom3PK(threePK); exists {
 						busyWords = append(busyWords, word)
 						// Build word -> frequency class mapping
 						busyWordToClass[word] = result.FrequencyClass
+
+						// Capture statistical data (parallel arrays)
+						if j < len(result.ZScores) && j < len(result.Counts) {
+							busyWordZScores[word] = result.ZScores[j]
+							busyWordCounts[word] = result.Counts[j]
+						}
 					} else {
 						notFoundCount++
 					}
@@ -313,7 +327,7 @@ func startAnalysisThread(cfg *config.Config, loadedState map[string]int) {
 			// Process the batch
 			recentTweets := globalTweetQueue.GetRecentTweets(cfg.BatchSize)
 
-			runClusteringForBatch(currentBatch, busyWordToClass, recentTweets, batchNumber, cfg)
+			runClusteringForBatch(currentBatch, busyWordToClass, busyWordZScores, busyWordCounts, batchMean, recentTweets, batchNumber, cfg)
 
 		}
 
@@ -322,7 +336,7 @@ func startAnalysisThread(cfg *config.Config, loadedState map[string]int) {
 }
 
 // runClusteringForBatch runs clustering analysis for a batch of busy words and tweets
-func runClusteringForBatch(classResults map[int][]string, busyWordToClass map[string]int, recentTweets []*tweets.Tweet, batchNumber int64, cfg *config.Config) {
+func runClusteringForBatch(classResults map[int][]string, busyWordToClass map[string]int, busyWordZScores map[string]float64, busyWordCounts map[string]int, batchMean float64, recentTweets []*tweets.Tweet, batchNumber int64, cfg *config.Config) {
 	slog.Info("Clustering: Starting batch analysis", "batch_number", batchNumber, "class_results", len(classResults), "recent_tweets", len(recentTweets))
 
 	// Print busy word summary
@@ -399,7 +413,7 @@ func runClusteringForBatch(classResults map[int][]string, busyWordToClass map[st
 	}
 
 	// Only graph clustering is supported now
-	output.RunGraphClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber, classResults, busyWordToClass)
+	output.RunGraphClustering(tweetsWithBusyWords, allBusyWords, cfg, batchNumber, classResults, busyWordToClass, busyWordZScores, busyWordCounts, batchMean)
 
 	// Clustering cycle timing - diagnostic logging removed for cleaner output
 
@@ -593,7 +607,6 @@ func parseCommandLineFlags() (*bool, *string, *string, *bool, *bool) {
 
 	return printTweets, configPath, overridePath, loadState, enableProfiling
 }
-
 
 // loadConfiguration loads the configuration from YAML file with optional override
 func loadConfiguration(configPath, overridePath string) *config.Config {
@@ -1013,8 +1026,6 @@ func processTweets(cfg *config.Config, printTweets bool) {
 	}
 }
 
-
-
 // parseCSVToTweet parses a CSV row string into a Tweet struct,
 // tokenizes the text, generates ThreePartKeys, and updates the global
 // token counter.
@@ -1285,7 +1296,6 @@ func simpleTokenize(text string, cfg *config.Config) []string {
 	return processedTokens
 }
 
-
 // Normalize all whitespace to a single space
 func normalizeWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
@@ -1388,7 +1398,6 @@ func shouldFilterToken(token string, cfg *config.Config) bool {
 
 	return false
 }
-
 
 // loadPersistedState loads the persisted data structures from files and logs statistics
 func loadPersistedState(stateDir string, freqClasses int, cfg *config.Config) map[string]int {

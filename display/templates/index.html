@@ -259,10 +259,10 @@
             // Prepare data for stacking
             const stackData = data.clusters.map((cluster, i) => {
                 const stack = [];
-                cluster.busy_words.forEach((word, j) => {
+                cluster.busy_words.forEach((busyWord, j) => {
                     stack.push({
                         cluster: `Cluster ${cluster.cluster_id}`,
-                        word: word,
+                        word: busyWord.word,
                         value: cluster.word_counts[j] || 1,
                         clusterId: cluster.cluster_id
                     });
@@ -286,8 +286,8 @@
             // Collect all unique words across all clusters
             const allWords = new Set();
             data.clusters.forEach(cluster => {
-                cluster.busy_words.forEach(word => {
-                    allWords.add(word);
+                cluster.busy_words.forEach(busyWord => {
+                    allWords.add(busyWord.word);
                 });
             });
             
@@ -316,8 +316,8 @@
                 let currentY = y(0);
                 
                 // Create array of word-data pairs for this cluster
-                const wordData = cluster.busy_words.map((word, index) => ({
-                    word: word,
+                const wordData = cluster.busy_words.map((busyWord, index) => ({
+                    word: busyWord.word,
                     count: cluster.word_counts[index] || 1
                 }));
                 

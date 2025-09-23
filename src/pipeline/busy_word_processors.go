@@ -23,6 +23,9 @@ type BusyWordResult struct {
 	FrequencyClass int
 	BusyWord3PKs   []tweets.ThreePartKey
 	ZScoreInfo     string
+	ZScores        []float64 // Min z-score for each busy word (parallel to BusyWord3PKs)
+	Counts         []int     // Min count for each busy word (parallel to BusyWord3PKs)
+	Mean           float64   // Mean count for this batch (same for all busy words)
 }
 
 // ThreePartKeyQueue is a thread-safe queue for ThreePartKeys
@@ -567,6 +570,69 @@ func (bwp *BusyWordProcessor) performCoordinatedZComputation(batchNumber int64) 
 	// Find busy words
 	busyWords := bwp.FindBusyWords(part1HighZScores, part2HighZScores, part3HighZScores)
 
+	// Compute statistical values for each busy word and populate arrays
+	var zScores []float64
+	var counts []int
+
+	// Use part1 mean as representative mean (same for all busy words in this batch)
+	mean := part1Stats.Mean
+
+	for _, threePK := range busyWords {
+		// Get z-scores for each part of the 3PK
+		zScore1, hasZ1 := part1HighZScores[threePK.Part1]
+		zScore2, hasZ2 := part2HighZScores[threePK.Part2]
+		zScore3, hasZ3 := part3HighZScores[threePK.Part3]
+
+		// Get actual counts for each part of the 3PK
+		count1 := bwp.part1Counters[threePK.Part1]
+		count2 := bwp.part2Counters[threePK.Part2]
+		count3 := bwp.part3Counters[threePK.Part3]
+
+		// Find minimum z-score (lowest = cleanest signal)
+		var minZScore float64
+		if hasZ1 && hasZ2 && hasZ3 {
+			minZScore = zScore1
+			if zScore2 < minZScore {
+				minZScore = zScore2
+			}
+			if zScore3 < minZScore {
+				minZScore = zScore3
+			}
+		} else {
+			minZScore = -999.0 // Error indicator
+		}
+
+		// Find minimum count
+		minCount := count1
+		if count2 < minCount {
+			minCount = count2
+		}
+		if count3 < minCount {
+			minCount = count3
+		}
+
+		// Store in parallel arrays
+		zScores = append(zScores, minZScore)
+		counts = append(counts, minCount)
+
+		// DEBUG: Print debug line
+		word := "unknown"
+		if wordStr, exists := GetWordFrom3PK(threePK); exists {
+			word = wordStr
+		}
+
+		slog.Info("DEBUG: Busy word stats",
+			"word", word,
+			"class", bwp.classIndex,
+			"batch", batchNumber,
+			"3pk", fmt.Sprintf("(%d,%d,%d)", threePK.Part1, threePK.Part2, threePK.Part3),
+			"z_scores", fmt.Sprintf("(%.2f,%.2f,%.2f)", zScore1, zScore2, zScore3),
+			"counts", fmt.Sprintf("(%d,%d,%d)", count1, count2, count3),
+			"min_z_score", minZScore,
+			"min_count", minCount,
+			"mean", mean)
+	}
+
 	// BusyWordProcessor z-computation completed - logging removed for cleaner output
 
 	// Create z-score info string
@@ -579,6 +645,9 @@ func (bwp *BusyWordProcessor) performCoordinatedZComputation(batchNumber int64) 
 		FrequencyClass: bwp.classIndex,
 		BusyWord3PKs:   busyWords,
 		ZScoreInfo:     zScoreInfo,
+		ZScores:        zScores,
+		Counts:         counts,
+		Mean:           mean,
 	}
 
 	// Only log if there are busy words found

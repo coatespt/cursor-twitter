@@ -98,9 +98,13 @@ We can take these things one at a time.
 - When it is going into Postgres correctly, we can do anything necessary in the AI_loader part. (this may not need changes)
 - Test to be sure we didn't break anything
 
-  
+ Ok, bubble view is working but the fix to how it computes bubble size is not in yet. Don't implement till we agree.  We need a configuration value for which function to use for bubble size.  we have z-scores and we have actual_count/mean_count.  SO we need the choice in config.   
 
+The z-choice should be that the bubble radius or diameter is proportional to the z.  
+
+The other choice should be the the diameter is proportional to actual_count/mean_count
   
+We have to try these to see which looks best and give the most meaningful result. 
 
 ## Verify that the sequential screen of the AI display is doing the right stuff.
 
