@@ -1779,11 +1779,78 @@ func extractBubbleWordsFromBatch(batch types.Batch, minClusterSize int) []map[st
 				"word":            busyWord.Word,
 				"frequency_class": busyWord.Class,
 				"z_score":         busyWord.ZScore,
+				"count":           float64(busyWord.Count),
+				"mean":            busyWord.Mean,
 			})
 		}
 	}
 
 	return words
+}
+
+// calculateBubbleSizeFromZScore maps Z-score to bubble size with configurable range
+func calculateBubbleSizeFromZScore(zScore float64, allWords []map[string]interface{}) float64 {
+	// Use configuration parameters for bubble size scaling
+	smallestZ := config.SmallestZ  // Z-score that maps to smallest bubble
+	largestZ := config.LargestZ    // Z-score that maps to largest bubble
+	k := config.BubbleSizeMultiple // Multiple: largest bubble is k times bigger than smallest
+
+	// Calculate bubble size based on Z-score
+	// Z=smallestZ → size=1, Z=largestZ → size=k
+	// Z<smallestZ → size<1, Z>largestZ → size>k (unlimited scaling)
+
+	if zScore <= smallestZ {
+		// Linear scaling below smallestZ: Z=0 → size=0, Z=smallestZ → size=1
+		bubbleSize := zScore / smallestZ
+		return bubbleSize
+	} else if zScore <= largestZ {
+		// Linear scaling between smallestZ and largestZ: Z=smallestZ → size=1, Z=largestZ → size=k
+		bubbleSize := 1.0 + (zScore-smallestZ)/(largestZ-smallestZ)*(k-1.0)
+		return bubbleSize
+	} else {
+		// Unlimited scaling above largestZ: Z=largestZ → size=k, Z=∞ → size=∞
+		// Use exponential scaling to handle extreme events
+		excessZ := zScore - largestZ
+		bubbleSize := k * (1.0 + excessZ/10.0) // Each 10 Z-score points above largestZ doubles the size
+		return bubbleSize
+	}
+}
+
+// calculateBubbleSizeFromCountRatio maps actual/mean count ratio to bubble size with configurable range
+func calculateBubbleSizeFromCountRatio(actualCount, meanCount float64, allWords []map[string]interface{}) float64 {
+	// Use configuration parameters for bubble size scaling
+	smallestRatio := config.SmallestRatio // Ratio that maps to smallest bubble
+	largestRatio := config.LargestRatio   // Ratio that maps to largest bubble
+	k := config.BubbleRatioMultiple       // Multiple: largest bubble is k times bigger than smallest
+
+	// Calculate ratio (actual/mean)
+	ratio := actualCount / meanCount
+
+	// Use logarithmic scaling to compress the range
+	// This prevents extremely large ratios from creating massive bubbles
+	logRatio := math.Log(ratio)
+	logSmallest := math.Log(smallestRatio)
+	logLargest := math.Log(largestRatio)
+
+	// Calculate bubble size based on log ratio
+	// logRatio=logSmallest → size=0.05, logRatio=logLargest → size=0.05*k
+	// This makes smallest bubbles smaller while preserving size differences
+
+	if logRatio <= logSmallest {
+		// Linear scaling below logSmallest: logRatio=0 → size=0, logRatio=logSmallest → size=0.05
+		bubbleSize := (logRatio / logSmallest) * 0.05
+		return bubbleSize
+	} else if logRatio <= logLargest {
+		// Linear scaling between logSmallest and logLargest: logRatio=logSmallest → size=0.05, logRatio=logLargest → size=0.05*k
+		bubbleSize := 0.05 + (logRatio-logSmallest)/(logLargest-logSmallest)*(0.05*(k-1.0))
+		return bubbleSize
+	} else {
+		// Unlimited scaling above logLargest: logRatio=logLargest → size=0.05*k, logRatio=∞ → size=∞
+		// Use exponential scaling to handle extreme events
+		excessLog := logRatio - logLargest
+		bubbleSize := 0.05*k + 0.05*k*(excessLog/2.0) // Each 2 log points above logLargest doubles the size
+		return bubbleSize
+	}
 }
 
 // processBubbleWordEvolution handles the complex word tracking and aging logic
@@ -1808,10 +1875,21 @@ func processBubbleWordEvolution(historicalBatchNumbers []int, minClusterSize int
 			frequencyClass := wordData["frequency_class"].(int)
 			zScore := wordData["z_score"].(float64)
 
-			// Calculate divergence score based on z_score (higher z_score = higher divergence)
-			divergenceScore := zScore / 10.0 // Normalize z_score to 0-1 range
-			if divergenceScore > 1.0 {
-				divergenceScore = 1.0
+			// Calculate divergence score based on configured method
+			var divergenceScore float64
+			if config.BubbleSizeMethod == "zscore" {
+				// Use Z-score based calculation
+				divergenceScore = calculateBubbleSizeFromZScore(zScore, words)
+			} else {
+				// Use count ratio based calculation (actual/mean)
+				actualCount, ok1 := wordData["count"].(float64)
+				meanCount, ok2 := wordData["mean"].(float64)
+				if !ok1 || !ok2 || meanCount == 0 {
+					// Fallback to Z-score if count/mean data is invalid
+					divergenceScore = calculateBubbleSizeFromZScore(zScore, words)
+				} else {
+					divergenceScore = calculateBubbleSizeFromCountRatio(actualCount, meanCount, words)
+				}
 			}
 
 			// Check if this word is already being tracked

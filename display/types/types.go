@@ -53,6 +53,15 @@ type Config struct {
 	RecurrenceStrategy  string  `yaml:"recurrence_strategy"`
 	BubbleBatches       int     `yaml:"bubble_batches"`
 	BubbleColor         string  `yaml:"bubble_color"`
+	BubbleSizeMethod    string  `yaml:"bubble_size_method"` // Options: "zscore" or "count_ratio"
+	// Bubble size scaling parameters based on Z-scores
+	SmallestZ          float64 `yaml:"smallest_z"`           // Z-score that maps to smallest bubble (default: 4.0)
+	LargestZ           float64 `yaml:"largest_z"`            // Z-score that maps to largest bubble (default: 20.0)
+	BubbleSizeMultiple float64 `yaml:"bubble_size_multiple"` // Multiple: largest bubble is k times bigger than smallest (default: 2.0)
+	// Bubble size scaling parameters based on count ratios (actual/mean)
+	SmallestRatio       float64 `yaml:"smallest_ratio"`        // Ratio that maps to smallest bubble (default: 1.0)
+	LargestRatio        float64 `yaml:"largest_ratio"`         // Ratio that maps to largest bubble (default: 20.0)
+	BubbleRatioMultiple float64 `yaml:"bubble_ratio_multiple"` // Multiple: largest bubble is k times bigger than smallest (default: 2.0)
 }
 
 // PageData holds data for the HTML template
