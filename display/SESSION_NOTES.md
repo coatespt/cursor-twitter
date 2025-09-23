@@ -26,21 +26,20 @@ If any changes seem to involve multiple threads, be sure to get my agreement bef
 
 We have removed all structs from display and put them in types.
 
-Next, remove all structs from SQL Loader that are used outside that program and have it refer to types.
+We have modified the SQL Loader and the parser to use the versions in types.
 
+The main pipeline however, uses some very similar data structures and should probably be 
+modified to use the ones in types.
 
+## The bubbles scaling needs testing 
 
-## The bubbles need scaling. They are too close in size. 
-But they are different in size--this is cosmetic.  What is the right function to apply?
+There are two different bases for scaling the bubbles.  The following aspects need testing
+- The choice is in config 
+- The parameters for each that tune the display. 
+- The ability to override the values int he override file needs to be tested
 
-I think cursor did something wacky. The Z's will rarely be less than four and can go to double digits. Need to know what range of sizes the bubbles need.
+## Bubble scaling choice should be displayed on the page
 
-The count ratios are more extreme. They might need logs.
-
-## Grid View Doesn't Work
-
-
-## Medoid View Doesn't Work
 
 ## Instructions
 - The JSON is correctly parsed into a struct that is batch with a set of clusters and some metadata fields.  The cluster is composed of a set of tweets, some metadata fields, and a set of busyword objects which each has five fields.
