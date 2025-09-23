@@ -1575,53 +1575,41 @@ func handleMedoid(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleMedoidDataAPI(w http.ResponseWriter, r *http.Request) {
-	// Use current batch from navigation instead of URL parameter
-	currentBatch := getCurrentBatch()
-	if currentBatch == nil {
-		http.Error(w, "No current batch available", http.StatusNotFound)
-		return
-	}
-
-	batchNum := currentBatch.Data.BatchNumber
-
+// validateAndLoadMedoidBatch validates the current batch and loads more chunks if needed
+func validateAndLoadMedoidBatch(batchNum int) (int, error) {
 	if batchNum < 0 {
-		http.Error(w, "Batch number out of range", http.StatusBadRequest)
-		return
+		return 0, fmt.Errorf("batch number out of range")
 	}
 
 	// If batch number is beyond what we have, check if we can load more
 	if batchNum >= len(allBatches) {
-		fmt.Printf("handleMedoidDataAPI: batch %d >= %d, attempting to load more chunks\n", batchNum, len(allBatches))
+		fmt.Printf("validateAndLoadMedoidBatch: batch %d >= %d, attempting to load more chunks\n", batchNum, len(allBatches))
 		if err := loadMoreChunks(batchNum); err != nil {
 			if strings.Contains(err.Error(), "no more batches available") {
-				fmt.Printf("handleMedoidDataAPI: reached end of file at batch %d (total batches: %d)\n", batchNum, len(allBatches))
-				// Return end-of-file indicator instead of error
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(MedoidData{
-					CurrentBatch: -1, // Special value to indicate end of file
-					Rows:         []MedoidRow{},
-				})
-				return
+				fmt.Printf("validateAndLoadMedoidBatch: reached end of file at batch %d (total batches: %d)\n", batchNum, len(allBatches))
+				return -1, fmt.Errorf("end of file reached")
 			} else {
-				fmt.Printf("handleMedoidDataAPI: actual error loading chunks: %v\n", err)
-				http.Error(w, "Error loading data", http.StatusInternalServerError)
-				return
+				fmt.Printf("validateAndLoadMedoidBatch: actual error loading chunks: %v\n", err)
+				return 0, fmt.Errorf("error loading data: %v", err)
 			}
 		}
 	}
 
 	// Double-check that we now have the requested batch
 	if batchNum >= len(allBatches) {
-		fmt.Printf("handleMedoidDataAPI: batch %d still out of range after loading chunks (total: %d)\n", batchNum, len(allBatches))
-		http.Error(w, "Batch number out of range", http.StatusBadRequest)
-		return
+		fmt.Printf("validateAndLoadMedoidBatch: batch %d still out of range after loading chunks (total: %d)\n", batchNum, len(allBatches))
+		return 0, fmt.Errorf("batch number out of range")
 	}
 
-	// Check if the requested batch has data, if not find the next one that does
+	return batchNum, nil
+}
+
+// findMedoidBatchWithData finds a batch that has data, auto-advancing if necessary
+func findMedoidBatchWithData(batchNum int) (int, error) {
 	originalBatch := batchNum
 	hasData := hasDataForBatch(batchNum, config.MinClusterSize)
-	fmt.Printf("handleMedoidDataAPI: batch %d hasDataForBatch returned %v\n", batchNum, hasData)
+	fmt.Printf("findMedoidBatchWithData: batch %d hasDataForBatch returned %v\n", batchNum, hasData)
+
 	if !hasData {
 		fmt.Printf("Batch %d has no data (min cluster size: %d), looking for next batch with data\n", batchNum, config.MinClusterSize)
 		nextBatch := findNextBatchWithData(batchNum, 1, config.MinClusterSize)
@@ -1640,24 +1628,20 @@ func handleMedoidDataAPI(w http.ResponseWriter, r *http.Request) {
 				if len(allBatches) > 0 {
 					lastBatch := len(allBatches) - 1
 					fmt.Printf("Reached end of input file. Last available batch is %d (total batches loaded: %d)\n", lastBatch, len(allBatches))
-					// Return empty medoid data with end-of-file indicator
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(MedoidData{
-						CurrentBatch: -1, // Special value to indicate end of file
-						Rows:         []MedoidRow{},
-					})
-					return
+					return -1, fmt.Errorf("end of file reached")
 				} else {
 					fmt.Printf("No batches loaded at all - input file may be empty or invalid\n")
-					// Return empty medoid data if no batches with data are found
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(MedoidData{})
-					return
+					return 0, fmt.Errorf("no batches with data found")
 				}
 			}
 		}
 	}
 
+	return batchNum, nil
+}
+
+// buildMedoidResponse builds and sends the medoid data response
+func buildMedoidResponse(w http.ResponseWriter, batchNum int) {
 	// Compute medoid data
 	medoidData := computeMedoidData(batchNum, config.HistoricalBatches, config.MinClusterSize)
 
@@ -1669,6 +1653,56 @@ func handleMedoidDataAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "JSON encoding error", http.StatusInternalServerError)
 		return
 	}
+}
+
+// buildMedoidEndOfFileResponse builds and sends an end-of-file response for medoid data
+func buildMedoidEndOfFileResponse(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(MedoidData{
+		CurrentBatch: -1, // Special value to indicate end of file
+		Rows:         []MedoidRow{},
+	})
+}
+
+func handleMedoidDataAPI(w http.ResponseWriter, r *http.Request) {
+	// Use current batch from navigation instead of URL parameter
+	currentBatch := getCurrentBatch()
+	if currentBatch == nil {
+		http.Error(w, "No current batch available", http.StatusNotFound)
+		return
+	}
+
+	batchNum := currentBatch.Data.BatchNumber
+
+	// Validate and load batch if needed
+	validBatchNum, err := validateAndLoadMedoidBatch(batchNum)
+	if err != nil {
+		if strings.Contains(err.Error(), "end of file reached") {
+			buildMedoidEndOfFileResponse(w)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Find a batch with data
+	finalBatchNum, err := findMedoidBatchWithData(validBatchNum)
+	if err != nil {
+		if strings.Contains(err.Error(), "end of file reached") {
+			buildMedoidEndOfFileResponse(w)
+			return
+		}
+		if strings.Contains(err.Error(), "no batches with data found") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(MedoidData{})
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Build and send response
+	buildMedoidResponse(w, finalBatchNum)
 }
 
 // buildHistoricalBatchNumbers generates the list of historical batch numbers
@@ -1890,52 +1924,41 @@ func handleBubbles(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleBubbleDataAPI(w http.ResponseWriter, r *http.Request) {
-	// Use current batch from navigation instead of URL parameter
-	currentBatch := getCurrentBatch()
-	if currentBatch == nil {
-		http.Error(w, "No current batch available", http.StatusNotFound)
-		return
-	}
-
-	batchNum := currentBatch.Data.BatchNumber
+// validateAndLoadBubbleBatch validates the current batch and loads more chunks if needed
+func validateAndLoadBubbleBatch(batchNum int) (int, error) {
 	if batchNum < 0 {
-		http.Error(w, "Batch number out of range", http.StatusBadRequest)
-		return
+		return 0, fmt.Errorf("batch number out of range")
 	}
 
 	// If batch number is beyond what we have, check if we can load more
 	if batchNum >= len(allBatches) {
-		fmt.Printf("handleBubbleDataAPI: batch %d >= %d, attempting to load more chunks\n", batchNum, len(allBatches))
+		fmt.Printf("validateAndLoadBubbleBatch: batch %d >= %d, attempting to load more chunks\n", batchNum, len(allBatches))
 		if err := loadMoreChunks(batchNum); err != nil {
 			if strings.Contains(err.Error(), "no more batches available") {
-				fmt.Printf("handleBubbleDataAPI: reached end of file at batch %d (total batches: %d)\n", batchNum, len(allBatches))
-				// Return end-of-file indicator instead of error
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"current_batch": -1, // Special value to indicate end of file
-					"bubble_words":  []interface{}{},
-				})
-				return
+				fmt.Printf("validateAndLoadBubbleBatch: reached end of file at batch %d (total batches: %d)\n", batchNum, len(allBatches))
+				return -1, fmt.Errorf("end of file reached")
 			} else {
-				fmt.Printf("handleBubbleDataAPI: actual error loading chunks: %v\n", err)
-				http.Error(w, "Error loading data", http.StatusInternalServerError)
-				return
+				fmt.Printf("validateAndLoadBubbleBatch: actual error loading chunks: %v\n", err)
+				return 0, fmt.Errorf("error loading data: %v", err)
 			}
 		}
 	}
 
 	// Double-check that we now have the requested batch
 	if batchNum >= len(allBatches) {
-		fmt.Printf("handleBubbleDataAPI: batch %d still out of range after loading chunks (total: %d)\n", batchNum, len(allBatches))
-		http.Error(w, "Batch number out of range", http.StatusBadRequest)
-		return
+		fmt.Printf("validateAndLoadBubbleBatch: batch %d still out of range after loading chunks (total: %d)\n", batchNum, len(allBatches))
+		return 0, fmt.Errorf("batch number out of range")
 	}
 
-	// Check if the requested batch has data, if not find the next one that does
+	return batchNum, nil
+}
+
+// findBubbleBatchWithData finds a batch that has data, auto-advancing if necessary
+func findBubbleBatchWithData(batchNum int) (int, error) {
 	originalBatch := batchNum
 	hasData := hasDataForBatch(batchNum, config.MinClusterSize)
-	fmt.Printf("handleBubbleDataAPI: batch %d hasDataForBatch returned %v\n", batchNum, hasData)
+	fmt.Printf("findBubbleBatchWithData: batch %d hasDataForBatch returned %v\n", batchNum, hasData)
+
 	if !hasData {
 		fmt.Printf("Batch %d has no data (min cluster size: %d), looking for next batch with data\n", batchNum, config.MinClusterSize)
 		nextBatch := findNextBatchWithData(batchNum, 1, config.MinClusterSize)
@@ -1950,10 +1973,16 @@ func handleBubbleDataAPI(w http.ResponseWriter, r *http.Request) {
 				fmt.Printf("Auto-advancing from batch %d to previous batch %d\n", originalBatch, batchNum)
 			} else {
 				fmt.Printf("No batches with data found around batch %d\n", originalBatch)
+				return 0, fmt.Errorf("no batches with data found")
 			}
 		}
 	}
 
+	return batchNum, nil
+}
+
+// buildBubbleResponse builds and sends the bubble data response
+func buildBubbleResponse(w http.ResponseWriter, batchNum int) {
 	// Compute bubble data
 	bubbleData := computeBubbleData(batchNum, config.BubbleBatches, config.MinClusterSize)
 
@@ -1965,6 +1994,52 @@ func handleBubbleDataAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "JSON encoding error", http.StatusInternalServerError)
 		return
 	}
+}
+
+// buildBubbleEndOfFileResponse builds and sends an end-of-file response for bubble data
+func buildBubbleEndOfFileResponse(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"current_batch": -1, // Special value to indicate end of file
+		"bubble_words":  []interface{}{},
+	})
+}
+
+func handleBubbleDataAPI(w http.ResponseWriter, r *http.Request) {
+	// Use current batch from navigation instead of URL parameter
+	currentBatch := getCurrentBatch()
+	if currentBatch == nil {
+		http.Error(w, "No current batch available", http.StatusNotFound)
+		return
+	}
+
+	batchNum := currentBatch.Data.BatchNumber
+
+	// Validate and load batch if needed
+	validBatchNum, err := validateAndLoadBubbleBatch(batchNum)
+	if err != nil {
+		if strings.Contains(err.Error(), "end of file reached") {
+			buildBubbleEndOfFileResponse(w)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Find a batch with data
+	finalBatchNum, err := findBubbleBatchWithData(validBatchNum)
+	if err != nil {
+		if strings.Contains(err.Error(), "no batches with data found") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{})
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Build and send response
+	buildBubbleResponse(w, finalBatchNum)
 }
 
 // buildBubbleHistoricalBatchNumbers generates historical batch numbers for bubble data
