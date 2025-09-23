@@ -95,6 +95,9 @@ CREATE TABLE IF NOT EXISTS new_busy_words (
     word TEXT NOT NULL,
     word_order INTEGER NOT NULL, -- Order within cluster
     frequency_class INTEGER NOT NULL, -- Frequency class of this word in this batch
+    z_score DECIMAL(10,6), -- Statistical z-score for this word
+    count INTEGER, -- Actual count of this word in the cluster
+    mean DECIMAL(10,6), -- Mean frequency of this word
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     
     -- Ensure unique word within cluster

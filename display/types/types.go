@@ -15,24 +15,38 @@ type BusyWord struct {
 
 // Tweet represents a single tweet
 type Tweet struct {
-	Text     string `json:"text"`
-	IsMedoid bool   `json:"is_medoid"`
+	IDStr        string   `json:"id_str"`
+	Unix         int64    `json:"unix"`
+	CreatedAt    string   `json:"created_at"`
+	UserIDStr    string   `json:"user_id_str"`
+	Text         string   `json:"text"`
+	Tokens       []string `json:"tokens"`
+	Retweeted    bool     `json:"retweeted"`
+	RetweetCount int      `json:"retweet_count"`
+	Lang         string   `json:"lang"`
+	BatchID      int      `json:"batch_id"`
+	IsMedoid     bool     `json:"is_medoid"`
 }
 
 // Cluster represents a single cluster
 type Cluster struct {
-	ClusterID       int            `json:"cluster_id"`
-	Size            int            `json:"size"`
-	BusyWords       []BusyWord     `json:"busy_words"`
-	MedoidTweet     string         `json:"medoid_tweet"`
-	Tweets          []Tweet        `json:"tweets"`
-	BusyWordClasses map[string]int `json:"busy_word_classes"`
+	ClusterID        int            `json:"cluster_id"`
+	BatchID          int            `json:"batch_id"`
+	Size             int            `json:"size"`
+	FirstTweetTime   string         `json:"first_tweet_time"`
+	MostTypicalTweet Tweet          `json:"most_typical_tweet"`
+	PersistenceInfo  string         `json:"persistence_info"`
+	BusyWords        []BusyWord     `json:"busy_words"`
+	MedoidTweet      string         `json:"medoid_tweet"`
+	Tweets           []Tweet        `json:"tweets"`
+	BusyWordClasses  map[string]int `json:"busy_word_classes"`
 }
 
 // Batch represents a single batch from the JSON data
 type Batch struct {
 	Type string `json:"type"`
 	Data struct {
+		BatchID              int       `json:"batch_id"`
 		BatchNumber          int       `json:"batch_number"`
 		BatchTime            string    `json:"batch_time"`
 		Method               string    `json:"method"`

@@ -11,6 +11,7 @@ import (
 	_ "github.com/lib/pq"
 	"gopkg.in/yaml.v3"
 
+	"cursor-twitter-display/types"
 	"cursor-twitter/json_parser"
 )
 
@@ -185,7 +186,14 @@ func loadPipelineConfigWithOverride(baseConfigPath, overrideConfigPath string) (
 	}
 
 	// Merge override values into base config
-	// This is a simple merge - override values replace base values
+	mergeConfigOverrides(baseConfig, overrideConfig)
+
+	return baseConfig, nil
+}
+
+// mergeConfigOverrides merges override configuration values into the base config
+func mergeConfigOverrides(baseConfig *PipelineConfig, overrideConfig *PipelineConfig) {
+	// Merge basic configuration fields
 	if overrideConfig.WindowSize != 0 {
 		baseConfig.WindowSize = overrideConfig.WindowSize
 	}
@@ -213,29 +221,52 @@ func loadPipelineConfigWithOverride(baseConfigPath, overrideConfigPath string) (
 	if overrideConfig.LanguageFilter != "" {
 		baseConfig.LanguageFilter = overrideConfig.LanguageFilter
 	}
-	if overrideConfig.Analysis.MinBusyWordsPerTweet != 0 {
-		baseConfig.Analysis.MinBusyWordsPerTweet = overrideConfig.Analysis.MinBusyWordsPerTweet
+
+	// Merge analysis configuration fields
+	mergeAnalysisConfigOverrides(&baseConfig.Analysis, &overrideConfig.Analysis)
+}
+
+// mergeAnalysisConfigOverrides merges analysis configuration overrides
+func mergeAnalysisConfigOverrides(baseAnalysis *struct {
+	MinBusyWordsPerTweet         int     `yaml:"min_busy_words_per_tweet"`
+	MinJaccardSimilarity         float64 `yaml:"min_jaccard_similarity"`
+	DuplicateSimilarityThreshold float64 `yaml:"duplicate_similarity_threshold"`
+	UseMedoidSimilarity          bool    `yaml:"use_medoid_similarity"`
+	UseBusyWordSimilarity        bool    `yaml:"use_busy_word_similarity"`
+	MedoidSimilarityThreshold    float64 `yaml:"medoid_similarity_threshold"`
+	BusyWordSimilarityThreshold  float64 `yaml:"busy_word_similarity_threshold"`
+	MinTokenLen                  int     `yaml:"min_token_len"`
+}, overrideAnalysis *struct {
+	MinBusyWordsPerTweet         int     `yaml:"min_busy_words_per_tweet"`
+	MinJaccardSimilarity         float64 `yaml:"min_jaccard_similarity"`
+	DuplicateSimilarityThreshold float64 `yaml:"duplicate_similarity_threshold"`
+	UseMedoidSimilarity          bool    `yaml:"use_medoid_similarity"`
+	UseBusyWordSimilarity        bool    `yaml:"use_busy_word_similarity"`
+	MedoidSimilarityThreshold    float64 `yaml:"medoid_similarity_threshold"`
+	BusyWordSimilarityThreshold  float64 `yaml:"busy_word_similarity_threshold"`
+	MinTokenLen                  int     `yaml:"min_token_len"`
+}) {
+	if overrideAnalysis.MinBusyWordsPerTweet != 0 {
+		baseAnalysis.MinBusyWordsPerTweet = overrideAnalysis.MinBusyWordsPerTweet
 	}
-	if overrideConfig.Analysis.MinJaccardSimilarity != 0 {
-		baseConfig.Analysis.MinJaccardSimilarity = overrideConfig.Analysis.MinJaccardSimilarity
+	if overrideAnalysis.MinJaccardSimilarity != 0 {
+		baseAnalysis.MinJaccardSimilarity = overrideAnalysis.MinJaccardSimilarity
 	}
-	if overrideConfig.Analysis.DuplicateSimilarityThreshold != 0 {
-		baseConfig.Analysis.DuplicateSimilarityThreshold = overrideConfig.Analysis.DuplicateSimilarityThreshold
+	if overrideAnalysis.DuplicateSimilarityThreshold != 0 {
+		baseAnalysis.DuplicateSimilarityThreshold = overrideAnalysis.DuplicateSimilarityThreshold
 	}
-	if overrideConfig.Analysis.MedoidSimilarityThreshold != 0 {
-		baseConfig.Analysis.MedoidSimilarityThreshold = overrideConfig.Analysis.MedoidSimilarityThreshold
+	if overrideAnalysis.MedoidSimilarityThreshold != 0 {
+		baseAnalysis.MedoidSimilarityThreshold = overrideAnalysis.MedoidSimilarityThreshold
 	}
-	if overrideConfig.Analysis.BusyWordSimilarityThreshold != 0 {
-		baseConfig.Analysis.BusyWordSimilarityThreshold = overrideConfig.Analysis.BusyWordSimilarityThreshold
+	if overrideAnalysis.BusyWordSimilarityThreshold != 0 {
+		baseAnalysis.BusyWordSimilarityThreshold = overrideAnalysis.BusyWordSimilarityThreshold
 	}
-	if overrideConfig.Analysis.MinTokenLen != 0 {
-		baseConfig.Analysis.MinTokenLen = overrideConfig.Analysis.MinTokenLen
+	if overrideAnalysis.MinTokenLen != 0 {
+		baseAnalysis.MinTokenLen = overrideAnalysis.MinTokenLen
 	}
 	// Boolean fields
-	baseConfig.Analysis.UseMedoidSimilarity = overrideConfig.Analysis.UseMedoidSimilarity
-	baseConfig.Analysis.UseBusyWordSimilarity = overrideConfig.Analysis.UseBusyWordSimilarity
-
-	return baseConfig, nil
+	baseAnalysis.UseMedoidSimilarity = overrideAnalysis.UseMedoidSimilarity
+	baseAnalysis.UseBusyWordSimilarity = overrideAnalysis.UseBusyWordSimilarity
 }
 
 // generateUniqueRunName generates a unique run name, handling duplicates
@@ -344,7 +375,7 @@ func (sl *SQLLoader) Close() error {
 }
 
 // InsertBatch inserts a batch and returns its database ID
-func (sl *SQLLoader) InsertBatch(batch json_parser.Batch) (int, error) {
+func (sl *SQLLoader) InsertBatch(batch types.Batch) (int, error) {
 	// Parse batch time - handle both with and without UTC suffix
 	var batchTime time.Time
 	var err error
@@ -387,13 +418,13 @@ func (sl *SQLLoader) InsertBatch(batch json_parser.Batch) (int, error) {
 }
 
 // InsertCluster inserts a cluster and returns its database ID
-func (sl *SQLLoader) InsertCluster(batchID int, cluster json_parser.Cluster) (int, error) {
+func (sl *SQLLoader) InsertCluster(batchID int, cluster types.Cluster) (int, error) {
 	var clusterID int
 	err := sl.db.QueryRow(`
 		INSERT INTO new_clusters (batch_id, cluster_id, size, quality_score)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id
-	`, batchID, cluster.ClusterID, cluster.Size, cluster.QualityScore).Scan(&clusterID)
+	`, batchID, cluster.ClusterID, cluster.Size, 0.0).Scan(&clusterID)
 
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert cluster %d: %v", cluster.ClusterID, err)
@@ -403,8 +434,8 @@ func (sl *SQLLoader) InsertCluster(batchID int, cluster json_parser.Cluster) (in
 }
 
 // InsertTweets inserts all tweets for a cluster using the new schema
-func (sl *SQLLoader) InsertTweets(clusterID int, cluster json_parser.Cluster) error {
-	medoidText := cluster.GetMedoidText()
+func (sl *SQLLoader) InsertTweets(clusterID int, cluster types.Cluster) error {
+	medoidText := cluster.MedoidTweet
 
 	// Get tweets from the new JSON structure
 	tweets := cluster.Tweets
@@ -423,26 +454,14 @@ func (sl *SQLLoader) InsertTweets(clusterID int, cluster json_parser.Cluster) er
 		tweet := tweets[i]
 		isMedoid := (tweet.Text == medoidText)
 
-		// Parse the created_at timestamp
-		var createdAtTweet *time.Time
-		if tweet.CreatedAt != "" {
-			if parsed, err := time.Parse("2006-01-02 15:04:05 UTC", tweet.CreatedAt); err == nil {
-				createdAtTweet = &parsed
-			}
-		}
-
-		// Insert the tweet with all the rich data
+		// Insert the tweet with simplified data
 		var tweetID int
 		err := sl.db.QueryRow(`
 			INSERT INTO new_tweets (
-				cluster_id, tweet_id_str, unix_timestamp, created_at_tweet, 
-				user_id_str, tweet_text, retweeted, retweet_count, 
-				lang, batch_id, tweet_order, is_medoid
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+				cluster_id, tweet_id_str, unix_timestamp, tweet_text, tweet_order, is_medoid
+			) VALUES ($1, $2, $3, $4, $5, $6)
 			RETURNING id
-		`, clusterID, tweet.IDStr, tweet.Unix, createdAtTweet,
-			tweet.UserIDStr, tweet.Text, tweet.Retweeted, tweet.RetweetCount,
-			tweet.Lang, tweet.BatchID, i+1, isMedoid).Scan(&tweetID)
+		`, clusterID, tweet.IDStr, tweet.Unix, tweet.Text, i+1, isMedoid).Scan(&tweetID)
 
 		if err != nil {
 			return fmt.Errorf("failed to insert tweet %d: %v", i+1, err)
@@ -453,27 +472,17 @@ func (sl *SQLLoader) InsertTweets(clusterID int, cluster json_parser.Cluster) er
 }
 
 // InsertBusyWords inserts all busy words for a cluster
-func (sl *SQLLoader) InsertBusyWords(clusterID int, cluster json_parser.Cluster) error {
-	// Handle new busy_words map structure
+func (sl *SQLLoader) InsertBusyWords(clusterID int, cluster types.Cluster) error {
+	// Handle new busy_words slice structure with full BusyWord data
 	wordOrder := 1
-	for word := range cluster.BusyWords {
-		// Get frequency class from busy_word_classes map, default to 12 if not found
-		frequencyClass := 12
-		if cluster.BusyWordClasses != nil {
-			if freqClass, exists := cluster.BusyWordClasses[word]; exists {
-				if freqFloat, ok := freqClass.(float64); ok {
-					frequencyClass = int(freqFloat)
-				}
-			}
-		}
-
+	for _, busyWord := range cluster.BusyWords {
 		_, err := sl.db.Exec(`
-			INSERT INTO new_busy_words (cluster_id, word, word_order, frequency_class)
-			VALUES ($1, $2, $3, $4)
-		`, clusterID, word, wordOrder, frequencyClass)
+			INSERT INTO new_busy_words (cluster_id, word, word_order, frequency_class, z_score, count, mean)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`, clusterID, busyWord.Word, wordOrder, busyWord.Class, busyWord.ZScore, busyWord.Count, busyWord.Mean)
 
 		if err != nil {
-			return fmt.Errorf("failed to insert busy word %s in cluster %d: %v", word, cluster.ClusterID, err)
+			return fmt.Errorf("failed to insert busy word %s in cluster %d: %v", busyWord.Word, cluster.ClusterID, err)
 		}
 		wordOrder++
 	}
@@ -482,7 +491,7 @@ func (sl *SQLLoader) InsertBusyWords(clusterID int, cluster json_parser.Cluster)
 }
 
 // ProcessBatch processes a single batch and inserts all its data
-func (sl *SQLLoader) ProcessBatch(batch json_parser.Batch) error {
+func (sl *SQLLoader) ProcessBatch(batch types.Batch) error {
 	// Insert batch (InsertBatch handles duplicate checking)
 	batchID, err := sl.InsertBatch(batch)
 	if err != nil {
@@ -549,32 +558,54 @@ func (sl *SQLLoader) ProcessBatch(batch json_parser.Batch) error {
 
 // LoadJSONFile loads and processes an entire JSON file
 func (sl *SQLLoader) LoadJSONFile(jsonFilePath string) error {
+	// Setup parser and get file information
+	parser, _, err := sl.setupJSONParser(jsonFilePath)
+	if err != nil {
+		return err
+	}
+	defer parser.Close()
+
+	// Check for resumption and get last processed batch
+	lastProcessedBatch, err := sl.getLastProcessedBatch()
+	if err != nil {
+		return err
+	}
+
+	// Process all batches from the JSON file
+	return sl.processAllBatches(parser, lastProcessedBatch)
+}
+
+// setupJSONParser creates a parser and gets file information
+func (sl *SQLLoader) setupJSONParser(jsonFilePath string) (*json_parser.Parser, int64, error) {
 	// Create parser
 	parser, err := json_parser.NewParser(jsonFilePath)
 	if err != nil {
-		return fmt.Errorf("failed to create parser: %v", err)
+		return nil, 0, fmt.Errorf("failed to create parser: %v", err)
 	}
-	defer parser.Close()
 
 	// Get file size for progress reporting
 	fileInfo, err := os.Stat(jsonFilePath)
 	if err != nil {
-		return fmt.Errorf("failed to get file info: %v", err)
+		return nil, 0, fmt.Errorf("failed to get file info: %v", err)
 	}
 	totalSize := fileInfo.Size()
 
 	fmt.Printf("Loading JSON file: %s (%.2f MB)\n", jsonFilePath, float64(totalSize)/(1024*1024))
 
-	// Check what the last processed batch was for this run
+	return parser, totalSize, nil
+}
+
+// getLastProcessedBatch checks what the last processed batch was for this run
+func (sl *SQLLoader) getLastProcessedBatch() (int, error) {
 	var lastProcessedBatch int
-	err = sl.db.QueryRow(`
+	err := sl.db.QueryRow(`
 		SELECT COALESCE(MAX(batch_number), -1) 
 		FROM new_batches 
 		WHERE run_id = $1
 	`, sl.runID).Scan(&lastProcessedBatch)
 
 	if err != nil {
-		return fmt.Errorf("failed to check last processed batch: %v", err)
+		return 0, fmt.Errorf("failed to check last processed batch: %v", err)
 	}
 
 	if lastProcessedBatch >= 0 {
@@ -583,7 +614,11 @@ func (sl *SQLLoader) LoadJSONFile(jsonFilePath string) error {
 		fmt.Printf("Starting from beginning (no batches found for run_id %d)\n", sl.runID)
 	}
 
-	// Process batches in chunks
+	return lastProcessedBatch, nil
+}
+
+// processAllBatches processes all batches from the JSON file
+func (sl *SQLLoader) processAllBatches(parser *json_parser.Parser, lastProcessedBatch int) error {
 	totalBatches := 0
 	skippedBatches := 0
 	startTime := time.Now()
@@ -629,7 +664,8 @@ func (sl *SQLLoader) LoadJSONFile(jsonFilePath string) error {
 	return nil
 }
 
-func main() {
+// parseArguments parses command line arguments and returns the configuration
+func parseArguments() (runName, dbConfigPath, pipelineConfigPath, overrideConfigPath, jsonFilePath string) {
 	if len(os.Args) < 4 {
 		fmt.Printf("Usage: %s <run_name> <database-config.yaml> <pipeline-config.yaml> [override-config.yaml] [json-file]\n", os.Args[0])
 		fmt.Printf("  run_name: Name for this experiment run (e.g., \"sept_4_ptc\", \"Test Run\")\n")
@@ -643,16 +679,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	runName := os.Args[1]
-	dbConfigPath := os.Args[2]
-	pipelineConfigPath := os.Args[3]
+	runName = os.Args[1]
+	dbConfigPath = os.Args[2]
+	pipelineConfigPath = os.Args[3]
 
 	// If no run name provided, generate a default one
 	if runName == "" || runName == "default" {
 		runName = "Run"
 	}
 
-	var overrideConfigPath, jsonFilePath string
 	if len(os.Args) > 4 {
 		if strings.HasSuffix(os.Args[4], ".json") {
 			jsonFilePath = os.Args[4]
@@ -664,7 +699,11 @@ func main() {
 		}
 	}
 
-	// Validate file paths
+	return runName, dbConfigPath, pipelineConfigPath, overrideConfigPath, jsonFilePath
+}
+
+// validateFiles checks that all required files exist
+func validateFiles(dbConfigPath, pipelineConfigPath, overrideConfigPath, jsonFilePath string) {
 	if _, err := os.Stat(dbConfigPath); os.IsNotExist(err) {
 		log.Fatalf("Database config file not found: %s", dbConfigPath)
 	}
@@ -681,13 +720,15 @@ func main() {
 			log.Fatalf("JSON file not found: %s", jsonFilePath)
 		}
 	}
+}
 
+// setupDatabaseAndExperiment creates the SQL loader and experiment run
+func setupDatabaseAndExperiment(runName, dbConfigPath, pipelineConfigPath, overrideConfigPath string) (*SQLLoader, int) {
 	// Create SQL loader
 	loader, err := NewSQLLoader(dbConfigPath)
 	if err != nil {
 		log.Fatalf("Failed to create SQL loader: %v", err)
 	}
-	defer loader.Close()
 
 	// Create experiment run record
 	fmt.Printf("Creating experiment run: %s\n", runName)
@@ -700,10 +741,15 @@ func main() {
 	// Store run_id in loader for use in batch insertions
 	loader.runID = runID
 
+	return loader, runID
+}
+
+// runDatabaseTests runs basic database connectivity and data checks
+func runDatabaseTests(loader *SQLLoader) {
 	// Test database connection with test table
 	fmt.Println("Testing database connection...")
 	var count int
-	err = loader.db.QueryRow("SELECT COUNT(*) FROM new_experiment_runs").Scan(&count)
+	err := loader.db.QueryRow("SELECT COUNT(*) FROM new_experiment_runs").Scan(&count)
 	if err != nil {
 		log.Fatalf("Failed to query new_experiment_runs: %v", err)
 	}
@@ -717,10 +763,13 @@ func main() {
 	} else {
 		fmt.Printf("Pipeline data: %d batches\n", batchCount)
 	}
+}
 
+// runAdvancedDatabaseTests runs advanced database tests including table creation and verification
+func runAdvancedDatabaseTests(loader *SQLLoader) {
 	// Test creating a table from Go
 	fmt.Println("\nTesting table creation from Go:")
-	_, err = loader.db.Exec(`
+	_, err := loader.db.Exec(`
 		CREATE TABLE IF NOT EXISTS public.go_test_table (
 			id SERIAL PRIMARY KEY,
 			name TEXT NOT NULL
@@ -745,7 +794,7 @@ func main() {
 	expectedTables := []string{"new_batches", "new_clusters", "new_tweets", "new_busy_words"}
 	for _, tableName := range expectedTables {
 		var tableExists bool
-		err = loader.db.QueryRow(`
+		err := loader.db.QueryRow(`
 			SELECT EXISTS (
 				SELECT 1 FROM pg_tables 
 				WHERE schemaname = 'public' 
@@ -761,7 +810,30 @@ func main() {
 			fmt.Printf("  ❌ %s (MISSING)\n", tableName)
 		}
 	}
+}
 
+func main() {
+	// Parse command line arguments
+	runName, dbConfigPath, pipelineConfigPath, overrideConfigPath, jsonFilePath := parseArguments()
+
+	// Validate that all required files exist
+	validateFiles(dbConfigPath, pipelineConfigPath, overrideConfigPath, jsonFilePath)
+
+	// Create SQL loader and setup experiment run
+	loader, _ := setupDatabaseAndExperiment(runName, dbConfigPath, pipelineConfigPath, overrideConfigPath)
+	defer loader.Close()
+
+	// Run database tests
+	runDatabaseTests(loader)
+	runAdvancedDatabaseTests(loader)
+	runDatabaseInspection(loader)
+
+	// Load JSON file if provided
+	loadDataIfProvided(loader, jsonFilePath)
+}
+
+// runDatabaseInspection runs detailed database inspection including table ownership and permissions
+func runDatabaseInspection(loader *SQLLoader) {
 	// Check table ownership and permissions
 	fmt.Println("\nTable ownership and permissions:")
 	rows, err := loader.db.Query(`
@@ -829,8 +901,10 @@ func main() {
 			}
 		}
 	}
+}
 
-	// If JSON file is provided, load it
+// loadDataIfProvided loads JSON data if a file path is provided
+func loadDataIfProvided(loader *SQLLoader, jsonFilePath string) {
 	if jsonFilePath != "" {
 		fmt.Printf("\nLoading JSON file: %s\n", jsonFilePath)
 		if err := loader.LoadJSONFile(jsonFilePath); err != nil {

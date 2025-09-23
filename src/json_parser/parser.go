@@ -5,54 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"cursor-twitter-display/types"
 )
-
-// Batch represents a single batch from the JSON data
-type Batch struct {
-	Type string `json:"type"`
-	Data struct {
-		BatchNumber          int         `json:"batch_number"`
-		BatchTime            string      `json:"batch_time"`
-		Method               string      `json:"method"`
-		TotalTweets          int         `json:"total_tweets"`
-		TotalClusters        int         `json:"total_clusters"`
-		ClustersAboveMinSize int         `json:"clusters_above_min_size"`
-		Clusters             interface{} `json:"clusters"`
-	} `json:"data"`
-}
-
-// Tweet represents a single tweet with full data
-type Tweet struct {
-	IDStr        string `json:"id_str"`
-	Unix         int64  `json:"unix"`
-	CreatedAt    string `json:"created_at"`
-	UserIDStr    string `json:"user_id_str"`
-	Text         string `json:"text"`
-	Retweeted    bool   `json:"retweeted"`
-	RetweetCount int    `json:"retweet_count"`
-	Lang         string `json:"lang"`
-	BatchID      int    `json:"batch_id"`
-}
-
-// Cluster represents a parsed cluster with its data
-type Cluster struct {
-	ClusterID       int                    `json:"cluster_id"`
-	Size            int                    `json:"size"`
-	BusyWords       map[string]bool        `json:"busy_words"`             // Changed from []string to map
-	Tweets          []Tweet                `json:"tweets"`                 // Changed from TweetTexts to full tweet objects
-	Medoid          string                 `json:"medoid,omitempty"`       // Primary medoid field
-	MedoidTweet     string                 `json:"medoid_tweet,omitempty"` // Alternative medoid field (will be merged with Medoid)
-	QualityScore    float64                `json:"quality_score,omitempty"`
-	BusyWordClasses map[string]interface{} `json:"busy_word_classes,omitempty"` // Frequency class mappings
-}
-
-// GetMedoidText returns the medoid text, preferring MedoidTweet over Medoid
-func (c *Cluster) GetMedoidText() string {
-	if c.MedoidTweet != "" {
-		return c.MedoidTweet
-	}
-	return c.Medoid
-}
 
 // Parser handles chunked JSON file reading and parsing
 type Parser struct {
@@ -85,12 +40,12 @@ func (p *Parser) Close() error {
 }
 
 // LoadNextChunk reads the next batch from the JSON stream
-func (p *Parser) LoadNextChunk() ([]Batch, error) {
+func (p *Parser) LoadNextChunk() ([]types.Batch, error) {
 	if p.decoder == nil {
 		return nil, fmt.Errorf("decoder not initialized")
 	}
 
-	var batch Batch
+	var batch types.Batch
 	err := p.decoder.Decode(&batch)
 	if err != nil {
 		if err == io.EOF {
@@ -100,11 +55,11 @@ func (p *Parser) LoadNextChunk() ([]Batch, error) {
 		return nil, fmt.Errorf("failed to decode JSON: %v", err)
 	}
 
-	return []Batch{batch}, nil
+	return []types.Batch{batch}, nil
 }
 
 // LoadNextChunkContinuous reads the next batch and waits for new data if at end of file
-func (p *Parser) LoadNextChunkContinuous() ([]Batch, error) {
+func (p *Parser) LoadNextChunkContinuous() ([]types.Batch, error) {
 	batches, err := p.LoadNextChunk()
 	if err != nil {
 		return nil, err
@@ -121,20 +76,27 @@ func (p *Parser) LoadNextChunkContinuous() ([]Batch, error) {
 }
 
 // ParseClusters extracts cluster data from a batch
-func ParseClusters(batch Batch) ([]Cluster, error) {
+func ParseClusters(batch types.Batch) ([]types.Cluster, error) {
 	// Handle null clusters (empty batches)
 	if batch.Data.Clusters == nil {
-		return []Cluster{}, nil
+		return []types.Cluster{}, nil
 	}
 
+	// The clusters are already parsed into the correct types.Batch structure
+	// Just return them directly
+	return batch.Data.Clusters, nil
+}
+
+// parseMainClusters parses the main clusters from the clusters interface
+func parseMainClusters(clustersInterface interface{}) ([]types.Cluster, error) {
 	// Type assert clusters to []interface{} first, then to map[string]interface{}
-	clustersInterface, ok := batch.Data.Clusters.([]interface{})
+	clustersList, ok := clustersInterface.([]interface{})
 	if !ok {
 		return nil, fmt.Errorf("invalid clusters data format")
 	}
 
-	var clusters []Cluster
-	for i, clusterInterface := range clustersInterface {
+	var clusters []types.Cluster
+	for i, clusterInterface := range clustersList {
 		clusterMap, ok := clusterInterface.(map[string]interface{})
 		if !ok {
 			fmt.Printf("Cluster %d: Failed to convert to map\n", i)
@@ -147,31 +109,76 @@ func ParseClusters(batch Batch) ([]Cluster, error) {
 		if cluster != nil {
 			clusters = append(clusters, *cluster)
 		}
+	}
 
-		// Also check for sub-clusters in meta clusters
+	return clusters, nil
+}
+
+// parseSubClusters parses sub-clusters from meta clusters
+func parseSubClusters(clustersInterface interface{}) ([]types.Cluster, error) {
+	clustersList, ok := clustersInterface.([]interface{})
+	if !ok {
+		return []types.Cluster{}, nil // Not an error, just no sub-clusters
+	}
+
+	var subClusters []types.Cluster
+	for _, clusterInterface := range clustersList {
+		clusterMap, ok := clusterInterface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Check for sub-clusters in meta clusters
 		if subClustersInterface, ok := clusterMap["sub_clusters"].([]interface{}); ok {
 			for _, subClusterInterface := range subClustersInterface {
 				if subClusterMap, ok := subClusterInterface.(map[string]interface{}); ok {
 					subCluster := extractClusterFromMap(subClusterMap)
 					if subCluster != nil {
-						clusters = append(clusters, *subCluster)
+						subClusters = append(subClusters, *subCluster)
 					}
 				}
 			}
 		}
 	}
 
-	return clusters, nil
+	return subClusters, nil
 }
 
 // extractClusterFromMap extracts cluster data from a map, returns nil if invalid
 // This function is robust and handles missing fields gracefully
-func extractClusterFromMap(clusterMap map[string]interface{}) *Cluster {
+func extractClusterFromMap(clusterMap map[string]interface{}) *types.Cluster {
+	// Extract basic cluster information
+	clusterID, size := extractBasicClusterInfo(clusterMap)
+	if clusterID == 0 {
+		return nil // Invalid cluster
+	}
+
+	// Extract busy words
+	busyWords := extractBusyWords(clusterMap)
+
+	// Extract tweets
+	tweets := extractTweets(clusterMap)
+
+	// Extract optional fields
+	_, medoidTweet, _, busyWordClasses := extractOptionalFields(clusterMap)
+
+	return &types.Cluster{
+		ClusterID:       clusterID,
+		Size:            size,
+		BusyWords:       convertBusyWordsToTypes(busyWords),
+		Tweets:          tweets,
+		MedoidTweet:     medoidTweet,
+		BusyWordClasses: convertBusyWordClassesToTypes(busyWordClasses),
+	}
+}
+
+// extractBasicClusterInfo extracts cluster ID and size from the cluster map
+func extractBasicClusterInfo(clusterMap map[string]interface{}) (int, int) {
 	// Extract cluster data - cluster_id is required
 	clusterIDFloat, hasClusterID := clusterMap["cluster_id"].(float64)
 	if !hasClusterID {
 		// No cluster_id means this isn't a valid cluster - skip silently
-		return nil
+		return 0, 0
 	}
 	clusterID := int(clusterIDFloat)
 
@@ -181,51 +188,45 @@ func extractClusterFromMap(clusterMap map[string]interface{}) *Cluster {
 		size = 0 // Default to 0 if missing
 	}
 
-	// Extract busy words - handle new map structure
+	return clusterID, int(size)
+}
+
+// extractBusyWords extracts busy words from the cluster map
+func extractBusyWords(clusterMap map[string]interface{}) map[string]bool {
 	busyWords := make(map[string]bool)
 	if busyWordsInterface, ok := clusterMap["busy_words"].(map[string]interface{}); ok {
 		for word := range busyWordsInterface {
 			busyWords[word] = true
 		}
 	}
+	return busyWords
+}
 
-	// Extract tweets - handle new array of objects structure
-	var tweets []Tweet
+// extractTweets extracts tweets from the cluster map
+func extractTweets(clusterMap map[string]interface{}) []types.Tweet {
+	var tweets []types.Tweet
 	if tweetsInterface, ok := clusterMap["tweets"].([]interface{}); ok {
 		for _, tweetInterface := range tweetsInterface {
 			if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
-				tweet := Tweet{
-					IDStr:        getString(tweetMap, "id_str"),
-					Unix:         getInt64(tweetMap, "unix"),
-					CreatedAt:    getString(tweetMap, "created_at"),
-					UserIDStr:    getString(tweetMap, "user_id_str"),
-					Text:         getString(tweetMap, "text"),
-					Retweeted:    getBool(tweetMap, "retweeted"),
-					RetweetCount: getInt(tweetMap, "retweet_count"),
-					Lang:         getString(tweetMap, "lang"),
-					BatchID:      getInt(tweetMap, "batch_id"),
+				tweet := types.Tweet{
+					Text:     getString(tweetMap, "text"),
+					IsMedoid: getBool(tweetMap, "is_medoid"),
 				}
 				tweets = append(tweets, tweet)
 			}
 		}
 	}
+	return tweets
+}
 
-	// Extract optional fields
+// extractOptionalFields extracts optional fields from the cluster map
+func extractOptionalFields(clusterMap map[string]interface{}) (string, string, float64, map[string]interface{}) {
 	medoid, _ := clusterMap["medoid"].(string)
 	medoidTweet, _ := clusterMap["medoid_tweet"].(string)
 	qualityScore, _ := clusterMap["quality_score"].(float64)
 	busyWordClasses, _ := clusterMap["busy_word_classes"].(map[string]interface{})
 
-	return &Cluster{
-		ClusterID:       clusterID,
-		Size:            int(size),
-		BusyWords:       busyWords,
-		Tweets:          tweets,
-		Medoid:          medoid,
-		MedoidTweet:     medoidTweet,
-		QualityScore:    qualityScore,
-		BusyWordClasses: busyWordClasses,
-	}
+	return medoid, medoidTweet, qualityScore, busyWordClasses
 }
 
 // Helper functions for safe type conversion
@@ -257,9 +258,49 @@ func getBool(m map[string]interface{}, key string) bool {
 	return false
 }
 
+// convertBusyWordsToTypes converts old format busy words to new format
+func convertBusyWordsToTypes(oldBusyWords map[string]bool) []types.BusyWord {
+	var busyWords []types.BusyWord
+	for word := range oldBusyWords {
+		busyWords = append(busyWords, types.BusyWord{
+			Word:   word,
+			Class:  0, // Default class, will need to be extracted from JSON
+			ZScore: 0, // Default z-score, will need to be extracted from JSON
+			Count:  0, // Default count, will need to be extracted from JSON
+			Mean:   0, // Default mean, will need to be extracted from JSON
+		})
+	}
+	return busyWords
+}
+
+// convertTweetsToTypes converts old format tweets to new format
+func convertTweetsToTypes(oldTweets []types.Tweet) []types.Tweet {
+	var tweets []types.Tweet
+	for _, oldTweet := range oldTweets {
+		tweets = append(tweets, types.Tweet{
+			Text:     oldTweet.Text,
+			IsMedoid: false, // Default, will need to be determined from context
+		})
+	}
+	return tweets
+}
+
+// convertBusyWordClassesToTypes converts old format busy word classes to new format
+func convertBusyWordClassesToTypes(oldClasses map[string]interface{}) map[string]int {
+	newClasses := make(map[string]int)
+	for word, classInterface := range oldClasses {
+		if classInt, ok := classInterface.(int); ok {
+			newClasses[word] = classInt
+		} else if classFloat, ok := classInterface.(float64); ok {
+			newClasses[word] = int(classFloat)
+		}
+	}
+	return newClasses
+}
+
 // LoadInitialData loads the first few chunks to get initial data
-func (p *Parser) LoadInitialData(chunkCount int) ([]Batch, error) {
-	var allBatches []Batch
+func (p *Parser) LoadInitialData(chunkCount int) ([]types.Batch, error) {
+	var allBatches []types.Batch
 
 	for i := 0; i < chunkCount; i++ {
 		batches, err := p.LoadNextChunk()

@@ -22,6 +22,14 @@ If any changes seem to involve multiple threads, be sure to get my agreement bef
 
 # TTD
 
+## Cursor has duplicated definitions of structs everywhere.
+
+We have removed all structs from display and put them in types.
+
+Next, remove all structs from SQL Loader that are used outside that program and have it refer to types.
+
+
+
 ## The bubbles need scaling. They are too close in size. 
 But they are different in size--this is cosmetic.  What is the right function to apply?
 
@@ -31,9 +39,13 @@ The count ratios are more extreme. They might need logs.
 
 ## Grid View Doesn't Work
 
+
 ## Medoid View Doesn't Work
 
-##
+## Instructions
+- The JSON is correctly parsed into a struct that is batch with a set of clusters and some metadata fields.  The cluster is composed of a set of tweets, some metadata fields, and a set of busyword objects which each has five fields.
+- The bubble handler uses these structs and we have verifed that they are corrrect.
+
 
 ## Remove barrier time logs.
 Should I remove the barrier timing logs since they're not revealing a real problem?
