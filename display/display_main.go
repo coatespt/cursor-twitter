@@ -13,17 +13,10 @@ import (
 	"strconv"
 	"strings"
 
+	"cursor-twitter-display/types"
+
 	"gopkg.in/yaml.v3"
 )
-
-// BusyWord represents a single busy word with its statistical data
-type BusyWord struct {
-	Word   string  `json:"word"`
-	Class  int     `json:"class"`
-	ZScore float64 `json:"z_score"`
-	Count  int     `json:"count"`
-	Mean   float64 `json:"mean"`
-}
 
 // Helper function to get keys from a map
 func getKeys(m map[string]interface{}) []string {
@@ -32,18 +25,6 @@ func getKeys(m map[string]interface{}) []string {
 		keys = append(keys, k)
 	}
 	return keys
-}
-
-// Config holds the server configuration
-type Config struct {
-	InputFile           string  `yaml:"input_file"`
-	BatchSize           int     `yaml:"batch_size"`
-	HistoricalBatches   int     `yaml:"historical_batches"`
-	MinClusterSize      int     `yaml:"min_cluster_size"`
-	RecurrenceThreshold float64 `yaml:"recurrence_threshold"`
-	RecurrenceStrategy  string  `yaml:"recurrence_strategy"`
-	BubbleBatches       int     `yaml:"bubble_batches"`
-	BubbleColor         string  `yaml:"bubble_color"` // Base color for bubbles (e.g., "blue", "green", "purple")
 }
 
 // calculateNormalizedLevenshtein calculates the normalized Levenshtein distance between two strings
@@ -155,32 +136,9 @@ func calculateQualityScore(historicalData map[string]string, recurrenceData map[
 	return qualityScore
 }
 
-// Batch represents a single batch from the JSON data
-type Batch struct {
-	Type string `json:"type"`
-	Data struct {
-		BatchNumber          int         `json:"batch_number"`
-		BatchTime            string      `json:"batch_time"`
-		Method               string      `json:"method"`
-		TotalTweets          int         `json:"total_tweets"`
-		TotalClusters        int         `json:"total_clusters"`
-		ClustersAboveMinSize int         `json:"clusters_above_min_size"`
-		Clusters             interface{} `json:"clusters"`
-	} `json:"data"`
-}
-
-// PageData holds data for the HTML template
-type PageData struct {
-	CurrentBatch int
-	Batch        Batch
-	HasNext      bool
-	HasPrev      bool
-	BatchInfo    string
-}
-
 var (
-	config      Config
-	allBatches  []Batch
+	config      types.Config
+	allBatches  []types.Batch
 	templates   *template.Template
 	fileHandle  *os.File
 	fileOffset  int64
@@ -192,7 +150,7 @@ var currentBatchIndex int = 0
 var maxBatchesInMemory = 200 // Keep only last 200 batches in memory
 
 // getNextBatch returns the next batch in the sequence, loading more if needed
-func getNextBatch() *Batch {
+func getNextBatch() *types.Batch {
 	// If we can get current batch, return it and increment
 	if currentBatchIndex < len(allBatches) {
 		result := &allBatches[currentBatchIndex]
@@ -246,7 +204,7 @@ func loadMoreBatches() error {
 }
 
 // getPreviousBatch returns the previous batch in the sequence
-func getPreviousBatch() *Batch {
+func getPreviousBatch() *types.Batch {
 	if currentBatchIndex > 0 {
 		currentBatchIndex--
 		return &allBatches[currentBatchIndex]
@@ -319,7 +277,7 @@ func handleCurrent(w http.ResponseWriter, r *http.Request) {
 }
 
 // getCurrentBatch returns the current batch
-func getCurrentBatch() *Batch {
+func getCurrentBatch() *types.Batch {
 	if currentBatchIndex < len(allBatches) {
 		return &allBatches[currentBatchIndex]
 	}
@@ -478,7 +436,7 @@ func loadNextChunk() error {
 		if braceCount == 0 {
 			// We found a complete JSON object
 			jsonStr := contentStr[start:end]
-			var batch Batch
+			var batch types.Batch
 			if err := json.Unmarshal([]byte(jsonStr), &batch); err == nil {
 				allBatches = append(allBatches, batch)
 				batchesInChunk++
@@ -587,7 +545,7 @@ func handleBatch(w http.ResponseWriter, r *http.Request) {
 	batch := allBatches[batchNum]
 
 	// Prepare data for template
-	data := PageData{
+	data := types.PageData{
 		CurrentBatch: batchNum,
 		Batch:        batch,
 		HasNext:      batchNum < len(allBatches)-1,
@@ -599,119 +557,27 @@ func handleBatch(w http.ResponseWriter, r *http.Request) {
 	templates.ExecuteTemplate(w, "index.html", data)
 }
 
-// ChartData represents the data structure for the chart
-type ChartData struct {
-	Clusters []ClusterData `json:"clusters"`
-}
-
-// ClusterData represents a single cluster for the chart
-type ClusterData struct {
-	ClusterID   int      `json:"cluster_id"`
-	Size        int      `json:"size"`
-	BusyWords   []string `json:"busy_words"`
-	WordCounts  []int    `json:"word_counts"`
-	TotalTweets int      `json:"total_tweets"`
-}
-
-// GridRow represents a single row in the busy word grid
-type GridRow struct {
-	Word           string            `json:"word"`
-	ClusterID      int               `json:"cluster_id"`
-	ClusterSize    int               `json:"cluster_size"`
-	QualityScore   float64           `json:"quality_score"`
-	HistoricalData map[string]string `json:"historical_data"` // batch_number -> word or empty
-	RecurrenceData map[string]bool   `json:"recurrence_data"` // batch_number -> true if similar medoid found
-}
-
-// TweetData represents tweet information for display
-type TweetData struct {
-	Text     string `json:"text"`
-	IsMedoid bool   `json:"is_medoid"`
-}
-
-// ClusterTweetData represents tweet data for a cluster
-type ClusterTweetData struct {
-	ClusterID int         `json:"cluster_id"`
-	Size      int         `json:"size"`
-	BusyWords []string    `json:"busy_words"`
-	Tweets    []TweetData `json:"tweets"`
-}
-
-// GridData represents the complete grid for display
-type GridData struct {
-	CurrentBatch      int                `json:"current_batch"`
-	BatchTime         string             `json:"batch_time"`
-	BatchDuration     string             `json:"batch_duration"`
-	HistoricalBatches []int              `json:"historical_batches"`
-	Rows              []GridRow          `json:"rows"`
-	MinClusterSize    int                `json:"min_cluster_size"`
-	TweetData         []ClusterTweetData `json:"tweet_data"`
-}
-
 // extractChartClustersFromBatch extracts clusters from batch for chart data
-func extractChartClustersFromBatch(batch Batch) ([]map[string]interface{}, error) {
-	clustersInterface, ok := batch.Data.Clusters.([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid clusters data format")
-	}
-
-	var clusters []map[string]interface{}
-	for i, clusterInterface := range clustersInterface {
-		clusterMap, ok := clusterInterface.(map[string]interface{})
-		if !ok {
-			fmt.Printf("Cluster %d: Failed to convert to map\n", i)
-			continue
-		}
-		clusters = append(clusters, clusterMap)
-	}
-
-	return clusters, nil
+func extractChartClustersFromBatch(batch types.Batch) ([]types.Cluster, error) {
+	return batch.Data.Clusters, nil
 }
 
 // processChartCluster processes a single cluster for chart data
-func processChartCluster(clusterMap map[string]interface{}, clusterIndex int) ClusterData {
-	// Extract cluster data
-	clusterID, _ := clusterMap["cluster_id"].(float64)
-	size, _ := clusterMap["size"].(float64)
+func processChartCluster(cluster types.Cluster, clusterIndex int) types.ClusterData {
+	fmt.Printf("Cluster %d: ID=%v, Size=%v\n", clusterIndex, cluster.ClusterID, cluster.Size)
 
-	fmt.Printf("Cluster %d: ID=%v, Size=%v\n", clusterIndex, clusterID, size)
-
-	// Extract busy words - handle new map structure
+	// Extract busy words
 	var busyWords []string
-	if busyWordsMap, ok := clusterMap["busy_words"].(map[string]interface{}); ok {
-		// New format: busy_words is a map
-		for word := range busyWordsMap {
-			busyWords = append(busyWords, word)
-		}
-	} else if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
-		// Old format: busy_words is an array (fallback)
-		for _, word := range busyWordsInterface {
-			if wordStr, ok := word.(string); ok {
-				busyWords = append(busyWords, wordStr)
-			}
-		}
+	for _, busyWord := range cluster.BusyWords {
+		busyWords = append(busyWords, busyWord.Word)
 	}
 
 	fmt.Printf("Cluster %d: Found %d busy words: %v\n", clusterIndex, len(busyWords), busyWords)
 
-	// Extract tweet texts - handle new tweets structure
+	// Extract tweet texts
 	var tweetTexts []string
-	if tweetsInterface, ok := clusterMap["tweets"].([]interface{}); ok {
-		// New format: tweets is an array of objects
-		for _, tweetInterface := range tweetsInterface {
-			if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
-				if text, ok := tweetMap["text"].(string); ok {
-					tweetTexts = append(tweetTexts, text)
-				}
-			}
-		}
-	} else if tweetTextsInterface, ok := clusterMap["tweet_texts"].([]interface{}); ok {
-		// Old format: tweet_texts is an array of strings (fallback)
-		for _, tweet := range tweetTextsInterface {
-			if tweetStr, ok := tweet.(string); ok {
-				tweetTexts = append(tweetTexts, tweetStr)
-			}
-		}
+	for _, tweet := range cluster.Tweets {
+		tweetTexts = append(tweetTexts, tweet.Text)
 	}
 
 	// Count occurrences of each busy word in tweet texts
@@ -726,12 +592,12 @@ func processChartCluster(clusterMap map[string]interface{}, clusterIndex int) Cl
 		wordCounts[i] = count
 	}
 
-	clusterData := ClusterData{
-		ClusterID:   int(clusterID),
-		Size:        int(size),
+	clusterData := types.ClusterData{
+		ClusterID:   cluster.ClusterID,
+		Size:        cluster.Size,
 		BusyWords:   busyWords,
 		WordCounts:  wordCounts,
-		TotalTweets: int(size), // This is the actual tweet count from the cluster
+		TotalTweets: cluster.Size, // This is the actual tweet count from the cluster
 	}
 
 	fmt.Printf("Cluster %d: Added to chart with %d word counts: %v\n", clusterIndex, len(wordCounts), wordCounts)
@@ -739,13 +605,13 @@ func processChartCluster(clusterMap map[string]interface{}, clusterIndex int) Cl
 }
 
 // buildChartDataFromClusters builds the complete chart data from clusters
-func buildChartDataFromClusters(clusters []map[string]interface{}) ChartData {
-	var chartData ChartData
+func buildChartDataFromClusters(clusters []types.Cluster) types.ChartData {
+	var chartData types.ChartData
 
 	fmt.Printf("Processing %d clusters for chart data\n", len(clusters))
 
-	for i, clusterMap := range clusters {
-		clusterData := processChartCluster(clusterMap, i)
+	for i, cluster := range clusters {
+		clusterData := processChartCluster(cluster, i)
 		chartData.Clusters = append(chartData.Clusters, clusterData)
 	}
 
@@ -817,23 +683,10 @@ func hasDataForBatch(batchIndex int, minClusterSize int) bool {
 	}
 
 	batch := allBatches[batchIndex]
-	clustersInterface, ok := batch.Data.Clusters.([]interface{})
-	if !ok {
-		fmt.Printf("hasDataForBatch: batch %d - clusters not a []interface{}\n", batchIndex)
-		return false
-	}
-
-	fmt.Printf("hasDataForBatch: batch %d has %d clusters\n", batchIndex, len(clustersInterface))
-	for i, clusterInterface := range clustersInterface {
-		clusterMap, ok := clusterInterface.(map[string]interface{})
-		if !ok {
-			fmt.Printf("hasDataForBatch: batch %d cluster %d not a map\n", batchIndex, i)
-			continue
-		}
-
-		size, _ := clusterMap["size"].(float64)
-		fmt.Printf("hasDataForBatch: batch %d cluster %d size %v (min required: %d)\n", batchIndex, i, size, minClusterSize)
-		if int(size) >= minClusterSize {
+	fmt.Printf("hasDataForBatch: batch %d has %d clusters\n", batchIndex, len(batch.Data.Clusters))
+	for i, cluster := range batch.Data.Clusters {
+		fmt.Printf("hasDataForBatch: batch %d cluster %d size %v (min required: %d)\n", batchIndex, i, cluster.Size, minClusterSize)
+		if cluster.Size >= minClusterSize {
 			fmt.Printf("hasDataForBatch: batch %d cluster %d meets minimum size, returning true\n", batchIndex, i)
 			return true
 		}
@@ -913,63 +766,31 @@ func findNextBatchWithData(startIndex int, direction int, minClusterSize int) in
 }
 
 // extractClustersFromBatch extracts and validates clusters from a batch
-func extractClustersFromBatch(batch Batch, minClusterSize int) []map[string]interface{} {
-	clustersInterface, ok := batch.Data.Clusters.([]interface{})
-	if !ok {
-		fmt.Printf("extractClustersFromBatch: clusters not a []interface{}\n")
-		return []map[string]interface{}{}
-	}
-
-	var clusters []map[string]interface{}
-	for i, clusterInterface := range clustersInterface {
-		clusterMap, ok := clusterInterface.(map[string]interface{})
-		if !ok {
-			fmt.Printf("extractClustersFromBatch: cluster %d not a map\n", i)
-			continue
-		}
-
-		size, _ := clusterMap["size"].(float64)
-		if int(size) >= minClusterSize {
-			clusters = append(clusters, clusterMap)
+func extractClustersFromBatch(batch types.Batch, minClusterSize int) []types.Cluster {
+	var clusters []types.Cluster
+	for _, cluster := range batch.Data.Clusters {
+		if cluster.Size >= minClusterSize {
+			clusters = append(clusters, cluster)
 		}
 	}
-
 	return clusters
 }
 
 // buildGridRowsFromClusters creates GridRow structs from cluster data
-func buildGridRowsFromClusters(clusters []map[string]interface{}) ([]GridRow, []ClusterTweetData) {
-	var gridRows []GridRow
-	var clusterTweetData []ClusterTweetData
+func buildGridRowsFromClusters(clusters []types.Cluster) ([]types.GridRow, []types.ClusterTweetData) {
+	var gridRows []types.GridRow
+	var clusterTweetData []types.ClusterTweetData
 
 	for _, cluster := range clusters {
-		clusterID, _ := cluster["cluster_id"].(float64)
-		size, _ := cluster["size"].(float64)
-
 		// Extract busy words
-		busyWordsInterface, ok := cluster["busy_words"].([]interface{})
-		if !ok {
-			continue
-		}
-
 		var busyWords []string
-		for _, wordInterface := range busyWordsInterface {
-			wordObj, ok := wordInterface.(map[string]interface{})
-			if !ok {
-				continue
-			}
+		for _, busyWord := range cluster.BusyWords {
+			busyWords = append(busyWords, busyWord.Word)
 
-			word, ok := wordObj["word"].(string)
-			if !ok {
-				continue
-			}
-
-			busyWords = append(busyWords, word)
-
-			gridRow := GridRow{
-				Word:           word,
-				ClusterID:      int(clusterID),
-				ClusterSize:    int(size),
+			gridRow := types.GridRow{
+				Word:           busyWord.Word,
+				ClusterID:      cluster.ClusterID,
+				ClusterSize:    cluster.Size,
 				QualityScore:   0.0,
 				HistoricalData: make(map[string]string),
 			}
@@ -977,24 +798,18 @@ func buildGridRowsFromClusters(clusters []map[string]interface{}) ([]GridRow, []
 		}
 
 		// Extract tweet data
-		var tweets []TweetData
-		medoidInterface, _ := cluster["medoid_tweet"].(string)
-		if medoidInterface != "" {
-			medoidText := stripTimestamp(medoidInterface)
-			tweets = append(tweets, TweetData{
+		var tweets []types.TweetData
+		if cluster.MedoidTweet != "" {
+			medoidText := stripTimestamp(cluster.MedoidTweet)
+			tweets = append(tweets, types.TweetData{
 				Text:     medoidText,
 				IsMedoid: true,
 			})
 		}
 
-		tweetsInterface, _ := cluster["tweets"].([]interface{})
 		var tweetTexts []string
-		for _, tweetInterface := range tweetsInterface {
-			if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
-				if text, ok := tweetMap["text"].(string); ok {
-					tweetTexts = append(tweetTexts, text)
-				}
-			}
+		for _, tweet := range cluster.Tweets {
+			tweetTexts = append(tweetTexts, tweet.Text)
 		}
 
 		numBusyWords := len(busyWords)
@@ -1009,21 +824,21 @@ func buildGridRowsFromClusters(clusters []map[string]interface{}) ([]GridRow, []
 				break
 			}
 
-			if medoidInterface != "" && tweetText == medoidInterface {
+			if cluster.MedoidTweet != "" && tweetText == cluster.MedoidTweet {
 				continue
 			}
 
 			cleanTweetText := stripTimestamp(tweetText)
-			tweets = append(tweets, TweetData{
+			tweets = append(tweets, types.TweetData{
 				Text:     cleanTweetText,
 				IsMedoid: false,
 			})
 			tweetsAdded++
 		}
 
-		clusterTweetData = append(clusterTweetData, ClusterTweetData{
-			ClusterID: int(clusterID),
-			Size:      int(size),
+		clusterTweetData = append(clusterTweetData, types.ClusterTweetData{
+			ClusterID: cluster.ClusterID,
+			Size:      cluster.Size,
 			BusyWords: busyWords,
 			Tweets:    tweets,
 		})
@@ -1033,19 +848,13 @@ func buildGridRowsFromClusters(clusters []map[string]interface{}) ([]GridRow, []
 }
 
 // extractCurrentMedoid extracts the current cluster's medoid for comparison
-func extractCurrentMedoid(clusters []map[string]interface{}, clusterID int) string {
+func extractCurrentMedoid(clusters []types.Cluster, clusterID int) string {
 	for _, cluster := range clusters {
-		if int(cluster["cluster_id"].(float64)) == clusterID {
-			if medoid, ok := cluster["medoid_tweet"].(string); ok {
-				return stripTimestamp(medoid)
-			} else {
-				if tweets, ok := cluster["tweets"].([]interface{}); ok && len(tweets) > 0 {
-					if tweetMap, ok := tweets[0].(map[string]interface{}); ok {
-						if text, ok := tweetMap["text"].(string); ok {
-							return stripTimestamp(text)
-						}
-					}
-				}
+		if cluster.ClusterID == clusterID {
+			if cluster.MedoidTweet != "" {
+				return stripTimestamp(cluster.MedoidTweet)
+			} else if len(cluster.Tweets) > 0 {
+				return stripTimestamp(cluster.Tweets[0].Text)
 			}
 			break
 		}
@@ -1060,34 +869,14 @@ func processHistoricalBatchForWord(word string, historicalIndex int, currentMedo
 	}
 
 	historicalBatch := allBatches[historicalIndex]
-	historicalClustersInterface, ok := historicalBatch.Data.Clusters.([]interface{})
-	if !ok {
-		return false, false
-	}
-
 	found := false
 	recurrenceFound := false
 
-	for _, clusterInterface := range historicalClustersInterface {
-		clusterMap, ok := clusterInterface.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		busyWordsInterface, ok := clusterMap["busy_words"].([]interface{})
-		if !ok {
-			continue
-		}
-
-		for _, wordInterface := range busyWordsInterface {
-			wordObj, ok := wordInterface.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			historicalWord, ok := wordObj["word"].(string)
-			if ok && historicalWord == word {
+	for _, cluster := range historicalBatch.Data.Clusters {
+		for _, busyWord := range cluster.BusyWords {
+			if busyWord.Word == word {
 				found = true
-				recurrenceFound = detectRecurrence(clusterMap, currentMedoid)
+				recurrenceFound = detectRecurrence(cluster, currentMedoid)
 				break
 			}
 		}
@@ -1100,7 +889,7 @@ func processHistoricalBatchForWord(word string, historicalIndex int, currentMedo
 }
 
 // detectRecurrence handles the complex recurrence detection logic
-func detectRecurrence(clusterMap map[string]interface{}, currentMedoid string) bool {
+func detectRecurrence(cluster types.Cluster, currentMedoid string) bool {
 	if currentMedoid == "" {
 		return false
 	}
@@ -1108,16 +897,10 @@ func detectRecurrence(clusterMap map[string]interface{}, currentMedoid string) b
 	if config.RecurrenceStrategy == "medoid_only" {
 		// Strategy 1: Compare only medoids
 		var historicalMedoidClean string
-		if historicalMedoid, ok := clusterMap["medoid_tweet"].(string); ok {
-			historicalMedoidClean = stripTimestamp(historicalMedoid)
-		} else {
-			if tweets, ok := clusterMap["tweets"].([]interface{}); ok && len(tweets) > 0 {
-				if tweetMap, ok := tweets[0].(map[string]interface{}); ok {
-					if text, ok := tweetMap["text"].(string); ok {
-						historicalMedoidClean = stripTimestamp(text)
-					}
-				}
-			}
+		if cluster.MedoidTweet != "" {
+			historicalMedoidClean = stripTimestamp(cluster.MedoidTweet)
+		} else if len(cluster.Tweets) > 0 {
+			historicalMedoidClean = stripTimestamp(cluster.Tweets[0].Text)
 		}
 
 		if historicalMedoidClean != "" {
@@ -1126,17 +909,11 @@ func detectRecurrence(clusterMap map[string]interface{}, currentMedoid string) b
 		}
 	} else {
 		// Strategy 2: Compare to all tweets (default)
-		if tweets, ok := clusterMap["tweets"].([]interface{}); ok {
-			for _, tweetInterface := range tweets {
-				if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
-					if text, ok := tweetMap["text"].(string); ok {
-						historicalTweetClean := stripTimestamp(text)
-						distance := calculateNormalizedLevenshtein(currentMedoid, historicalTweetClean)
-						if distance <= config.RecurrenceThreshold {
-							return true
-						}
-					}
-				}
+		for _, tweet := range cluster.Tweets {
+			historicalTweetClean := stripTimestamp(tweet.Text)
+			distance := calculateNormalizedLevenshtein(currentMedoid, historicalTweetClean)
+			if distance <= config.RecurrenceThreshold {
+				return true
 			}
 		}
 	}
@@ -1145,7 +922,7 @@ func detectRecurrence(clusterMap map[string]interface{}, currentMedoid string) b
 }
 
 // processHistoricalData fills in historical data for grid rows
-func processHistoricalData(gridRows []GridRow, clusters []map[string]interface{}, historicalBatchNumbers []int, currentBatchIndex int) {
+func processHistoricalData(gridRows []types.GridRow, clusters []types.Cluster, historicalBatchNumbers []int, currentBatchIndex int) {
 	for i := range gridRows {
 		word := gridRows[i].Word
 		clusterID := gridRows[i].ClusterID
@@ -1170,7 +947,7 @@ func processHistoricalData(gridRows []GridRow, clusters []map[string]interface{}
 }
 
 // calculateQualityScores computes quality scores for all grid rows
-func calculateQualityScores(gridRows []GridRow, clusters []map[string]interface{}, historicalBatchNumbers []int) {
+func calculateQualityScores(gridRows []types.GridRow, clusters []types.Cluster, historicalBatchNumbers []int) {
 	maxClusterSize := 0
 	maxTweetCount := 0
 	for _, row := range gridRows {
@@ -1178,12 +955,10 @@ func calculateQualityScores(gridRows []GridRow, clusters []map[string]interface{
 			maxClusterSize = row.ClusterSize
 		}
 		for _, cluster := range clusters {
-			if int(cluster["cluster_id"].(float64)) == row.ClusterID {
-				if tweets, ok := cluster["tweets"].([]interface{}); ok {
-					tweetCount := len(tweets)
-					if tweetCount > maxTweetCount {
-						maxTweetCount = tweetCount
-					}
+			if cluster.ClusterID == row.ClusterID {
+				tweetCount := len(cluster.Tweets)
+				if tweetCount > maxTweetCount {
+					maxTweetCount = tweetCount
 				}
 				break
 			}
@@ -1193,17 +968,11 @@ func calculateQualityScores(gridRows []GridRow, clusters []map[string]interface{
 	for i := range gridRows {
 		var currentMedoid string
 		for _, cluster := range clusters {
-			if int(cluster["cluster_id"].(float64)) == gridRows[i].ClusterID {
-				if medoid, ok := cluster["medoid_tweet"].(string); ok {
-					currentMedoid = stripTimestamp(medoid)
-				} else {
-					if tweets, ok := cluster["tweets"].([]interface{}); ok && len(tweets) > 0 {
-						if tweetMap, ok := tweets[0].(map[string]interface{}); ok {
-							if text, ok := tweetMap["text"].(string); ok {
-								currentMedoid = stripTimestamp(text)
-							}
-						}
-					}
+			if cluster.ClusterID == gridRows[i].ClusterID {
+				if cluster.MedoidTweet != "" {
+					currentMedoid = stripTimestamp(cluster.MedoidTweet)
+				} else if len(cluster.Tweets) > 0 {
+					currentMedoid = stripTimestamp(cluster.Tweets[0].Text)
 				}
 				break
 			}
@@ -1211,10 +980,8 @@ func calculateQualityScores(gridRows []GridRow, clusters []map[string]interface{
 
 		tweetCount := 0
 		for _, cluster := range clusters {
-			if int(cluster["cluster_id"].(float64)) == gridRows[i].ClusterID {
-				if tweets, ok := cluster["tweets"].([]interface{}); ok {
-					tweetCount = len(tweets)
-				}
+			if cluster.ClusterID == gridRows[i].ClusterID {
+				tweetCount = len(cluster.Tweets)
 				break
 			}
 		}
@@ -1233,10 +1000,10 @@ func calculateQualityScores(gridRows []GridRow, clusters []map[string]interface{
 }
 
 // computeGridData creates the grid data structure for the busy word display
-func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSize int) GridData {
+func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSize int) types.GridData {
 	fmt.Printf("computeGridData: called for batch %d, currently have %d batches\n", currentBatchIndex, len(allBatches))
 	if currentBatchIndex < 0 {
-		return GridData{}
+		return types.GridData{}
 	}
 
 	// Load more chunks if needed
@@ -1244,13 +1011,13 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 		fmt.Printf("computeGridData: batch %d >= %d, loading more chunks\n", currentBatchIndex, len(allBatches))
 		if err := loadMoreChunks(currentBatchIndex); err != nil {
 			fmt.Printf("computeGridData: error loading chunks: %v\n", err)
-			return GridData{}
+			return types.GridData{}
 		}
 	}
 
 	if currentBatchIndex >= len(allBatches) {
 		fmt.Printf("computeGridData: still no data for batch %d\n", currentBatchIndex)
-		return GridData{}
+		return types.GridData{}
 	}
 
 	currentBatch := allBatches[currentBatchIndex]
@@ -1261,9 +1028,7 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 
 	// Sort clusters by size (largest first)
 	sort.Slice(clusters, func(i, j int) bool {
-		sizeI, _ := clusters[i]["size"].(float64)
-		sizeJ, _ := clusters[j]["size"].(float64)
-		return sizeI > sizeJ
+		return clusters[i].Size > clusters[j].Size
 	})
 
 	// Build grid rows from clusters
@@ -1292,7 +1057,7 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 		batchDuration = "N/A"
 	}
 
-	return GridData{
+	return types.GridData{
 		CurrentBatch:      currentBatchIndex,
 		BatchTime:         currentBatch.Data.BatchTime,
 		BatchDuration:     batchDuration,
@@ -1486,9 +1251,9 @@ func buildGridResponse(w http.ResponseWriter, batchNum int) {
 // buildEndOfFileResponse builds and sends an end-of-file response
 func buildEndOfFileResponse(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(GridData{
+	json.NewEncoder(w).Encode(types.GridData{
 		CurrentBatch: -1, // Special value to indicate end of file
-		Rows:         []GridRow{},
+		Rows:         []types.GridRow{},
 	})
 }
 
@@ -1522,7 +1287,7 @@ func handleGridDataAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		if strings.Contains(err.Error(), "no batches with data found") {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(GridData{})
+			json.NewEncoder(w).Encode(types.GridData{})
 			return
 		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1531,27 +1296,6 @@ func handleGridDataAPI(w http.ResponseWriter, r *http.Request) {
 
 	// Build and send response
 	buildGridResponse(w, finalBatchNum)
-}
-
-// MedoidRow represents a single row in the medoid list
-type MedoidRow struct {
-	BatchNumber     int            `json:"batch_number"`
-	BatchTime       string         `json:"batch_time"`
-	ClusterID       int            `json:"cluster_id"`
-	ClusterSize     int            `json:"cluster_size"`
-	MedoidText      string         `json:"medoid_text"`
-	BusyWords       []string       `json:"busy_words"`
-	PersistenceData map[string]int `json:"persistence_data"` // batch_number -> persistence count
-}
-
-// MedoidData represents the complete medoid list for display
-type MedoidData struct {
-	CurrentBatch      int         `json:"current_batch"`
-	BatchTime         string      `json:"batch_time"`
-	BatchDuration     string      `json:"batch_duration"`
-	HistoricalBatches []int       `json:"historical_batches"`
-	Rows              []MedoidRow `json:"rows"`
-	MinClusterSize    int         `json:"min_cluster_size"`
 }
 
 func handleMedoidDefault(w http.ResponseWriter, r *http.Request) {
@@ -1679,9 +1423,9 @@ func buildMedoidResponse(w http.ResponseWriter, batchNum int) {
 // buildMedoidEndOfFileResponse builds and sends an end-of-file response for medoid data
 func buildMedoidEndOfFileResponse(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(MedoidData{
+	json.NewEncoder(w).Encode(types.MedoidData{
 		CurrentBatch: -1, // Special value to indicate end of file
-		Rows:         []MedoidRow{},
+		Rows:         []types.MedoidRow{},
 	})
 }
 
@@ -1715,7 +1459,7 @@ func handleMedoidDataAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		if strings.Contains(err.Error(), "no batches with data found") {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(MedoidData{})
+			json.NewEncoder(w).Encode(types.MedoidData{})
 			return
 		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1739,71 +1483,29 @@ func buildHistoricalBatchNumbers(batchNum, historicalBatches int) []int {
 }
 
 // extractMedoidClustersFromBatch extracts clusters from batch for medoid data
-func extractMedoidClustersFromBatch(batch Batch) ([]map[string]interface{}, error) {
-	clustersInterface, ok := batch.Data.Clusters.([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid clusters data format")
-	}
-
-	var clusters []map[string]interface{}
-	for _, clusterInterface := range clustersInterface {
-		clusterMap, ok := clusterInterface.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		clusters = append(clusters, clusterMap)
-	}
-
-	return clusters, nil
+func extractMedoidClustersFromBatch(batch types.Batch) ([]types.Cluster, error) {
+	return batch.Data.Clusters, nil
 }
 
 // processMedoidCluster processes a single cluster for medoid data
-func processMedoidCluster(clusterMap map[string]interface{}, batchNum int, batchTime string, minClusterSize int, historicalBatchNumbers []int) *MedoidRow {
-	// Extract cluster data
-	clusterID, _ := clusterMap["cluster_id"].(float64)
-	size, _ := clusterMap["size"].(float64)
-
+func processMedoidCluster(cluster types.Cluster, batchNum int, batchTime string, minClusterSize int, historicalBatchNumbers []int) *types.MedoidRow {
 	// Skip clusters below minimum size
-	if int(size) < minClusterSize {
+	if cluster.Size < minClusterSize {
 		return nil
 	}
 
-	// Extract medoid text - handle new structure
+	// Extract medoid text
 	medoidText := ""
-	if medoid, ok := clusterMap["medoid"].(string); ok {
-		// Old format: medoid field exists
-		medoidText = medoid
-	} else if medoidTweet, ok := clusterMap["medoid_tweet"].(string); ok {
-		// Alternative medoid field
-		medoidText = medoidTweet
-	} else if tweetsInterface, ok := clusterMap["tweets"].([]interface{}); ok {
-		// New format: find medoid in tweets array (first tweet is typically the medoid)
-		if len(tweetsInterface) > 0 {
-			if tweetMap, ok := tweetsInterface[0].(map[string]interface{}); ok {
-				if text, ok := tweetMap["text"].(string); ok {
-					medoidText = text
-				}
-			}
-		}
+	if cluster.MedoidTweet != "" {
+		medoidText = cluster.MedoidTweet
+	} else if len(cluster.Tweets) > 0 {
+		medoidText = cluster.Tweets[0].Text
 	}
 
-	// Extract busy words using BusyWord struct format
+	// Extract busy words
 	var busyWords []string
-	busyWordsInterface, ok := clusterMap["busy_words"].([]interface{})
-	if ok {
-		for _, wordInterface := range busyWordsInterface {
-			wordObj, ok := wordInterface.(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			word, ok := wordObj["word"].(string)
-			if !ok {
-				continue
-			}
-
-			busyWords = append(busyWords, word)
-		}
+	for _, busyWord := range cluster.BusyWords {
+		busyWords = append(busyWords, busyWord.Word)
 	}
 
 	// Calculate persistence data (how many batches back this cluster can be traced)
@@ -1811,16 +1513,16 @@ func processMedoidCluster(clusterMap map[string]interface{}, batchNum int, batch
 	for _, histBatch := range historicalBatchNumbers {
 		if histBatch >= 0 && histBatch < len(allBatches) {
 			// Simple persistence calculation - could be enhanced with LD method
-			persistenceCount := calculatePersistence(int(clusterID), histBatch, batchNum)
+			persistenceCount := calculatePersistence(cluster.ClusterID, histBatch, batchNum)
 			persistenceData[fmt.Sprintf("%d", histBatch)] = persistenceCount
 		}
 	}
 
-	medoidRow := &MedoidRow{
+	medoidRow := &types.MedoidRow{
 		BatchNumber:     batchNum,
 		BatchTime:       batchTime,
-		ClusterID:       int(clusterID),
-		ClusterSize:     int(size),
+		ClusterID:       cluster.ClusterID,
+		ClusterSize:     cluster.Size,
 		MedoidText:      medoidText,
 		BusyWords:       busyWords,
 		PersistenceData: persistenceData,
@@ -1830,17 +1532,17 @@ func processMedoidCluster(clusterMap map[string]interface{}, batchNum int, batch
 }
 
 // buildMedoidDataFromClusters builds the complete medoid data from clusters
-func buildMedoidDataFromClusters(clusters []map[string]interface{}, batchNum int, batchTime string, minClusterSize int, historicalBatchNumbers []int) MedoidData {
-	var medoidRows []MedoidRow
+func buildMedoidDataFromClusters(clusters []types.Cluster, batchNum int, batchTime string, minClusterSize int, historicalBatchNumbers []int) types.MedoidData {
+	var medoidRows []types.MedoidRow
 
-	for _, clusterMap := range clusters {
-		medoidRow := processMedoidCluster(clusterMap, batchNum, batchTime, minClusterSize, historicalBatchNumbers)
+	for _, cluster := range clusters {
+		medoidRow := processMedoidCluster(cluster, batchNum, batchTime, minClusterSize, historicalBatchNumbers)
 		if medoidRow != nil {
 			medoidRows = append(medoidRows, *medoidRow)
 		}
 	}
 
-	return MedoidData{
+	return types.MedoidData{
 		CurrentBatch:      batchNum,
 		BatchTime:         batchTime,
 		HistoricalBatches: historicalBatchNumbers,
@@ -1849,7 +1551,7 @@ func buildMedoidDataFromClusters(clusters []map[string]interface{}, batchNum int
 	}
 }
 
-func computeMedoidData(batchNum, historicalBatches, minClusterSize int) MedoidData {
+func computeMedoidData(batchNum, historicalBatches, minClusterSize int) types.MedoidData {
 	batch := allBatches[batchNum]
 
 	// Build historical batch numbers
@@ -1858,11 +1560,11 @@ func computeMedoidData(batchNum, historicalBatches, minClusterSize int) MedoidDa
 	// Extract clusters from batch
 	clusters, err := extractMedoidClustersFromBatch(batch)
 	if err != nil {
-		return MedoidData{
+		return types.MedoidData{
 			CurrentBatch:      batchNum,
 			BatchTime:         batch.Data.BatchTime,
 			HistoricalBatches: historicalBatchNumbers,
-			Rows:              []MedoidRow{},
+			Rows:              []types.MedoidRow{},
 			MinClusterSize:    minClusterSize,
 		}
 	}
@@ -1880,19 +1582,8 @@ func calculatePersistence(clusterID, histBatch, currentBatch int) int {
 	}
 
 	histBatchData := allBatches[histBatch]
-	clustersInterface, ok := histBatchData.Data.Clusters.([]interface{})
-	if !ok {
-		return 0
-	}
-
-	for _, clusterInterface := range clustersInterface {
-		clusterMap, ok := clusterInterface.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		histClusterID, _ := clusterMap["cluster_id"].(float64)
-		if int(histClusterID) == clusterID {
+	for _, cluster := range histBatchData.Data.Clusters {
+		if cluster.ClusterID == clusterID {
 			return 1
 		}
 	}
@@ -2076,54 +1767,18 @@ func buildBubbleHistoricalBatchNumbers(batchNum, historicalBatches int) []int {
 }
 
 // extractBubbleWordsFromBatch extracts busy words from a single batch for bubble data
-func extractBubbleWordsFromBatch(batch Batch, minClusterSize int) []map[string]interface{} {
-	clustersInterface, ok := batch.Data.Clusters.([]interface{})
-	if !ok {
-		return []map[string]interface{}{}
-	}
-
+func extractBubbleWordsFromBatch(batch types.Batch, minClusterSize int) []map[string]interface{} {
 	var words []map[string]interface{}
-	for _, clusterInterface := range clustersInterface {
-		clusterMap, ok := clusterInterface.(map[string]interface{})
-		if !ok {
+	for _, cluster := range batch.Data.Clusters {
+		if cluster.Size < minClusterSize {
 			continue
 		}
 
-		size, _ := clusterMap["size"].(float64)
-		if int(size) < minClusterSize {
-			continue
-		}
-
-		busyWordsInterface, ok := clusterMap["busy_words"].([]interface{})
-		if !ok {
-			continue
-		}
-
-		for _, wordInterface := range busyWordsInterface {
-			wordObj, ok := wordInterface.(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			word, ok := wordObj["word"].(string)
-			if !ok {
-				continue
-			}
-
-			frequencyClass := 12 // Default
-			if classFloat, ok := wordObj["class"].(float64); ok {
-				frequencyClass = int(classFloat)
-			}
-
-			zScore := 0.0
-			if zScoreFloat, ok := wordObj["z_score"].(float64); ok {
-				zScore = zScoreFloat
-			}
-
+		for _, busyWord := range cluster.BusyWords {
 			words = append(words, map[string]interface{}{
-				"word":            word,
-				"frequency_class": frequencyClass,
-				"z_score":         zScore,
+				"word":            busyWord.Word,
+				"frequency_class": busyWord.Class,
+				"z_score":         busyWord.ZScore,
 			})
 		}
 	}
@@ -2132,9 +1787,9 @@ func extractBubbleWordsFromBatch(batch Batch, minClusterSize int) []map[string]i
 }
 
 // processBubbleWordEvolution handles the complex word tracking and aging logic
-func processBubbleWordEvolution(historicalBatchNumbers []int, minClusterSize int) (map[string]*BubbleWord, []MedoidRow) {
-	activeWords := make(map[string]*BubbleWord)
-	medoidClusters := make([]MedoidRow, 0)
+func processBubbleWordEvolution(historicalBatchNumbers []int, minClusterSize int) (map[string]*types.BubbleWord, []types.MedoidRow) {
+	activeWords := make(map[string]*types.BubbleWord)
+	medoidClusters := make([]types.MedoidRow, 0)
 
 	// Process batches from oldest to newest to track word evolution
 	for i := len(historicalBatchNumbers) - 1; i >= 0; i-- {
@@ -2173,7 +1828,7 @@ func processBubbleWordEvolution(historicalBatchNumbers []int, minClusterSize int
 				bubbleSize := divergenceScore
 				yPosition := float64(frequencyClass) / 24.0
 
-				bubbleWord := &BubbleWord{
+				bubbleWord := &types.BubbleWord{
 					Word:            word,
 					FrequencyClass:  frequencyClass,
 					DivergenceScore: divergenceScore,
@@ -2204,46 +1859,30 @@ func processBubbleWordEvolution(historicalBatchNumbers []int, minClusterSize int
 }
 
 // buildBubbleMedoidData collects medoid data for the bubble side panel
-func buildBubbleMedoidData(batch Batch, batchNum int, minClusterSize int) []MedoidRow {
-	clustersInterface, ok := batch.Data.Clusters.([]interface{})
-	if !ok {
-		return []MedoidRow{}
-	}
-
-	var medoidClusters []MedoidRow
-	for _, clusterInterface := range clustersInterface {
-		clusterMap, ok := clusterInterface.(map[string]interface{})
-		if !ok {
+func buildBubbleMedoidData(batch types.Batch, batchNum int, minClusterSize int) []types.MedoidRow {
+	var medoidClusters []types.MedoidRow
+	for _, cluster := range batch.Data.Clusters {
+		if cluster.Size < minClusterSize {
 			continue
 		}
 
-		size, _ := clusterMap["size"].(float64)
-		if int(size) < minClusterSize {
-			continue
-		}
-
-		clusterID, _ := clusterMap["cluster_id"].(float64)
 		medoidText := ""
-		if medoid, ok := clusterMap["medoid"].(string); ok {
-			medoidText = medoid
+		if cluster.MedoidTweet != "" {
+			medoidText = cluster.MedoidTweet
+		} else if len(cluster.Tweets) > 0 {
+			medoidText = cluster.Tweets[0].Text
 		}
 
 		var busyWords []string
-		if busyWordsArray, ok := clusterMap["busy_words"].([]interface{}); ok {
-			for _, wordInterface := range busyWordsArray {
-				if wordObj, ok := wordInterface.(map[string]interface{}); ok {
-					if wordStr, ok := wordObj["word"].(string); ok {
-						busyWords = append(busyWords, wordStr)
-					}
-				}
-			}
+		for _, busyWord := range cluster.BusyWords {
+			busyWords = append(busyWords, busyWord.Word)
 		}
 
-		medoidRow := MedoidRow{
+		medoidRow := types.MedoidRow{
 			BatchNumber: batchNum,
 			BatchTime:   batch.Data.BatchTime,
-			ClusterID:   int(clusterID),
-			ClusterSize: int(size),
+			ClusterID:   cluster.ClusterID,
+			ClusterSize: cluster.Size,
 			MedoidText:  medoidText,
 			BusyWords:   busyWords,
 		}
@@ -2255,9 +1894,9 @@ func buildBubbleMedoidData(batch Batch, batchNum int, minClusterSize int) []Medo
 }
 
 // assembleBubbleData sorts words and builds the final bubble data response
-func assembleBubbleData(activeWords map[string]*BubbleWord, medoidClusters []MedoidRow, batchNum int, historicalBatchNumbers []int) map[string]interface{} {
+func assembleBubbleData(activeWords map[string]*types.BubbleWord, medoidClusters []types.MedoidRow, batchNum int, historicalBatchNumbers []int) map[string]interface{} {
 	// Convert map to slice and filter out words that have fallen off the left edge
-	bubbleWords := make([]BubbleWord, 0)
+	bubbleWords := make([]types.BubbleWord, 0)
 	wordList := make([]map[string]interface{}, 0) // For the far-right column
 
 	for _, bubble := range activeWords {
@@ -2343,23 +1982,12 @@ func handleClusterDataAPI(w http.ResponseWriter, r *http.Request) {
 
 	// Get the batch data
 	batch := allBatches[batchNum]
-	clustersInterface, ok := batch.Data.Clusters.([]interface{})
-	if !ok {
-		http.Error(w, "Invalid clusters data format", http.StatusInternalServerError)
-		return
-	}
 
 	// Find the specific cluster
-	var targetCluster map[string]interface{}
-	for _, clusterInterface := range clustersInterface {
-		clusterMap, ok := clusterInterface.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		clusterIDFloat, _ := clusterMap["cluster_id"].(float64)
-		if int(clusterIDFloat) == clusterID {
-			targetCluster = clusterMap
+	var targetCluster *types.Cluster
+	for _, cluster := range batch.Data.Clusters {
+		if cluster.ClusterID == clusterID {
+			targetCluster = &cluster
 			break
 		}
 	}
@@ -2371,14 +1999,10 @@ func handleClusterDataAPI(w http.ResponseWriter, r *http.Request) {
 
 	// Extract tweet data
 	var tweets []map[string]interface{}
-	if tweetTextsInterface, ok := targetCluster["tweet_texts"].([]interface{}); ok {
-		for _, tweetInterface := range tweetTextsInterface {
-			if tweetText, ok := tweetInterface.(string); ok {
-				tweets = append(tweets, map[string]interface{}{
-					"text": tweetText,
-				})
-			}
-		}
+	for _, tweet := range targetCluster.Tweets {
+		tweets = append(tweets, map[string]interface{}{
+			"text": tweet.Text,
+		})
 	}
 
 	// Create response
@@ -2396,25 +2020,4 @@ func handleClusterDataAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "JSON encoding error", http.StatusInternalServerError)
 		return
 	}
-}
-
-// BubbleWord represents a single busyword in the bubble graph
-type BubbleWord struct {
-	Word            string  `json:"word"`
-	FrequencyClass  int     `json:"frequency_class"`
-	DivergenceScore float64 `json:"divergence_score"`
-	BatchPosition   int     `json:"batch_position"` // 0 = current, 1 = previous, etc.
-	ColorIntensity  float64 `json:"color_intensity"`
-	BubbleSize      float64 `json:"bubble_size"`
-	YPosition       float64 `json:"y_position"` // Consistent Y position for tracking
-}
-
-// BubbleData represents the complete bubble graph data
-type BubbleData struct {
-	CurrentBatch   int          `json:"current_batch"`
-	BatchTime      string       `json:"batch_time"`
-	BatchInfo      string       `json:"batch_info"`
-	BubbleWords    []BubbleWord `json:"bubble_words"`
-	MedoidClusters []MedoidRow  `json:"medoid_clusters"`
-	NumBatches     int          `json:"num_batches"`
 }
