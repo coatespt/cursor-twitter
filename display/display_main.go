@@ -648,6 +648,111 @@ type GridData struct {
 	TweetData         []ClusterTweetData `json:"tweet_data"`
 }
 
+// extractChartClustersFromBatch extracts clusters from batch for chart data
+func extractChartClustersFromBatch(batch Batch) ([]map[string]interface{}, error) {
+	clustersInterface, ok := batch.Data.Clusters.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid clusters data format")
+	}
+
+	var clusters []map[string]interface{}
+	for i, clusterInterface := range clustersInterface {
+		clusterMap, ok := clusterInterface.(map[string]interface{})
+		if !ok {
+			fmt.Printf("Cluster %d: Failed to convert to map\n", i)
+			continue
+		}
+		clusters = append(clusters, clusterMap)
+	}
+
+	return clusters, nil
+}
+
+// processChartCluster processes a single cluster for chart data
+func processChartCluster(clusterMap map[string]interface{}, clusterIndex int) ClusterData {
+	// Extract cluster data
+	clusterID, _ := clusterMap["cluster_id"].(float64)
+	size, _ := clusterMap["size"].(float64)
+
+	fmt.Printf("Cluster %d: ID=%v, Size=%v\n", clusterIndex, clusterID, size)
+
+	// Extract busy words - handle new map structure
+	var busyWords []string
+	if busyWordsMap, ok := clusterMap["busy_words"].(map[string]interface{}); ok {
+		// New format: busy_words is a map
+		for word := range busyWordsMap {
+			busyWords = append(busyWords, word)
+		}
+	} else if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
+		// Old format: busy_words is an array (fallback)
+		for _, word := range busyWordsInterface {
+			if wordStr, ok := word.(string); ok {
+				busyWords = append(busyWords, wordStr)
+			}
+		}
+	}
+
+	fmt.Printf("Cluster %d: Found %d busy words: %v\n", clusterIndex, len(busyWords), busyWords)
+
+	// Extract tweet texts - handle new tweets structure
+	var tweetTexts []string
+	if tweetsInterface, ok := clusterMap["tweets"].([]interface{}); ok {
+		// New format: tweets is an array of objects
+		for _, tweetInterface := range tweetsInterface {
+			if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
+				if text, ok := tweetMap["text"].(string); ok {
+					tweetTexts = append(tweetTexts, text)
+				}
+			}
+		}
+	} else if tweetTextsInterface, ok := clusterMap["tweet_texts"].([]interface{}); ok {
+		// Old format: tweet_texts is an array of strings (fallback)
+		for _, tweet := range tweetTextsInterface {
+			if tweetStr, ok := tweet.(string); ok {
+				tweetTexts = append(tweetTexts, tweetStr)
+			}
+		}
+	}
+
+	// Count occurrences of each busy word in tweet texts
+	wordCounts := make([]int, len(busyWords))
+	for i, word := range busyWords {
+		count := 0
+		for _, tweet := range tweetTexts {
+			if strings.Contains(strings.ToLower(tweet), strings.ToLower(word)) {
+				count++
+			}
+		}
+		wordCounts[i] = count
+	}
+
+	clusterData := ClusterData{
+		ClusterID:   int(clusterID),
+		Size:        int(size),
+		BusyWords:   busyWords,
+		WordCounts:  wordCounts,
+		TotalTweets: int(size), // This is the actual tweet count from the cluster
+	}
+
+	fmt.Printf("Cluster %d: Added to chart with %d word counts: %v\n", clusterIndex, len(wordCounts), wordCounts)
+	return clusterData
+}
+
+// buildChartDataFromClusters builds the complete chart data from clusters
+func buildChartDataFromClusters(clusters []map[string]interface{}) ChartData {
+	var chartData ChartData
+
+	fmt.Printf("Processing %d clusters for chart data\n", len(clusters))
+
+	for i, clusterMap := range clusters {
+		clusterData := processChartCluster(clusterMap, i)
+		chartData.Clusters = append(chartData.Clusters, clusterData)
+	}
+
+	fmt.Printf("Final chart data: %d clusters\n", len(chartData.Clusters))
+	return chartData
+}
+
 func handleChartData(w http.ResponseWriter, r *http.Request) {
 	// Extract batch number from URL
 	path := r.URL.Path
@@ -666,93 +771,15 @@ func handleChartData(w http.ResponseWriter, r *http.Request) {
 
 	batch := allBatches[batchNum]
 
-	// Convert batch data to chart format
-	var chartData ChartData
-
-	// Type assert clusters to []interface{} first, then to map[string]interface{}
-	clustersInterface, ok := batch.Data.Clusters.([]interface{})
-	if !ok {
-		http.Error(w, "Invalid clusters data format", http.StatusInternalServerError)
+	// Extract clusters from batch
+	clusters, err := extractChartClustersFromBatch(batch)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	fmt.Printf("Processing %d clusters for chart data\n", len(clustersInterface))
-
-	for i, clusterInterface := range clustersInterface {
-		clusterMap, ok := clusterInterface.(map[string]interface{})
-		if !ok {
-			fmt.Printf("Cluster %d: Failed to convert to map\n", i)
-			continue
-		}
-
-		// Extract cluster data
-		clusterID, _ := clusterMap["cluster_id"].(float64)
-		size, _ := clusterMap["size"].(float64)
-
-		fmt.Printf("Cluster %d: ID=%v, Size=%v\n", i, clusterID, size)
-
-		// Extract busy words - handle new map structure
-		var busyWords []string
-		if busyWordsMap, ok := clusterMap["busy_words"].(map[string]interface{}); ok {
-			// New format: busy_words is a map
-			for word := range busyWordsMap {
-				busyWords = append(busyWords, word)
-			}
-		} else if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
-			// Old format: busy_words is an array (fallback)
-			for _, word := range busyWordsInterface {
-				if wordStr, ok := word.(string); ok {
-					busyWords = append(busyWords, wordStr)
-				}
-			}
-		}
-
-		fmt.Printf("Cluster %d: Found %d busy words: %v\n", i, len(busyWords), busyWords)
-
-		// Extract tweet texts - handle new tweets structure
-		var tweetTexts []string
-		if tweetsInterface, ok := clusterMap["tweets"].([]interface{}); ok {
-			// New format: tweets is an array of objects
-			for _, tweetInterface := range tweetsInterface {
-				if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
-					if text, ok := tweetMap["text"].(string); ok {
-						tweetTexts = append(tweetTexts, text)
-					}
-				}
-			}
-		} else if tweetTextsInterface, ok := clusterMap["tweet_texts"].([]interface{}); ok {
-			// Old format: tweet_texts is an array of strings (fallback)
-			for _, tweet := range tweetTextsInterface {
-				if tweetStr, ok := tweet.(string); ok {
-					tweetTexts = append(tweetTexts, tweetStr)
-				}
-			}
-		}
-
-		// Count occurrences of each busy word in tweet texts
-		wordCounts := make([]int, len(busyWords))
-		for i, word := range busyWords {
-			count := 0
-			for _, tweet := range tweetTexts {
-				if strings.Contains(strings.ToLower(tweet), strings.ToLower(word)) {
-					count++
-				}
-			}
-			wordCounts[i] = count
-		}
-
-		clusterData := ClusterData{
-			ClusterID:   int(clusterID),
-			Size:        int(size),
-			BusyWords:   busyWords,
-			WordCounts:  wordCounts,
-			TotalTweets: int(size), // This is the actual tweet count from the cluster
-		}
-		chartData.Clusters = append(chartData.Clusters, clusterData)
-		fmt.Printf("Cluster %d: Added to chart with %d word counts: %v\n", i, len(wordCounts), wordCounts)
-	}
-
-	fmt.Printf("Final chart data: %d clusters\n", len(chartData.Clusters))
+	// Build chart data from clusters
+	chartData := buildChartDataFromClusters(clusters)
 
 	// Set response headers
 	w.Header().Set("Content-Type", "application/json")
