@@ -1382,53 +1382,41 @@ func handleGrid(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleGridDataAPI(w http.ResponseWriter, r *http.Request) {
-	// Use current batch from navigation instead of URL parameter
-	currentBatch := getCurrentBatch()
-	if currentBatch == nil {
-		http.Error(w, "No current batch available", http.StatusNotFound)
-		return
-	}
-
-	batchNum := currentBatch.Data.BatchNumber
-
+// validateAndLoadBatch validates the current batch and loads more chunks if needed
+func validateAndLoadBatch(batchNum int) (int, error) {
 	if batchNum < 0 {
-		http.Error(w, "Batch number out of range", http.StatusBadRequest)
-		return
+		return 0, fmt.Errorf("batch number out of range")
 	}
 
 	// If batch number is beyond what we have, check if we can load more
 	if batchNum >= len(allBatches) {
-		fmt.Printf("handleGridDataAPI: batch %d >= %d, attempting to load more chunks\n", batchNum, len(allBatches))
+		fmt.Printf("validateAndLoadBatch: batch %d >= %d, attempting to load more chunks\n", batchNum, len(allBatches))
 		if err := loadMoreChunks(batchNum); err != nil {
 			if strings.Contains(err.Error(), "no more batches available") {
-				fmt.Printf("handleGridDataAPI: reached end of file at batch %d (total batches: %d)\n", batchNum, len(allBatches))
-				// Return end-of-file indicator instead of error
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(GridData{
-					CurrentBatch: -1, // Special value to indicate end of file
-					Rows:         []GridRow{},
-				})
-				return
+				fmt.Printf("validateAndLoadBatch: reached end of file at batch %d (total batches: %d)\n", batchNum, len(allBatches))
+				return -1, fmt.Errorf("end of file reached")
 			} else {
-				fmt.Printf("handleGridDataAPI: actual error loading chunks: %v\n", err)
-				http.Error(w, "Error loading data", http.StatusInternalServerError)
-				return
+				fmt.Printf("validateAndLoadBatch: actual error loading chunks: %v\n", err)
+				return 0, fmt.Errorf("error loading data: %v", err)
 			}
 		}
 	}
 
 	// Double-check that we now have the requested batch
 	if batchNum >= len(allBatches) {
-		fmt.Printf("handleGridDataAPI: batch %d still out of range after loading chunks (total: %d)\n", batchNum, len(allBatches))
-		http.Error(w, "Batch number out of range", http.StatusBadRequest)
-		return
+		fmt.Printf("validateAndLoadBatch: batch %d still out of range after loading chunks (total: %d)\n", batchNum, len(allBatches))
+		return 0, fmt.Errorf("batch number out of range")
 	}
 
-	// Check if the requested batch has data, if not find the next one that does
+	return batchNum, nil
+}
+
+// findBatchWithData finds a batch that has data, auto-advancing if necessary
+func findBatchWithData(batchNum int) (int, error) {
 	originalBatch := batchNum
 	hasData := hasDataForBatch(batchNum, config.MinClusterSize)
-	fmt.Printf("handleGridDataAPI: batch %d hasDataForBatch returned %v\n", batchNum, hasData)
+	fmt.Printf("findBatchWithData: batch %d hasDataForBatch returned %v\n", batchNum, hasData)
+
 	if !hasData {
 		fmt.Printf("Batch %d has no data (min cluster size: %d), looking for next batch with data\n", batchNum, config.MinClusterSize)
 		nextBatch := findNextBatchWithData(batchNum, 1, config.MinClusterSize)
@@ -1447,24 +1435,20 @@ func handleGridDataAPI(w http.ResponseWriter, r *http.Request) {
 				if len(allBatches) > 0 {
 					lastBatch := len(allBatches) - 1
 					fmt.Printf("Reached end of input file. Last available batch is %d (total batches loaded: %d)\n", lastBatch, len(allBatches))
-					// Return empty grid data with end-of-file indicator
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(GridData{
-						CurrentBatch: -1, // Special value to indicate end of file
-						Rows:         []GridRow{},
-					})
-					return
+					return -1, fmt.Errorf("end of file reached")
 				} else {
 					fmt.Printf("No batches loaded at all - input file may be empty or invalid\n")
-					// Return empty grid data if no batches with data are found
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(GridData{})
-					return
+					return 0, fmt.Errorf("no batches with data found")
 				}
 			}
 		}
 	}
 
+	return batchNum, nil
+}
+
+// buildGridResponse builds and sends the grid data response
+func buildGridResponse(w http.ResponseWriter, batchNum int) {
 	// Compute grid data
 	gridData := computeGridData(batchNum, config.HistoricalBatches, config.MinClusterSize)
 
@@ -1476,6 +1460,56 @@ func handleGridDataAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "JSON encoding error", http.StatusInternalServerError)
 		return
 	}
+}
+
+// buildEndOfFileResponse builds and sends an end-of-file response
+func buildEndOfFileResponse(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(GridData{
+		CurrentBatch: -1, // Special value to indicate end of file
+		Rows:         []GridRow{},
+	})
+}
+
+func handleGridDataAPI(w http.ResponseWriter, r *http.Request) {
+	// Use current batch from navigation instead of URL parameter
+	currentBatch := getCurrentBatch()
+	if currentBatch == nil {
+		http.Error(w, "No current batch available", http.StatusNotFound)
+		return
+	}
+
+	batchNum := currentBatch.Data.BatchNumber
+
+	// Validate and load batch if needed
+	validBatchNum, err := validateAndLoadBatch(batchNum)
+	if err != nil {
+		if strings.Contains(err.Error(), "end of file reached") {
+			buildEndOfFileResponse(w)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Find a batch with data
+	finalBatchNum, err := findBatchWithData(validBatchNum)
+	if err != nil {
+		if strings.Contains(err.Error(), "end of file reached") {
+			buildEndOfFileResponse(w)
+			return
+		}
+		if strings.Contains(err.Error(), "no batches with data found") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(GridData{})
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Build and send response
+	buildGridResponse(w, finalBatchNum)
 }
 
 // MedoidRow represents a single row in the medoid list
