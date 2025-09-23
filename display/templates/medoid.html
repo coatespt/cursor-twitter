@@ -117,6 +117,7 @@
             position: sticky;
             top: 0;
             z-index: 10;
+            cursor: help;
         }
 
         .medoid-table tr:hover {
@@ -225,6 +226,21 @@
             border-left-color: #2196f3;
             font-weight: bold;
         }
+        
+        .header-tooltip {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: Arial, sans-serif;
+            pointer-events: none;
+            z-index: 1001;
+            display: none;
+            max-width: 200px;
+            word-wrap: break-word;
+        }
     </style>
 </head>
 <body>
@@ -257,6 +273,9 @@
             <h4 id="popupTitle">Cluster Tweets</h4>
             <div id="popupContent"></div>
         </div>
+        
+        <!-- Header tooltip -->
+        <div id="headerTooltip" class="header-tooltip"></div>
     </div>
 
     <script>
@@ -335,16 +354,16 @@
                 
                 // Header row
                 tableHTML += '<thead><tr>';
-                tableHTML += '<th>Batch</th>';
-                tableHTML += '<th>Cluster ID</th>';
-                tableHTML += '<th>Size</th>';
-                tableHTML += '<th>Medoid Text</th>';
-                tableHTML += '<th>Busy Words</th>';
+                tableHTML += '<th onmouseover="showHeaderTooltip(event, \'Batch number where this cluster appeared\')" onmouseout="hideHeaderTooltip()">Batch</th>';
+                tableHTML += '<th onmouseover="showHeaderTooltip(event, \'Unique identifier for this cluster\')" onmouseout="hideHeaderTooltip()">Cluster ID</th>';
+                tableHTML += '<th onmouseover="showHeaderTooltip(event, \'Number of tweets in this cluster\')" onmouseout="hideHeaderTooltip()">Size</th>';
+                tableHTML += '<th onmouseover="showHeaderTooltip(event, \'Representative tweet that best represents this cluster\')" onmouseout="hideHeaderTooltip()">Medoid Text</th>';
+                tableHTML += '<th onmouseover="showHeaderTooltip(event, \'Words that are unusually frequent in this cluster\')" onmouseout="hideHeaderTooltip()">Busy Words</th>';
                 
                 // Historical batch columns (newest to oldest, left to right)
                 for (let i = 0; i < historicalBatches.length; i++) {
                     const histBatch = historicalBatches[i];
-                    tableHTML += `<th>B${histBatch}</th>`;
+                    tableHTML += `<th onmouseover="showHeaderTooltip(event, 'Historical persistence: 1 = cluster appeared in this batch, 0 = did not appear')" onmouseout="hideHeaderTooltip()">B${histBatch}</th>`;
                 }
                 
                 tableHTML += '</tr></thead><tbody>';
@@ -356,7 +375,7 @@
                     tableHTML += `<td class="cluster-id">${row.cluster_id}</td>`;
                     tableHTML += `<td class="cluster-size">${row.cluster_size}</td>`;
                     tableHTML += `<td class="medoid-text" onmouseover="showTweetPopup(event, ${row.batch_number}, ${row.cluster_id}, ${index})" onmouseout="hideTweetPopup()">${escapeHtml(row.medoid_text)}</td>`;
-                    tableHTML += `<td class="busy-words">${row.busy_words.map(bw => bw.word).join(', ')}</td>`;
+                    tableHTML += `<td class="busy-words">${row.busy_words.join(', ')}</td>`;
                     
                     // Historical persistence columns (newest to oldest, left to right)
                     for (let i = 0; i < historicalBatches.length; i++) {
@@ -449,6 +468,27 @@
 
         // Global variable to store cluster data for popups
         let clusterDataCache = {};
+        
+        // Header tooltip functions
+        function showHeaderTooltip(event, text) {
+            console.log('showHeaderTooltip called with:', text);
+            const tooltip = document.getElementById('headerTooltip');
+            if (tooltip) {
+                tooltip.textContent = text;
+                tooltip.style.left = event.pageX + 10 + 'px';
+                tooltip.style.top = event.pageY - 30 + 'px';
+                tooltip.style.display = 'block';
+            } else {
+                console.log('headerTooltip element not found');
+            }
+        }
+        
+        function hideHeaderTooltip() {
+            const tooltip = document.getElementById('headerTooltip');
+            if (tooltip) {
+                tooltip.style.display = 'none';
+            }
+        }
 
         // Show tweet popup on hover
         async function showTweetPopup(event, batchNumber, clusterId, rowIndex) {
