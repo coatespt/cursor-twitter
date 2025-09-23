@@ -409,12 +409,25 @@
         }
 
         // Navigate to different batch
-        function navigateBatch(delta) {
-            const newBatch = currentBatch + delta;
-            if (newBatch >= 0) { // Only check lower bound, let server handle upper bound
-                currentBatch = newBatch;
-                loadGridData();
-                updateNavigation();
+        async function navigateBatch(delta) {
+            try {
+                let response;
+                if (delta > 0) {
+                    response = await fetch('/api/next');
+                } else {
+                    response = await fetch('/api/previous');
+                }
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    currentBatch = data.batch_number;
+                    loadGridData();
+                    updateNavigation();
+                } else {
+                    console.log('No more batches available in that direction');
+                }
+            } catch (error) {
+                console.error('Error navigating:', error);
             }
         }
 
@@ -427,7 +440,7 @@
                 gridContent.innerHTML = '<div class="loading">Loading grid data...</div>';
                 batchInfo.textContent = `Batch ${currentBatch}`;
 
-                const response = await fetch(`/api/grid-data/${currentBatch}`);
+                const response = await fetch('/api/grid-data');
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
@@ -612,7 +625,18 @@
         }
 
         // Load initial data
-        document.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Get current batch info from API
+            try {
+                const response = await fetch('/api/current');
+                if (response.ok) {
+                    const data = await response.json();
+                    currentBatch = data.batch_number;
+                }
+            } catch (error) {
+                console.error('Error getting current batch:', error);
+            }
+            
             loadGridData();
         });
     </script>

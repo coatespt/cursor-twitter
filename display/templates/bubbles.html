@@ -299,7 +299,7 @@
                 batchInfo.textContent = 'Loading bubble data...';
                 sidePanel.innerHTML = '<div class="loading">Loading cluster data...</div>';
 
-                const response = await fetch(`/api/bubble-data/${currentBatch}`);
+                const response = await fetch('/api/bubble-data/');
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
@@ -476,34 +476,59 @@
             return div.innerHTML;
         }
 
-        function previousBatch() {
-            if (currentBatch > 0) {
-                currentBatch--;
-                window.history.pushState(null, '', `/bubbles/${currentBatch}`);
-                loadBubbleData();
+        async function previousBatch() {
+            try {
+                const response = await fetch('/api/previous');
+                if (response.ok) {
+                    const data = await response.json();
+                    currentBatch = data.batch_number;
+                    loadBubbleData();
+                } else {
+                    console.log('No previous batch available');
+                }
+            } catch (error) {
+                console.error('Error navigating to previous batch:', error);
             }
         }
 
-        function nextBatch() {
-            currentBatch++;
-            window.history.pushState(null, '', `/bubbles/${currentBatch}`);
+        async function nextBatch() {
+            try {
+                const response = await fetch('/api/next');
+                if (response.ok) {
+                    const data = await response.json();
+                    currentBatch = data.batch_number;
+                    loadBubbleData();
+                } else {
+                    console.log('No next batch available');
+                }
+            } catch (error) {
+                console.error('Error navigating to next batch:', error);
+            }
+        }
+
+        async function advanceMultiple(count) {
+            for (let i = 0; i < count; i++) {
+                try {
+                    const response = await fetch('/api/next');
+                    if (response.ok) {
+                        const data = await response.json();
+                        currentBatch = data.batch_number;
+                    } else {
+                        console.log('No more batches available');
+                        break;
+                    }
+                } catch (error) {
+                    console.error('Error advancing batches:', error);
+                    break;
+                }
+            }
             loadBubbleData();
         }
 
-        function advanceMultiple(count) {
-            currentBatch += count;
-            window.history.pushState(null, '', `/bubbles/${currentBatch}`);
-            loadBubbleData();
-        }
-
-        // Handle browser back/forward buttons
+        // Handle browser back/forward buttons - now using navigation API
         window.addEventListener('popstate', function() {
-            const path = window.location.pathname;
-            const match = path.match(/\/bubbles\/(\d+)/);
-            if (match) {
-                currentBatch = parseInt(match[1]);
-                loadBubbleData();
-            }
+            // Refresh data when browser navigation occurs
+            loadBubbleData();
         });
 
         // Handle window resize
@@ -671,8 +696,20 @@
         }
 
         // Load initial data
-        document.addEventListener('DOMContentLoaded', function() {
+        document.addEventListener('DOMContentLoaded', async function() {
             initCanvas();
+            
+            // Get current batch info from API
+            try {
+                const response = await fetch('/api/current');
+                if (response.ok) {
+                    const data = await response.json();
+                    currentBatch = data.batch_number;
+                }
+            } catch (error) {
+                console.error('Error getting current batch:', error);
+            }
+            
             loadBubbleData();
             
             // Add mouse event listeners for tooltips

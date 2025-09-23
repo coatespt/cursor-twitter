@@ -219,22 +219,18 @@ func getNextBatch() *Batch {
 
 // loadMoreBatches loads another 100 batches from the file
 func loadMoreBatches() error {
-	// Load 100 more batches
-	chunkSize := 100
-	loadedCount := 0
-
-	for loadedCount < chunkSize {
-		// Try to load one batch at a time using existing logic
-		if err := loadNextChunk(); err != nil {
-			if err == io.EOF {
-				fmt.Printf("Reached end of file after loading %d batches\n", loadedCount)
-				break
-			}
+	// Load one more chunk (which contains multiple batches)
+	oldCount := len(allBatches)
+	if err := loadNextChunk(); err != nil {
+		if err == io.EOF {
+			fmt.Printf("Reached end of file, no more batches\n")
 			return err
 		}
-		loadedCount++
+		return err
 	}
 
+	newCount := len(allBatches)
+	loadedCount := newCount - oldCount
 	fmt.Printf("Loaded %d more batches, total: %d\n", loadedCount, len(allBatches))
 
 	// Implement sliding window: discard old batches if we exceed limit
@@ -258,6 +254,70 @@ func getPreviousBatch() *Batch {
 	return nil // No previous batches
 }
 
+// Navigation handler functions
+func handleNext(w http.ResponseWriter, r *http.Request) {
+	batch := getNextBatch()
+	if batch == nil {
+		http.Error(w, "No more batches available", http.StatusNotFound)
+		return
+	}
+
+	// Return JSON response with batch info
+	response := map[string]interface{}{
+		"batch_number":   batch.Data.BatchNumber,
+		"batch_time":     batch.Data.BatchTime,
+		"total_tweets":   batch.Data.TotalTweets,
+		"total_clusters": batch.Data.TotalClusters,
+		"current_index":  currentBatchIndex,
+		"total_loaded":   len(allBatches),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func handlePrevious(w http.ResponseWriter, r *http.Request) {
+	batch := getPreviousBatch()
+	if batch == nil {
+		http.Error(w, "No previous batches available", http.StatusNotFound)
+		return
+	}
+
+	// Return JSON response with batch info
+	response := map[string]interface{}{
+		"batch_number":   batch.Data.BatchNumber,
+		"batch_time":     batch.Data.BatchTime,
+		"total_tweets":   batch.Data.TotalTweets,
+		"total_clusters": batch.Data.TotalClusters,
+		"current_index":  currentBatchIndex,
+		"total_loaded":   len(allBatches),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func handleCurrent(w http.ResponseWriter, r *http.Request) {
+	batch := getCurrentBatch()
+	if batch == nil {
+		http.Error(w, "No current batch available", http.StatusNotFound)
+		return
+	}
+
+	// Return JSON response with batch info
+	response := map[string]interface{}{
+		"batch_number":   batch.Data.BatchNumber,
+		"batch_time":     batch.Data.BatchTime,
+		"total_tweets":   batch.Data.TotalTweets,
+		"total_clusters": batch.Data.TotalClusters,
+		"current_index":  currentBatchIndex,
+		"total_loaded":   len(allBatches),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
 // getCurrentBatch returns the current batch
 func getCurrentBatch() *Batch {
 	if currentBatchIndex < len(allBatches) {
@@ -277,34 +337,7 @@ func main() {
 		log.Fatalf("Failed to load data: %v", err)
 	}
 
-	fmt.Printf("Loaded %d batches, testing navigation functions:\n", len(allBatches))
-
-	// Test getNext() for 30 calls to test on-demand loading
-	fmt.Printf("\n=== Testing getNext() 30 times (with on-demand loading) ===\n")
-	for i := 0; i < 30; i++ {
-		next := getNextBatch()
-		if next != nil {
-			fmt.Printf("getNext() %d: batch %d\n", i+1, next.Data.BatchNumber)
-		} else {
-			fmt.Printf("getNext() %d: no more batches\n", i+1)
-			break
-		}
-	}
-
-	// Test getPrevious() for 21 calls
-	fmt.Printf("\n=== Testing getPrevious() 21 times ===\n")
-	for i := 0; i < 21; i++ {
-		prev := getPreviousBatch()
-		if prev != nil {
-			fmt.Printf("getPrevious() %d: batch %d\n", i+1, prev.Data.BatchNumber)
-		} else {
-			fmt.Printf("getPrevious() %d: no previous batches\n", i+1)
-			break
-		}
-	}
-
-	fmt.Printf("\nDone testing navigation functions!\n")
-	os.Exit(0)
+	fmt.Printf("Loaded %d batches, starting web server...\n", len(allBatches))
 
 	// Parse templates with custom functions
 	templates = template.New("").Funcs(template.FuncMap{
@@ -332,14 +365,19 @@ func main() {
 	http.HandleFunc("/grid-text/", handleGridText)
 	http.HandleFunc("/grid", handleGridDefault) // Default grid route
 	http.HandleFunc("/grid/", handleGrid)       // Grid with batch number
-	http.HandleFunc("/api/grid-data/", handleGridDataAPI)
+	http.HandleFunc("/api/grid-data", handleGridDataAPI)
 	http.HandleFunc("/medoid", handleMedoidDefault) // Default medoid route
 	http.HandleFunc("/medoid/", handleMedoid)       // Medoid with batch number
-	http.HandleFunc("/api/medoid-data/", handleMedoidDataAPI)
+	http.HandleFunc("/api/medoid-data", handleMedoidDataAPI)
 	http.HandleFunc("/api/cluster-data/", handleClusterDataAPI)
 	http.HandleFunc("/bubbles", handleBubblesDefault) // Default bubbles route
 	http.HandleFunc("/bubbles/", handleBubbles)       // Bubbles with batch number
 	http.HandleFunc("/api/bubble-data/", handleBubbleDataAPI)
+
+	// Navigation endpoints
+	http.HandleFunc("/api/next", handleNext)
+	http.HandleFunc("/api/previous", handlePrevious)
+	http.HandleFunc("/api/current", handleCurrent)
 
 	fmt.Printf("Starting server on http://localhost:8080\n")
 	fmt.Printf("Loaded %d batches from initial chunk of %s (chunked loading enabled)\n", len(allBatches), config.InputFile)
@@ -368,22 +406,19 @@ func loadData() error {
 	fileHandle = file
 	fileOffset = 0
 
-	// Load initial chunks to get frequency class data
-	fmt.Printf("Loading initial data to find frequency class mappings...\n")
-	for i := 0; i < 2; i++ { // Load first 2 chunks (2MB) to get frequency class data
+	// Load initial chunks to get the desired number of batches
+	fmt.Printf("Loading initial data to get %d batches...\n", config.BatchSize)
+	chunkCount := 0
+	for len(allBatches) < config.BatchSize {
 		if err := loadNextChunk(); err != nil {
 			if strings.Contains(err.Error(), "end of file") {
+				fmt.Printf("Reached end of file after loading %d batches\n", len(allBatches))
 				break // Reached end of file
 			}
 			return err
 		}
-		fmt.Printf("Loaded chunk %d, now have %d batches\n", i+1, len(allBatches))
-
-		// Stop after 100 batches (or all available)
-		if len(allBatches) >= 100 {
-			fmt.Printf("Reached 100 batches, stopping\n")
-			break
-		}
+		chunkCount++
+		fmt.Printf("Loaded chunk %d, now have %d batches\n", chunkCount, len(allBatches))
 	}
 
 	fmt.Printf("Initial load complete: %d batches loaded\n", len(allBatches))
@@ -396,8 +431,8 @@ func loadNextChunk() error {
 	}
 
 	fmt.Printf("loadNextChunk: reading chunk at offset %d\n", fileOffset)
-	// Read 1MB chunk to get more batches
-	chunk := make([]byte, 1024*1024) // 1MB
+	// Read 50MB chunk to get more batches
+	chunk := make([]byte, 50*1024*1024) // 50MB
 	n, err := fileHandle.ReadAt(chunk, fileOffset)
 	if err != nil && err != io.EOF {
 		return fmt.Errorf("failed to read chunk: %v", err)
@@ -419,9 +454,11 @@ func loadNextChunk() error {
 		// Find the start of a JSON object
 		start := strings.Index(contentStr[pos:], "{")
 		if start == -1 {
+			fmt.Printf("No more JSON objects found, pos: %d, contentStr length: %d\n", pos, len(contentStr))
 			break
 		}
 		start += pos
+		fmt.Printf("Found JSON object at position %d\n", start)
 
 		// Find the matching closing brace
 		braceCount := 0
@@ -448,6 +485,11 @@ func loadNextChunk() error {
 				fmt.Printf("Successfully parsed batch %d\n", len(allBatches))
 			} else {
 				fmt.Printf("Failed to parse JSON object: %v\n", err)
+				previewLen := 200
+				if len(jsonStr) < previewLen {
+					previewLen = len(jsonStr)
+				}
+				fmt.Printf("JSON length: %d, first %d chars: %s\n", len(jsonStr), previewLen, jsonStr[:previewLen])
 			}
 			pos = end
 		} else {
@@ -914,27 +956,25 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 		size, _ := cluster["size"].(float64)
 		fmt.Printf("computeGridData: cluster %d ID=%v size=%v\n", i, clusterID, size)
 
-		// Extract busy words
-		// Handle new map structure for busy_words
-		var busyWordsInterface []interface{}
-		if busyWordsMap, ok := cluster["busy_words"].(map[string]interface{}); ok {
-			// New format: convert map keys to array
-			for word := range busyWordsMap {
-				busyWordsInterface = append(busyWordsInterface, word)
-			}
-		} else {
-			// Old format: already an array
-			busyWordsInterface, _ = cluster["busy_words"].([]interface{})
+		// Extract busy words from new struct format
+		busyWordsInterface, ok := cluster["busy_words"].([]interface{})
+		if !ok {
+			fmt.Printf("computeGridData: cluster %d has no busy_words array\n", i)
+			continue
 		}
-		fmt.Printf("computeGridData: cluster %d busy_words type: %T, value: %v\n", i, busyWordsInterface, busyWordsInterface)
+
 		var busyWords []string
-		for j, wordInterface := range busyWordsInterface {
-			word, ok := wordInterface.(string)
+		for _, wordInterface := range busyWordsInterface {
+			wordObj, ok := wordInterface.(map[string]interface{})
 			if !ok {
-				fmt.Printf("computeGridData: cluster %d word %d not a string: %T %v\n", i, j, wordInterface, wordInterface)
 				continue
 			}
-			fmt.Printf("computeGridData: cluster %d word %d: %s\n", i, j, word)
+
+			word, ok := wordObj["word"].(string)
+			if !ok {
+				continue
+			}
+
 			busyWords = append(busyWords, word)
 
 			gridRow := GridRow{
@@ -1325,15 +1365,14 @@ func handleGrid(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleGridDataAPI(w http.ResponseWriter, r *http.Request) {
-	// Extract batch number from URL
-	path := r.URL.Path
-	batchNumStr := path[len("/api/grid-data/"):]
-
-	batchNum, err := strconv.Atoi(batchNumStr)
-	if err != nil {
-		http.Error(w, "Invalid batch number", http.StatusBadRequest)
+	// Use current batch from navigation instead of URL parameter
+	currentBatch := getCurrentBatch()
+	if currentBatch == nil {
+		http.Error(w, "No current batch available", http.StatusNotFound)
 		return
 	}
+
+	batchNum := currentBatch.Data.BatchNumber
 
 	if batchNum < 0 {
 		http.Error(w, "Batch number out of range", http.StatusBadRequest)
@@ -1485,15 +1524,14 @@ func handleMedoid(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleMedoidDataAPI(w http.ResponseWriter, r *http.Request) {
-	// Extract batch number from URL
-	path := r.URL.Path
-	batchNumStr := path[len("/api/medoid-data/"):]
-
-	batchNum, err := strconv.Atoi(batchNumStr)
-	if err != nil {
-		http.Error(w, "Invalid batch number", http.StatusBadRequest)
+	// Use current batch from navigation instead of URL parameter
+	currentBatch := getCurrentBatch()
+	if currentBatch == nil {
+		http.Error(w, "No current batch available", http.StatusNotFound)
 		return
 	}
+
+	batchNum := currentBatch.Data.BatchNumber
 
 	if batchNum < 0 {
 		http.Error(w, "Batch number out of range", http.StatusBadRequest)
@@ -1641,19 +1679,22 @@ func computeMedoidData(batchNum, historicalBatches, minClusterSize int) MedoidDa
 			}
 		}
 
-		// Extract busy words
+		// Extract busy words from new struct format
 		var busyWords []string
-		if busyWordsMap, ok := clusterMap["busy_words"].(map[string]interface{}); ok {
-			// New format: busy_words is a map
-			for word := range busyWordsMap {
-				busyWords = append(busyWords, word)
-			}
-		} else if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
-			// Old format: busy_words is an array (fallback)
-			for _, word := range busyWordsInterface {
-				if wordStr, ok := word.(string); ok {
-					busyWords = append(busyWords, wordStr)
+		busyWordsInterface, ok := clusterMap["busy_words"].([]interface{})
+		if ok {
+			for _, wordInterface := range busyWordsInterface {
+				wordObj, ok := wordInterface.(map[string]interface{})
+				if !ok {
+					continue
 				}
+
+				word, ok := wordObj["word"].(string)
+				if !ok {
+					continue
+				}
+
+				busyWords = append(busyWords, word)
 			}
 		}
 
@@ -1719,12 +1760,20 @@ func calculatePersistence(clusterID, histBatch, currentBatch int) int {
 }
 
 func handleBubblesDefault(w http.ResponseWriter, r *http.Request) {
-	// Redirect to the latest batch with data
-	if len(allBatches) > 0 {
-		latestBatch := len(allBatches) - 1
-		http.Redirect(w, r, fmt.Sprintf("/bubbles/%d", latestBatch), http.StatusSeeOther)
-	} else {
-		http.Error(w, "No data available", http.StatusNotFound)
+	// Use current batch from navigation instead of redirecting to a specific batch
+	currentBatch := getCurrentBatch()
+	if currentBatch == nil {
+		http.Error(w, "No current batch available", http.StatusNotFound)
+		return
+	}
+
+	// Render the bubbles template with current batch data
+	if err := templates.ExecuteTemplate(w, "bubbles.html", map[string]interface{}{
+		"CurrentBatch": currentBatch,
+		"BatchNumber":  currentBatch.Data.BatchNumber,
+	}); err != nil {
+		http.Error(w, "Template error", http.StatusInternalServerError)
+		return
 	}
 }
 
@@ -1756,15 +1805,14 @@ func handleBubbles(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleBubbleDataAPI(w http.ResponseWriter, r *http.Request) {
-	// Extract batch number from URL
-	path := r.URL.Path
-	batchNumStr := path[len("/api/bubble-data/"):]
-	batchNum, err := strconv.Atoi(batchNumStr)
-	if err != nil {
-		http.Error(w, "Invalid batch number", http.StatusBadRequest)
+	// Use current batch from navigation instead of URL parameter
+	currentBatch := getCurrentBatch()
+	if currentBatch == nil {
+		http.Error(w, "No current batch available", http.StatusNotFound)
 		return
 	}
 
+	batchNum := currentBatch.Data.BatchNumber
 	if batchNum < 0 {
 		http.Error(w, "Batch number out of range", http.StatusBadRequest)
 		return
@@ -1875,46 +1923,39 @@ func computeBubbleData(batchNum, historicalBatches, minClusterSize int) map[stri
 			}
 
 			// Get busy words and their frequency classes
-			// Handle new map structure for busy_words
-			var busyWordsInterface []interface{}
-			if busyWordsMap, ok := clusterMap["busy_words"].(map[string]interface{}); ok {
-				// New format: convert map keys to array
-				for word := range busyWordsMap {
-					busyWordsInterface = append(busyWordsInterface, word)
-				}
-			} else if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
-				// Old format: already an array
-				busyWordsInterface = busyWordsInterface
+			busyWordsInterface, ok := clusterMap["busy_words"].([]interface{})
+			if !ok {
+				continue
 			}
 
 			if len(busyWordsInterface) > 0 {
-				busyWordClasses, _ := clusterMap["busy_word_classes"].(map[string]interface{})
-
 				for _, wordInterface := range busyWordsInterface {
-					word, ok := wordInterface.(string)
+					// Extract from object with word, class, z_score, count, mean
+					wordObj, ok := wordInterface.(map[string]interface{})
 					if !ok {
 						continue
 					}
 
-					// Get frequency class for this word
-					frequencyClass := 12 // Default middle frequency class
-					if freqClassInterface, exists := busyWordClasses[word]; exists {
-						if freqClass, ok := freqClassInterface.(float64); ok {
-							frequencyClass = int(freqClass)
-						}
+					word, ok := wordObj["word"].(string)
+					if !ok {
+						continue
 					}
 
-					// TEMPORARY: Assign different frequency classes for testing
-					// Use hash of word to get different classes
-					hash := 0
-					for _, char := range word {
-						hash = (hash*31 + int(char)) % 24
+					frequencyClass := 12 // Default
+					if classFloat, ok := wordObj["class"].(float64); ok {
+						frequencyClass = int(classFloat)
 					}
-					frequencyClass = hash + 1 // 1-24 range
 
-					// Calculate divergence score based on how much the word's frequency exceeds its nominal class
-					// For now, use a simple heuristic: rarer words (lower frequency class) have higher divergence
-					divergenceScore := 1.0 - (float64(frequencyClass) / 24.0) // Assuming 24 frequency classes
+					zScore := 0.0
+					if zScoreFloat, ok := wordObj["z_score"].(float64); ok {
+						zScore = zScoreFloat
+					}
+
+					// Calculate divergence score based on z_score (higher z_score = higher divergence)
+					divergenceScore := zScore / 10.0 // Normalize z_score to 0-1 range
+					if divergenceScore > 1.0 {
+						divergenceScore = 1.0
+					}
 
 					// Check if this word is already being tracked
 					if existingBubble, exists := activeWords[word]; exists {
@@ -1956,16 +1997,12 @@ func computeBubbleData(batchNum, historicalBatches, minClusterSize int) map[stri
 				}
 
 				var busyWords []string
-				if busyWordsMap, ok := clusterMap["busy_words"].(map[string]interface{}); ok {
-					// New format: busy_words is a map
-					for word := range busyWordsMap {
-						busyWords = append(busyWords, word)
-					}
-				} else if busyWordsInterface, ok := clusterMap["busy_words"].([]interface{}); ok {
-					// Old format: busy_words is an array (fallback)
-					for _, word := range busyWordsInterface {
-						if wordStr, ok := word.(string); ok {
-							busyWords = append(busyWords, wordStr)
+				if busyWordsArray, ok := clusterMap["busy_words"].([]interface{}); ok {
+					for _, wordInterface := range busyWordsArray {
+						if wordObj, ok := wordInterface.(map[string]interface{}); ok {
+							if wordStr, ok := wordObj["word"].(string); ok {
+								busyWords = append(busyWords, wordStr)
+							}
 						}
 					}
 				}

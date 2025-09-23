@@ -1,5 +1,5 @@
 input_file: "../tmp.json"
-batch_size: 10
+batch_size: 100
 historical_batches: 15 
 min_cluster_size: 3
 recurrence_threshold: 0.8

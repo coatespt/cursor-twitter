@@ -282,7 +282,7 @@
                     const batchToLoad = currentBatch - i;
                     if (batchToLoad < 0) break;
                     
-                    const response = await fetch(`/api/medoid-data/${batchToLoad}`);
+                    const response = await fetch('/api/medoid-data');
                     if (!response.ok) {
                         if (response.status === 404 || batchToLoad < 0) {
                             break; // Stop if we've reached the beginning
@@ -324,7 +324,7 @@
                 
                 // Get historical batches for the header (from the first batch we loaded)
                 let historicalBatches = [];
-                const firstBatchResponse = await fetch(`/api/medoid-data/${currentBatch}`);
+                const firstBatchResponse = await fetch('/api/medoid-data');
                 if (firstBatchResponse.ok) {
                     const firstBatchData = await firstBatchResponse.json();
                     historicalBatches = firstBatchData.historical_batches || [];
@@ -386,18 +386,34 @@
             return div.innerHTML;
         }
 
-        function previousBatch() {
-            if (currentBatch > 0) {
-                currentBatch--;
-                window.history.pushState(null, '', `/medoid/${currentBatch}`);
-                loadMedoidData();
+        async function previousBatch() {
+            try {
+                const response = await fetch('/api/previous');
+                if (response.ok) {
+                    const data = await response.json();
+                    currentBatch = data.batch_number;
+                    loadMedoidData();
+                } else {
+                    console.log('No previous batch available');
+                }
+            } catch (error) {
+                console.error('Error navigating to previous batch:', error);
             }
         }
 
-        function nextBatch() {
-            currentBatch++;
-            window.history.pushState(null, '', `/medoid/${currentBatch}`);
-            loadMedoidData();
+        async function nextBatch() {
+            try {
+                const response = await fetch('/api/next');
+                if (response.ok) {
+                    const data = await response.json();
+                    currentBatch = data.batch_number;
+                    loadMedoidData();
+                } else {
+                    console.log('No next batch available');
+                }
+            } catch (error) {
+                console.error('Error navigating to next batch:', error);
+            }
         }
 
         function toggleAutoPlay() {
@@ -497,7 +513,18 @@
         }
 
         // Load initial data
-        document.addEventListener('DOMContentLoaded', function() {
+        document.addEventListener('DOMContentLoaded', async function() {
+            // Get current batch info from API
+            try {
+                const response = await fetch('/api/current');
+                if (response.ok) {
+                    const data = await response.json();
+                    currentBatch = data.batch_number;
+                }
+            } catch (error) {
+                console.error('Error getting current batch:', error);
+            }
+            
             loadMedoidData();
         });
     </script>
