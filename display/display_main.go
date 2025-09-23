@@ -1933,8 +1933,8 @@ func handleBubbleDataAPI(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func computeBubbleData(batchNum, historicalBatches, minClusterSize int) map[string]interface{} {
-	// Get historical batch numbers (current batch and previous batches)
+// buildBubbleHistoricalBatchNumbers generates historical batch numbers for bubble data
+func buildBubbleHistoricalBatchNumbers(batchNum, historicalBatches int) []int {
 	historicalBatchNumbers := make([]int, 0)
 	for i := 0; i < historicalBatches; i++ {
 		histBatch := batchNum - i
@@ -1942,134 +1942,124 @@ func computeBubbleData(batchNum, historicalBatches, minClusterSize int) map[stri
 			historicalBatchNumbers = append(historicalBatchNumbers, histBatch)
 		}
 	}
+	return historicalBatchNumbers
+}
 
-	// Track active words and their positions across time
+// extractBubbleWordsFromBatch extracts busy words from a single batch for bubble data
+func extractBubbleWordsFromBatch(batch Batch, minClusterSize int) []map[string]interface{} {
+	clustersInterface, ok := batch.Data.Clusters.([]interface{})
+	if !ok {
+		return []map[string]interface{}{}
+	}
+
+	var words []map[string]interface{}
+	for _, clusterInterface := range clustersInterface {
+		clusterMap, ok := clusterInterface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		size, _ := clusterMap["size"].(float64)
+		if int(size) < minClusterSize {
+			continue
+		}
+
+		busyWordsInterface, ok := clusterMap["busy_words"].([]interface{})
+		if !ok {
+			continue
+		}
+
+		for _, wordInterface := range busyWordsInterface {
+			wordObj, ok := wordInterface.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			word, ok := wordObj["word"].(string)
+			if !ok {
+				continue
+			}
+
+			frequencyClass := 12 // Default
+			if classFloat, ok := wordObj["class"].(float64); ok {
+				frequencyClass = int(classFloat)
+			}
+
+			zScore := 0.0
+			if zScoreFloat, ok := wordObj["z_score"].(float64); ok {
+				zScore = zScoreFloat
+			}
+
+			words = append(words, map[string]interface{}{
+				"word":            word,
+				"frequency_class": frequencyClass,
+				"z_score":         zScore,
+			})
+		}
+	}
+
+	return words
+}
+
+// processBubbleWordEvolution handles the complex word tracking and aging logic
+func processBubbleWordEvolution(historicalBatchNumbers []int, minClusterSize int) (map[string]*BubbleWord, []MedoidRow) {
 	activeWords := make(map[string]*BubbleWord)
 	medoidClusters := make([]MedoidRow, 0)
 
 	// Process batches from oldest to newest to track word evolution
 	for i := len(historicalBatchNumbers) - 1; i >= 0; i-- {
 		histBatch := historicalBatchNumbers[i]
-		// batchPos := len(historicalBatchNumbers) - 1 - i // 0 = current (right), 1 = previous, etc.
 
 		if histBatch >= len(allBatches) {
 			continue
 		}
 
 		batch := allBatches[histBatch]
-		clustersInterface, ok := batch.Data.Clusters.([]interface{})
-		if !ok {
-			continue
+		words := extractBubbleWordsFromBatch(batch, minClusterSize)
+
+		// Process each word from this batch
+		for _, wordData := range words {
+			word := wordData["word"].(string)
+			frequencyClass := wordData["frequency_class"].(int)
+			zScore := wordData["z_score"].(float64)
+
+			// Calculate divergence score based on z_score (higher z_score = higher divergence)
+			divergenceScore := zScore / 10.0 // Normalize z_score to 0-1 range
+			if divergenceScore > 1.0 {
+				divergenceScore = 1.0
+			}
+
+			// Check if this word is already being tracked
+			if existingBubble, exists := activeWords[word]; exists {
+				// Word reappeared - snap back to current position (right side)
+				existingBubble.BatchPosition = 0
+				existingBubble.FrequencyClass = frequencyClass
+				existingBubble.DivergenceScore = divergenceScore
+				existingBubble.ColorIntensity = float64(frequencyClass) / 24.0
+				existingBubble.BubbleSize = divergenceScore
+			} else {
+				// New word - create bubble at current position
+				colorIntensity := float64(frequencyClass) / 24.0
+				bubbleSize := divergenceScore
+				yPosition := float64(frequencyClass) / 24.0
+
+				bubbleWord := &BubbleWord{
+					Word:            word,
+					FrequencyClass:  frequencyClass,
+					DivergenceScore: divergenceScore,
+					BatchPosition:   0, // Current batch (right side)
+					ColorIntensity:  colorIntensity,
+					BubbleSize:      bubbleSize,
+					YPosition:       yPosition,
+				}
+
+				activeWords[word] = bubbleWord
+			}
 		}
 
-		// Extract busy words from all clusters in this batch
-		for _, clusterInterface := range clustersInterface {
-			clusterMap, ok := clusterInterface.(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			size, _ := clusterMap["size"].(float64)
-			if int(size) < minClusterSize {
-				continue
-			}
-
-			// Get busy words and their frequency classes
-			busyWordsInterface, ok := clusterMap["busy_words"].([]interface{})
-			if !ok {
-				continue
-			}
-
-			if len(busyWordsInterface) > 0 {
-				for _, wordInterface := range busyWordsInterface {
-					// Extract from object with word, class, z_score, count, mean
-					wordObj, ok := wordInterface.(map[string]interface{})
-					if !ok {
-						continue
-					}
-
-					word, ok := wordObj["word"].(string)
-					if !ok {
-						continue
-					}
-
-					frequencyClass := 12 // Default
-					if classFloat, ok := wordObj["class"].(float64); ok {
-						frequencyClass = int(classFloat)
-					}
-
-					zScore := 0.0
-					if zScoreFloat, ok := wordObj["z_score"].(float64); ok {
-						zScore = zScoreFloat
-					}
-
-					// Calculate divergence score based on z_score (higher z_score = higher divergence)
-					divergenceScore := zScore / 10.0 // Normalize z_score to 0-1 range
-					if divergenceScore > 1.0 {
-						divergenceScore = 1.0
-					}
-
-					// Check if this word is already being tracked
-					if existingBubble, exists := activeWords[word]; exists {
-						// Word reappeared - snap back to current position (right side)
-						existingBubble.BatchPosition = 0
-						existingBubble.FrequencyClass = frequencyClass
-						existingBubble.DivergenceScore = divergenceScore
-						existingBubble.ColorIntensity = float64(frequencyClass) / 24.0
-						existingBubble.BubbleSize = divergenceScore
-					} else {
-						// New word - create bubble at current position
-						colorIntensity := float64(frequencyClass) / 24.0
-						bubbleSize := divergenceScore
-
-						// Assign Y position based on frequency class (0 = top, 1 = bottom)
-						yPosition := float64(frequencyClass) / 24.0
-
-						bubbleWord := &BubbleWord{
-							Word:            word,
-							FrequencyClass:  frequencyClass,
-							DivergenceScore: divergenceScore,
-							BatchPosition:   0, // Current batch (right side)
-							ColorIntensity:  colorIntensity,
-							BubbleSize:      bubbleSize,
-							YPosition:       yPosition,
-						}
-
-						activeWords[word] = bubbleWord
-					}
-				}
-			}
-
-			// Also collect medoid data for the side panel (only from current batch)
-			if i == 0 {
-				clusterID, _ := clusterMap["cluster_id"].(float64)
-				medoidText := ""
-				if medoid, ok := clusterMap["medoid"].(string); ok {
-					medoidText = medoid
-				}
-
-				var busyWords []string
-				if busyWordsArray, ok := clusterMap["busy_words"].([]interface{}); ok {
-					for _, wordInterface := range busyWordsArray {
-						if wordObj, ok := wordInterface.(map[string]interface{}); ok {
-							if wordStr, ok := wordObj["word"].(string); ok {
-								busyWords = append(busyWords, wordStr)
-							}
-						}
-					}
-				}
-
-				medoidRow := MedoidRow{
-					BatchNumber: batchNum,
-					BatchTime:   batch.Data.BatchTime,
-					ClusterID:   int(clusterID),
-					ClusterSize: int(size),
-					MedoidText:  medoidText,
-					BusyWords:   busyWords,
-				}
-
-				medoidClusters = append(medoidClusters, medoidRow)
-			}
+		// Collect medoid data for the side panel (only from current batch)
+		if i == 0 {
+			medoidClusters = buildBubbleMedoidData(batch, histBatch, minClusterSize)
 		}
 
 		// Age all existing words (move them left)
@@ -2080,6 +2070,62 @@ func computeBubbleData(batchNum, historicalBatches, minClusterSize int) map[stri
 		}
 	}
 
+	return activeWords, medoidClusters
+}
+
+// buildBubbleMedoidData collects medoid data for the bubble side panel
+func buildBubbleMedoidData(batch Batch, batchNum int, minClusterSize int) []MedoidRow {
+	clustersInterface, ok := batch.Data.Clusters.([]interface{})
+	if !ok {
+		return []MedoidRow{}
+	}
+
+	var medoidClusters []MedoidRow
+	for _, clusterInterface := range clustersInterface {
+		clusterMap, ok := clusterInterface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		size, _ := clusterMap["size"].(float64)
+		if int(size) < minClusterSize {
+			continue
+		}
+
+		clusterID, _ := clusterMap["cluster_id"].(float64)
+		medoidText := ""
+		if medoid, ok := clusterMap["medoid"].(string); ok {
+			medoidText = medoid
+		}
+
+		var busyWords []string
+		if busyWordsArray, ok := clusterMap["busy_words"].([]interface{}); ok {
+			for _, wordInterface := range busyWordsArray {
+				if wordObj, ok := wordInterface.(map[string]interface{}); ok {
+					if wordStr, ok := wordObj["word"].(string); ok {
+						busyWords = append(busyWords, wordStr)
+					}
+				}
+			}
+		}
+
+		medoidRow := MedoidRow{
+			BatchNumber: batchNum,
+			BatchTime:   batch.Data.BatchTime,
+			ClusterID:   int(clusterID),
+			ClusterSize: int(size),
+			MedoidText:  medoidText,
+			BusyWords:   busyWords,
+		}
+
+		medoidClusters = append(medoidClusters, medoidRow)
+	}
+
+	return medoidClusters
+}
+
+// assembleBubbleData sorts words and builds the final bubble data response
+func assembleBubbleData(activeWords map[string]*BubbleWord, medoidClusters []MedoidRow, batchNum int, historicalBatchNumbers []int) map[string]interface{} {
 	// Convert map to slice and filter out words that have fallen off the left edge
 	bubbleWords := make([]BubbleWord, 0)
 	wordList := make([]map[string]interface{}, 0) // For the far-right column
@@ -2126,6 +2172,17 @@ func computeBubbleData(batchNum, historicalBatches, minClusterSize int) map[stri
 		"bubble_color":    config.BubbleColor,
 		"word_list":       wordList,
 	}
+}
+
+func computeBubbleData(batchNum, historicalBatches, minClusterSize int) map[string]interface{} {
+	// Build historical batch numbers
+	historicalBatchNumbers := buildBubbleHistoricalBatchNumbers(batchNum, historicalBatches)
+
+	// Process word evolution across batches
+	activeWords, medoidClusters := processBubbleWordEvolution(historicalBatchNumbers, minClusterSize)
+
+	// Assemble final data
+	return assembleBubbleData(activeWords, medoidClusters, batchNum, historicalBatchNumbers)
 }
 
 func handleClusterDataAPI(w http.ResponseWriter, r *http.Request) {
