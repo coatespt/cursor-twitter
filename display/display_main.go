@@ -1032,6 +1032,118 @@ func buildGridRowsFromClusters(clusters []map[string]interface{}) ([]GridRow, []
 	return gridRows, clusterTweetData
 }
 
+// extractCurrentMedoid extracts the current cluster's medoid for comparison
+func extractCurrentMedoid(clusters []map[string]interface{}, clusterID int) string {
+	for _, cluster := range clusters {
+		if int(cluster["cluster_id"].(float64)) == clusterID {
+			if medoid, ok := cluster["medoid_tweet"].(string); ok {
+				return stripTimestamp(medoid)
+			} else {
+				if tweets, ok := cluster["tweets"].([]interface{}); ok && len(tweets) > 0 {
+					if tweetMap, ok := tweets[0].(map[string]interface{}); ok {
+						if text, ok := tweetMap["text"].(string); ok {
+							return stripTimestamp(text)
+						}
+					}
+				}
+			}
+			break
+		}
+	}
+	return ""
+}
+
+// processHistoricalBatchForWord processes a single historical batch for a word
+func processHistoricalBatchForWord(word string, historicalIndex int, currentMedoid string) (bool, bool) {
+	if historicalIndex < 0 || historicalIndex >= len(allBatches) {
+		return false, false
+	}
+
+	historicalBatch := allBatches[historicalIndex]
+	historicalClustersInterface, ok := historicalBatch.Data.Clusters.([]interface{})
+	if !ok {
+		return false, false
+	}
+
+	found := false
+	recurrenceFound := false
+
+	for _, clusterInterface := range historicalClustersInterface {
+		clusterMap, ok := clusterInterface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		busyWordsInterface, ok := clusterMap["busy_words"].([]interface{})
+		if !ok {
+			continue
+		}
+
+		for _, wordInterface := range busyWordsInterface {
+			wordObj, ok := wordInterface.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			historicalWord, ok := wordObj["word"].(string)
+			if ok && historicalWord == word {
+				found = true
+				recurrenceFound = detectRecurrence(clusterMap, currentMedoid)
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+
+	return found, recurrenceFound
+}
+
+// detectRecurrence handles the complex recurrence detection logic
+func detectRecurrence(clusterMap map[string]interface{}, currentMedoid string) bool {
+	if currentMedoid == "" {
+		return false
+	}
+
+	if config.RecurrenceStrategy == "medoid_only" {
+		// Strategy 1: Compare only medoids
+		var historicalMedoidClean string
+		if historicalMedoid, ok := clusterMap["medoid_tweet"].(string); ok {
+			historicalMedoidClean = stripTimestamp(historicalMedoid)
+		} else {
+			if tweets, ok := clusterMap["tweets"].([]interface{}); ok && len(tweets) > 0 {
+				if tweetMap, ok := tweets[0].(map[string]interface{}); ok {
+					if text, ok := tweetMap["text"].(string); ok {
+						historicalMedoidClean = stripTimestamp(text)
+					}
+				}
+			}
+		}
+
+		if historicalMedoidClean != "" {
+			distance := calculateNormalizedLevenshtein(currentMedoid, historicalMedoidClean)
+			return distance <= config.RecurrenceThreshold
+		}
+	} else {
+		// Strategy 2: Compare to all tweets (default)
+		if tweets, ok := clusterMap["tweets"].([]interface{}); ok {
+			for _, tweetInterface := range tweets {
+				if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
+					if text, ok := tweetMap["text"].(string); ok {
+						historicalTweetClean := stripTimestamp(text)
+						distance := calculateNormalizedLevenshtein(currentMedoid, historicalTweetClean)
+						if distance <= config.RecurrenceThreshold {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return false
+}
+
 // processHistoricalData fills in historical data for grid rows
 func processHistoricalData(gridRows []GridRow, clusters []map[string]interface{}, historicalBatchNumbers []int, currentBatchIndex int) {
 	for i := range gridRows {
@@ -1040,110 +1152,19 @@ func processHistoricalData(gridRows []GridRow, clusters []map[string]interface{}
 
 		gridRows[i].RecurrenceData = make(map[string]bool)
 
-		var currentMedoid string
-		for _, cluster := range clusters {
-			if int(cluster["cluster_id"].(float64)) == clusterID {
-				if medoid, ok := cluster["medoid_tweet"].(string); ok {
-					currentMedoid = stripTimestamp(medoid)
-				} else {
-					if tweets, ok := cluster["tweets"].([]interface{}); ok && len(tweets) > 0 {
-						if tweetMap, ok := tweets[0].(map[string]interface{}); ok {
-							if text, ok := tweetMap["text"].(string); ok {
-								currentMedoid = stripTimestamp(text)
-							}
-						}
-					}
-				}
-				break
-			}
-		}
+		// Extract current medoid for comparison
+		currentMedoid := extractCurrentMedoid(clusters, clusterID)
 
+		// Process each historical batch
 		for _, historicalIndex := range historicalBatchNumbers {
-			if historicalIndex >= 0 && historicalIndex < len(allBatches) {
-				historicalBatch := allBatches[historicalIndex]
+			found, recurrenceFound := processHistoricalBatchForWord(word, historicalIndex, currentMedoid)
 
-				historicalClustersInterface, ok := historicalBatch.Data.Clusters.([]interface{})
-				if !ok {
-					gridRows[i].HistoricalData[fmt.Sprintf("%d", historicalIndex)] = ""
-					gridRows[i].RecurrenceData[fmt.Sprintf("%d", historicalIndex)] = false
-					continue
-				}
-
-				found := false
-				recurrenceFound := false
-
-				for _, clusterInterface := range historicalClustersInterface {
-					clusterMap, ok := clusterInterface.(map[string]interface{})
-					if !ok {
-						continue
-					}
-
-					busyWordsInterface, ok := clusterMap["busy_words"].([]interface{})
-					if !ok {
-						continue
-					}
-					for _, wordInterface := range busyWordsInterface {
-						wordObj, ok := wordInterface.(map[string]interface{})
-						if !ok {
-							continue
-						}
-						historicalWord, ok := wordObj["word"].(string)
-						if ok && historicalWord == word {
-							found = true
-
-							if currentMedoid != "" {
-								if config.RecurrenceStrategy == "medoid_only" {
-									var historicalMedoidClean string
-									if historicalMedoid, ok := clusterMap["medoid_tweet"].(string); ok {
-										historicalMedoidClean = stripTimestamp(historicalMedoid)
-									} else {
-										if tweets, ok := clusterMap["tweets"].([]interface{}); ok && len(tweets) > 0 {
-											if tweetMap, ok := tweets[0].(map[string]interface{}); ok {
-												if text, ok := tweetMap["text"].(string); ok {
-													historicalMedoidClean = stripTimestamp(text)
-												}
-											}
-										}
-									}
-
-									if historicalMedoidClean != "" {
-										distance := calculateNormalizedLevenshtein(currentMedoid, historicalMedoidClean)
-										if distance <= config.RecurrenceThreshold {
-											recurrenceFound = true
-										}
-									}
-								} else {
-									if tweets, ok := clusterMap["tweets"].([]interface{}); ok {
-										for _, tweetInterface := range tweets {
-											if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
-												if text, ok := tweetMap["text"].(string); ok {
-													historicalTweetClean := stripTimestamp(text)
-													distance := calculateNormalizedLevenshtein(currentMedoid, historicalTweetClean)
-													if distance <= config.RecurrenceThreshold {
-														recurrenceFound = true
-														break
-													}
-												}
-											}
-										}
-									}
-								}
-							}
-							break
-						}
-					}
-					if found {
-						break
-					}
-				}
-
-				if found {
-					gridRows[i].HistoricalData[fmt.Sprintf("%d", historicalIndex)] = word
-				} else {
-					gridRows[i].HistoricalData[fmt.Sprintf("%d", historicalIndex)] = ""
-				}
-				gridRows[i].RecurrenceData[fmt.Sprintf("%d", historicalIndex)] = recurrenceFound
+			if found {
+				gridRows[i].HistoricalData[fmt.Sprintf("%d", historicalIndex)] = word
+			} else {
+				gridRows[i].HistoricalData[fmt.Sprintf("%d", historicalIndex)] = ""
 			}
+			gridRows[i].RecurrenceData[fmt.Sprintf("%d", historicalIndex)] = recurrenceFound
 		}
 	}
 }
