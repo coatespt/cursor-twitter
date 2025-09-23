@@ -909,6 +909,7 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 	currentBatch := allBatches[currentBatchIndex]
 
 	// Extract clusters from current batch
+	// Note: Clusters field is still interface{} in Batch struct, need to handle this properly
 	clustersInterface, ok := currentBatch.Data.Clusters.([]interface{})
 	if !ok {
 		fmt.Printf("computeGridData: batch %d - clusters not a []interface{}\n", currentBatchIndex)
@@ -956,7 +957,7 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 		size, _ := cluster["size"].(float64)
 		fmt.Printf("computeGridData: cluster %d ID=%v size=%v\n", i, clusterID, size)
 
-		// Extract busy words from new struct format
+		// Extract busy words from struct - using BusyWord struct
 		busyWordsInterface, ok := cluster["busy_words"].([]interface{})
 		if !ok {
 			fmt.Printf("computeGridData: cluster %d has no busy_words array\n", i)
@@ -970,6 +971,7 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 				continue
 			}
 
+			// Extract BusyWord struct fields
 			word, ok := wordObj["word"].(string)
 			if !ok {
 				continue
@@ -1001,12 +1003,14 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 			})
 		}
 
-		// Get sample tweets (tweet_texts field)
-		tweetTextsInterface, _ := cluster["tweet_texts"].([]interface{})
+		// Get sample tweets - using Tweet struct
+		tweetsInterface, _ := cluster["tweets"].([]interface{})
 		var tweetTexts []string
-		for _, tweetInterface := range tweetTextsInterface {
-			if tweetStr, ok := tweetInterface.(string); ok {
-				tweetTexts = append(tweetTexts, tweetStr)
+		for _, tweetInterface := range tweetsInterface {
+			if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
+				if text, ok := tweetMap["text"].(string); ok {
+					tweetTexts = append(tweetTexts, text)
+				}
 			}
 		}
 
@@ -1074,9 +1078,11 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 					currentMedoid = stripTimestamp(medoid)
 				} else {
 					// Fallback: use first tweet if no medoid
-					if tweetTexts, ok := cluster["tweet_texts"].([]interface{}); ok && len(tweetTexts) > 0 {
-						if firstTweet, ok := tweetTexts[0].(string); ok {
-							currentMedoid = stripTimestamp(firstTweet)
+					if tweets, ok := cluster["tweets"].([]interface{}); ok && len(tweets) > 0 {
+						if tweetMap, ok := tweets[0].(map[string]interface{}); ok {
+							if text, ok := tweetMap["text"].(string); ok {
+								currentMedoid = stripTimestamp(text)
+							}
 						}
 					}
 				}
@@ -1105,19 +1111,17 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 						continue
 					}
 
-					// Handle new map structure for busy_words
-					var busyWordsInterface []interface{}
-					if busyWordsMap, ok := clusterMap["busy_words"].(map[string]interface{}); ok {
-						// New format: convert map keys to array
-						for word := range busyWordsMap {
-							busyWordsInterface = append(busyWordsInterface, word)
-						}
-					} else {
-						// Old format: already an array
-						busyWordsInterface, _ = clusterMap["busy_words"].([]interface{})
+					// Handle BusyWord struct format
+					busyWordsInterface, ok := clusterMap["busy_words"].([]interface{})
+					if !ok {
+						continue
 					}
 					for _, wordInterface := range busyWordsInterface {
-						historicalWord, ok := wordInterface.(string)
+						wordObj, ok := wordInterface.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						historicalWord, ok := wordObj["word"].(string)
 						if ok && historicalWord == word {
 							found = true
 
@@ -1130,9 +1134,11 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 										historicalMedoidClean = stripTimestamp(historicalMedoid)
 									} else {
 										// Fallback: use first tweet if no medoid
-										if tweetTexts, ok := clusterMap["tweet_texts"].([]interface{}); ok && len(tweetTexts) > 0 {
-											if firstTweet, ok := tweetTexts[0].(string); ok {
-												historicalMedoidClean = stripTimestamp(firstTweet)
+										if tweets, ok := clusterMap["tweets"].([]interface{}); ok && len(tweets) > 0 {
+											if tweetMap, ok := tweets[0].(map[string]interface{}); ok {
+												if text, ok := tweetMap["text"].(string); ok {
+													historicalMedoidClean = stripTimestamp(text)
+												}
 											}
 										}
 									}
@@ -1145,17 +1151,19 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 									}
 								} else {
 									// Strategy 2: Compare to all tweets (default)
-									if tweetTexts, ok := clusterMap["tweet_texts"].([]interface{}); ok {
-										fmt.Printf("DEBUG: Comparing current medoid '%s' to %d historical tweets\n", currentMedoid, len(tweetTexts))
-										for i, tweetInterface := range tweetTexts {
-											if historicalTweet, ok := tweetInterface.(string); ok {
-												historicalTweetClean := stripTimestamp(historicalTweet)
-												distance := calculateNormalizedLevenshtein(currentMedoid, historicalTweetClean)
-												fmt.Printf("  Tweet %d: '%s' -> distance %.3f\n", i, historicalTweetClean, distance)
-												if distance <= config.RecurrenceThreshold {
-													recurrenceFound = true
-													fmt.Printf("  RECURRENCE DETECTED! (distance %.3f <= %.3f)\n", distance, config.RecurrenceThreshold)
-													break // Found a match, no need to check more tweets
+									if tweets, ok := clusterMap["tweets"].([]interface{}); ok {
+										fmt.Printf("DEBUG: Comparing current medoid '%s' to %d historical tweets\n", currentMedoid, len(tweets))
+										for i, tweetInterface := range tweets {
+											if tweetMap, ok := tweetInterface.(map[string]interface{}); ok {
+												if text, ok := tweetMap["text"].(string); ok {
+													historicalTweetClean := stripTimestamp(text)
+													distance := calculateNormalizedLevenshtein(currentMedoid, historicalTweetClean)
+													fmt.Printf("  Tweet %d: '%s' -> distance %.3f\n", i, historicalTweetClean, distance)
+													if distance <= config.RecurrenceThreshold {
+														recurrenceFound = true
+														fmt.Printf("  RECURRENCE DETECTED! (distance %.3f <= %.3f)\n", distance, config.RecurrenceThreshold)
+														break // Found a match, no need to check more tweets
+													}
 												}
 											}
 										}
@@ -1190,8 +1198,8 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 		// Get tweet count for this cluster
 		for _, cluster := range clusters {
 			if int(cluster["cluster_id"].(float64)) == row.ClusterID {
-				if tweetTexts, ok := cluster["tweet_texts"].([]interface{}); ok {
-					tweetCount := len(tweetTexts)
+				if tweets, ok := cluster["tweets"].([]interface{}); ok {
+					tweetCount := len(tweets)
 					if tweetCount > maxTweetCount {
 						maxTweetCount = tweetCount
 					}
@@ -1210,9 +1218,11 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 					currentMedoid = stripTimestamp(medoid)
 				} else {
 					// Fallback: use first tweet if no medoid
-					if tweetTexts, ok := cluster["tweet_texts"].([]interface{}); ok && len(tweetTexts) > 0 {
-						if firstTweet, ok := tweetTexts[0].(string); ok {
-							currentMedoid = stripTimestamp(firstTweet)
+					if tweets, ok := cluster["tweets"].([]interface{}); ok && len(tweets) > 0 {
+						if tweetMap, ok := tweets[0].(map[string]interface{}); ok {
+							if text, ok := tweetMap["text"].(string); ok {
+								currentMedoid = stripTimestamp(text)
+							}
 						}
 					}
 				}
@@ -1224,8 +1234,8 @@ func computeGridData(currentBatchIndex int, historicalBatches int, minClusterSiz
 		tweetCount := 0
 		for _, cluster := range clusters {
 			if int(cluster["cluster_id"].(float64)) == gridRows[i].ClusterID {
-				if tweetTexts, ok := cluster["tweet_texts"].([]interface{}); ok {
-					tweetCount = len(tweetTexts)
+				if tweets, ok := cluster["tweets"].([]interface{}); ok {
+					tweetCount = len(tweets)
 				}
 				break
 			}

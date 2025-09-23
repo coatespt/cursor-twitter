@@ -21,7 +21,21 @@ When a test doesn't pass, we have to look at why before changing anything. No re
 If any changes seem to involve multiple threads, be sure to get my agreement before doing anything. Anytime there thread safety constructs like mutex, etc., always check. We keep getting into trouble with unnecessary and incorrect thread complexity.
 
 # TTD
-# Remove barrier time logs.
+
+## The bubbles need scaling. They are too close in size. 
+But they are different in size--this is cosmetic.  What is the right function to apply?
+
+I think cursor did something wacky. The Z's will rarely be less than four and can go to double digits. Need to know what range of sizes the bubbles need.
+
+The count ratios are more extreme. They might need logs.
+
+## Grid View Doesn't Work
+
+## Medoid View Doesn't Work
+
+##
+
+## Remove barrier time logs.
 Should I remove the barrier timing logs since they're not revealing a real problem?
 
 ## Examine this log line. 
