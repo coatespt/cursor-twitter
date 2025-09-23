@@ -468,7 +468,7 @@
                         <div class="cluster-header">Cluster ${cluster.cluster_id}</div>
                         <div class="medoid-text">${escapeHtml(cluster.medoid_text)}</div>
                         <div class="cluster-stats">Size: ${cluster.cluster_size} tweets</div>
-                        <div class="busy-words">Busy words: ${cluster.busy_words.map(bw => bw.word).join(', ')}</div>
+                        <div class="busy-words">Busy words: ${cluster.busy_words.join(', ')}</div>
                     </div>
                 `;
             });
