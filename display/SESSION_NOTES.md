@@ -22,14 +22,19 @@ If any changes seem to involve multiple threads, be sure to get my agreement bef
 
 # TTD
 
+## The AI cluster history display seems to work now.
+- Test it
+- Add the parameters for how far back to look and how many busy word to consider a match to the UI
+- Look at the other view of AI data to be sure it's working right
+
+
 ## Cursor has duplicated definitions of structs everywhere.
 
-We have removed all structs from display and put them in types.
+- We have removed all structs from display and put them in types.
 
-We have modified the SQL Loader and the parser to use the versions in types.
+- We have modified the SQL Loader and the parser to use the versions in types.
 
-The main pipeline however, uses some very similar data structures and should probably be 
-modified to use the ones in types.
+- The main pipeline however, uses some very similar data structures and might possibly be modified to use the ones in types. It's not clear
 
 ## The bubbles scaling needs testing 
 
@@ -42,7 +47,6 @@ There are two different bases for scaling the bubbles.  The following aspects ne
 
 ## Find out what the divergence value in the bubble display means exactly
 It always seems to be 
-
 
 ## Instructions
 - The JSON is correctly parsed into a struct that is batch with a set of clusters and some metadata fields.  The cluster is composed of a set of tweets, some metadata fields, and a set of busyword objects which each has five fields.
