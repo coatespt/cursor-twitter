@@ -826,7 +826,8 @@ async function runEvolutionAnalysis() {
     }
     
     try {
-        const url = `/api/cluster-evolution?cluster_id=${selectedClusterId}&batches_back=${batchesBack}&min_matching_words=${minMatchingWords}`;
+        const batchNumber = document.getElementById('evolution-batch').value;
+        const url = `/api/cluster-evolution?cluster_id=${selectedClusterId}&batch_number=${batchNumber}&batches_back=${batchesBack}&min_matching_words=${minMatchingWords}`;
         console.log('Making API call to:', url);
         
         const response = await fetch(url);
