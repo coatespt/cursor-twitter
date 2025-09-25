@@ -22,6 +22,12 @@ If any changes seem to involve multiple threads, be sure to get my agreement bef
 
 # TTD
 
+## Medoid Tweets in JSON display.
+We fixed the medoid value in the JSON. Investigate whether we are using it to choose the tweet to display.
+
+## Medoid Tweets in the AI display
+- is_medoid is now in the postgres data. Are we using it in the AI display?
+
 ## The AI cluster history display seems to work now.
 - Test it
 - Add the parameters for 

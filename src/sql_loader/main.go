@@ -435,8 +435,6 @@ func (sl *SQLLoader) InsertCluster(batchID int, cluster types.Cluster) (int, err
 
 // InsertTweets inserts all tweets for a cluster using the new schema
 func (sl *SQLLoader) InsertTweets(clusterID int, cluster types.Cluster) error {
-	medoidText := cluster.MedoidTweet
-
 	// Get tweets from the new JSON structure
 	tweets := cluster.Tweets
 	if tweets == nil {
@@ -452,7 +450,7 @@ func (sl *SQLLoader) InsertTweets(clusterID int, cluster types.Cluster) error {
 
 	for i := 0; i < tweetCount; i++ {
 		tweet := tweets[i]
-		isMedoid := (tweet.Text == medoidText)
+		isMedoid := tweet.IsMedoid
 
 		// Insert the tweet with simplified data
 		var tweetID int

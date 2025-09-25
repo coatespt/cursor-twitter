@@ -1134,6 +1134,22 @@ func RunGraphClustering(tweetsWithBusyWords []*tweets.Tweet, allBusyWords map[st
 			displayedTweets = cluster.Tweets[:maxTweets]
 		}
 
+		// Mark the medoid tweet (most typical tweet)
+		if len(displayedTweets) > 0 {
+			// Find the most typical tweet using the same logic as deduplication
+			_, medoidIdx, _, _ := findMostTypicalTweets(displayedTweets, 0.4)
+
+			// Mark all tweets as not medoid first
+			for _, tweet := range displayedTweets {
+				tweet.IsMedoid = false
+			}
+
+			// Mark the medoid tweet
+			if medoidIdx < len(displayedTweets) {
+				displayedTweets[medoidIdx].IsMedoid = true
+			}
+		}
+
 		// Create cluster data for output
 		// Find the earliest tweet chronologically (not just the first in DFS order)
 		firstTweet := cluster.Tweets[0]

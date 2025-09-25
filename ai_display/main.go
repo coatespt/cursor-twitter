@@ -315,6 +315,7 @@ func (s *Server) handleGetBatchesWithAIAnalysisForEvolution(w http.ResponseWrite
 func (s *Server) handleGetClusterEvolution(w http.ResponseWriter, r *http.Request) {
 	clusterIDStr := r.URL.Query().Get("cluster_id")
 	batchNumberStr := r.URL.Query().Get("batch_number")
+	runIDStr := r.URL.Query().Get("run_id")
 	batchesBackStr := r.URL.Query().Get("batches_back")
 	minMatchingWordsStr := r.URL.Query().Get("min_matching_words")
 
@@ -340,6 +341,13 @@ func (s *Server) handleGetClusterEvolution(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	runID := 1 // Default to first run
+	if runIDStr != "" {
+		if val, err := strconv.Atoi(runIDStr); err == nil {
+			runID = val
+		}
+	}
+
 	batchesBack := 20 // Default value
 	if batchesBackStr != "" {
 		if val, err := strconv.Atoi(batchesBackStr); err == nil {
@@ -354,7 +362,7 @@ func (s *Server) handleGetClusterEvolution(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	results, err := s.getClusterEvolution(clusterID, batchNumber, batchesBack, minMatchingWords)
+	results, err := s.getClusterEvolution(clusterID, batchNumber, runID, batchesBack, minMatchingWords)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get cluster evolution: %v", err), http.StatusInternalServerError)
 		return
@@ -758,15 +766,15 @@ func (s *Server) batchHasPersistentClusters(runID, batchNumber int) (bool, error
 }
 
 // getClusterEvolution performs cluster evolution analysis - finds matching clusters from previous batches
-func (s *Server) getClusterEvolution(clusterID, batchNumber, batchesBack, minMatchingWords int) ([]ClusterEvolutionResult, error) {
-	fmt.Printf("DEBUG: getClusterEvolution called with clusterID=%d, batchNumber=%d, batchesBack=%d, minMatchingWords=%d\n", clusterID, batchNumber, batchesBack, minMatchingWords)
+func (s *Server) getClusterEvolution(clusterID, batchNumber, runID, batchesBack, minMatchingWords int) ([]ClusterEvolutionResult, error) {
+	fmt.Printf("DEBUG: getClusterEvolution called with clusterID=%d, batchNumber=%d, runID=%d, batchesBack=%d, minMatchingWords=%d\n", clusterID, batchNumber, runID, batchesBack, minMatchingWords)
 
 	query := `
 		WITH target_cluster AS (
 			SELECT c.id, c.cluster_id, c.batch_id, b.batch_number, b.batch_time, c.size
 			FROM new_clusters c 
 			JOIN new_batches b ON c.batch_id = b.id 
-			WHERE c.cluster_id = $1 AND b.batch_number = $2
+			WHERE c.cluster_id = $1 AND b.batch_number = $2 AND b.run_id = $3
 		),
 		target_busy_words AS (
 			SELECT ARRAY_AGG(bw.word) as words
@@ -791,10 +799,10 @@ func (s *Server) getClusterEvolution(clusterID, batchNumber, batchesBack, minMat
 			CROSS JOIN target_busy_words
 			WHERE b.run_id = (SELECT b2.run_id FROM target_cluster tc2 JOIN new_batches b2 ON tc2.batch_id = b2.id)
 			  AND b.batch_number < (SELECT batch_number FROM target_cluster)
-			  AND b.batch_number >= (SELECT batch_number FROM target_cluster) - $3
+			  AND b.batch_number >= (SELECT batch_number FROM target_cluster) - $4
 			  AND bw.word = ANY(target_busy_words.words)
 			GROUP BY c.id, c.batch_id, c.cluster_id, c.size, b.batch_number, b.batch_time
-			HAVING COUNT(bw.word) >= $4
+			HAVING COUNT(bw.word) >= $5
 			ORDER BY matching_words DESC, b.batch_number DESC
 		)
 		SELECT 
@@ -831,7 +839,7 @@ func (s *Server) getClusterEvolution(clusterID, batchNumber, batchesBack, minMat
 		ORDER BY batch_id ASC, type DESC
 	`
 
-	rows, err := s.db.Query(query, clusterID, batchNumber, batchesBack, minMatchingWords)
+	rows, err := s.db.Query(query, clusterID, batchNumber, runID, batchesBack, minMatchingWords)
 	if err != nil {
 		fmt.Printf("DEBUG: Query error: %v\n", err)
 		return nil, err

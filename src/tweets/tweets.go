@@ -20,4 +20,5 @@ type Tweet struct {
 	RetweetCount int      `json:"retweet_count"`
 	Language     string   `json:"lang"`
 	BatchID      int      `json:"batch_id"`
+	IsMedoid     bool     `json:"is_medoid"`
 }
