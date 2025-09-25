@@ -131,11 +131,11 @@
                 </div>
                 <div class="control-group">
                     <label for="batches-back">Batches Back:</label>
-                    <input type="number" id="batches-back" value="20" min="1" max="100">
+                    <input type="number" id="batches-back" value="{{.Config.ClusterEvolution.DefaultBatchesBack}}" min="1" max="100">
                 </div>
                 <div class="control-group">
                     <label for="min-matching-words">Min Matching Words:</label>
-                    <input type="number" id="min-matching-words" value="2" min="1" max="10">
+                    <input type="number" id="min-matching-words" value="{{.Config.ClusterEvolution.DefaultMinMatchingWords}}" min="1" max="10">
                 </div>
                 <div class="control-group">
                     <button onclick="runEvolutionAnalysis()" class="primary-btn">Run Analysis</button>

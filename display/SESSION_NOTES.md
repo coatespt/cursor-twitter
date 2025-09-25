@@ -24,7 +24,11 @@ If any changes seem to involve multiple threads, be sure to get my agreement bef
 
 ## The AI cluster history display seems to work now.
 - Test it
-- Add the parameters for how far back to look and how many busy word to consider a match to the UI
+- Add the parameters for 
+   - How far back to look 
+   - How many busy word to consider a match to the UI
+   - They need to be in the ai_display.yaml and as controls on the screen.
+
 - Look at the other view of AI data to be sure it's working right
 
 

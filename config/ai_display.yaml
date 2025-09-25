@@ -19,3 +19,8 @@ display:
   batch_window_size: 10  # Number of batches to keep in memory
   default_viewing_mode: "sequential"
   auto_advance: false  # Manual advance by default
+
+# Cluster Evolution Configuration
+cluster_evolution:
+  default_batches_back: 20  # Default number of batches to look back for similar clusters
+  default_min_matching_words: 2  # Default minimum number of shared busy words required

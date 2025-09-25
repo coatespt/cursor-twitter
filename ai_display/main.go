@@ -35,6 +35,10 @@ type Config struct {
 		DefaultViewingMode string `yaml:"default_viewing_mode"`
 		AutoAdvance        bool   `yaml:"auto_advance"`
 	} `yaml:"display"`
+	ClusterEvolution struct {
+		DefaultBatchesBack      int `yaml:"default_batches_back"`
+		DefaultMinMatchingWords int `yaml:"default_min_matching_words"`
+	} `yaml:"cluster_evolution"`
 }
 
 // AnalysisResult represents a single AI analysis result
