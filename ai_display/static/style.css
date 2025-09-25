@@ -373,6 +373,7 @@ body {
 #evolution-results-grid {
     max-height: calc(100vh - 300px); /* Account for header, padding, and controls */
     overflow-y: auto;
+    min-height: 200px; /* Ensure minimum height for visibility */
 }
 
 .evolution-result {

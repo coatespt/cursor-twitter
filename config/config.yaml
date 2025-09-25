@@ -241,7 +241,7 @@ analysis:
   persistence_clustering_method: busy_words
 
   # Maximum number of tweet texts to display in human-readable output per cluster
-  max_tweets_displayed: 3
+  max_tweets_displayed: 5 
 
   # Minimum number of unique tweets required after deduplication
   # Lowered from 6 to 3 since we now deduplicate by user, so this counts real unique content

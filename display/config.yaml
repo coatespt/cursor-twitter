@@ -6,7 +6,7 @@ recurrence_threshold: 0.8
 recurrence_strategy: "all_tweets"  # Options: "medoid_only" or "all_tweets"
 bubble_batches: 10  # Number of batches to show in bubble graph
 bubble_color: "blue"  # Base color for bubbles (blue, green, purple, etc.)
-bubble_size_method: "count_ratio"  # Options: "zscore" or "count_ratio"
+bubble_size_method: "zscore"  # Options: "zscore" or "count_ratio"
 # Bubble size scaling parameters (used when bubble_size_method is "zscore")
 smallest_z: 4.0  # Z-score that maps to smallest bubble
 largest_z: 20.0  # Z-score that maps to largest bubble  

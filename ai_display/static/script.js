@@ -220,8 +220,8 @@ function groupResultsByBatch(results) {
         batches[result.batch_number].results.push(result);
     });
     
-    	// Convert to array and sort by batch number (newest first)
-	return Object.values(batches).sort((a, b) => b.batchNumber - a.batchNumber);
+    	// Convert to array and sort by batch number (oldest first)
+	return Object.values(batches).sort((a, b) => a.batchNumber - b.batchNumber);
 }
 
 // Format analysis text for display
@@ -368,6 +368,7 @@ function updateWindowPosition() {
 
 // Mode switching
 function switchMode(mode) {
+    console.log('switchMode called with mode:', mode);
     currentMode = mode;
     
     // Update mode buttons
@@ -381,6 +382,19 @@ function switchMode(mode) {
     // Show/hide displays
     document.getElementById('results-grid').style.display = mode === 'standard' ? 'block' : 'none';
     document.getElementById('evolution-display').style.display = mode === 'evolution' ? 'block' : 'none';
+    
+    console.log('Evolution display element:', document.getElementById('evolution-display'));
+    console.log('Evolution display style:', document.getElementById('evolution-display').style.display);
+    
+    // Force visibility for evolution mode
+    if (mode === 'evolution') {
+        const evolutionDisplay = document.getElementById('evolution-display');
+        if (evolutionDisplay) {
+            evolutionDisplay.style.display = 'block';
+            evolutionDisplay.style.visibility = 'visible';
+            console.log('Forced evolution display to be visible');
+        }
+    }
     
     // Update panel title
     const title = mode === 'standard' ? 'AI Analysis Results' : 'Cluster Evolution Analysis';
@@ -454,48 +468,106 @@ function applyBatchFilters(batches) {
 
 // Populate the batch selector dropdown
 function populateBatchSelector(batches) {
-    console.log('populateBatchSelector called with:', batches.length, 'batches');
-    const selector = document.getElementById('evolution-batch');
-    selector.innerHTML = '<option value="">Select a batch</option>';
+    console.log('*** populateBatchSelector CALLED ***');
+    try {
+        console.log('=== populateBatchSelector START ===');
+        console.log('populateBatchSelector called with:', batches.length, 'batches');
+        console.log('Batch numbers in order:', batches.map(b => b.batch_number));
+        const selector = document.getElementById('evolution-batch');
+        console.log('Found selector element:', selector);
+        selector.innerHTML = '<option value="">Select a batch</option>';
+        console.log('Cleared selector innerHTML');
     
-    batches.forEach(batch => {
+    // Sort batches by batch number (smallest first)
+    const sortedBatches = [...batches].sort((a, b) => a.batch_number - b.batch_number);
+    console.log('Sorted batch numbers:', sortedBatches.map(b => b.batch_number));
+    console.log('About to create', sortedBatches.length, 'options');
+    
+    sortedBatches.forEach((batch, index) => {
         const option = document.createElement('option');
         option.value = batch.batch_number;
         option.textContent = `Batch ${batch.batch_number} (${batch.cluster_count} clusters) - ${new Date(batch.batch_time).toLocaleString()}`;
         selector.appendChild(option);
+        if (index < 5) {
+            console.log(`Created option ${index}: value=${batch.batch_number}, text=${option.textContent.substring(0, 50)}...`);
+        }
     });
+    console.log('Finished creating options. Total options now:', selector.options.length);
     
-    // Auto-select the latest batch (highest batch number)
-    if (batches.length > 0) {
-        const latestBatch = batches.reduce((latest, current) => 
-            current.batch_number > latest.batch_number ? current : latest
-        );
-        selector.value = latestBatch.batch_number;
+    // Auto-select the first batch (index 1, since index 0 is "Select a batch")
+    if (sortedBatches.length > 0) {
+        console.log('About to set selectedIndex to 1');
+        selector.selectedIndex = 1; // Select the first actual batch option
+        console.log('Set selectedIndex to 1, current value:', selector.value);
         
-        // Auto-load clusters for the latest batch
+        // Force selection multiple times to ensure it sticks
+        setTimeout(() => {
+            selector.selectedIndex = 1;
+            console.log('First timeout - set to 1, value:', selector.value);
+        }, 10);
+        
+        setTimeout(() => {
+            selector.selectedIndex = 1;
+            console.log('Second timeout - set to 1, value:', selector.value);
+        }, 100);
+        
+        setTimeout(() => {
+            selector.selectedIndex = 1;
+            console.log('Third timeout - set to 1, value:', selector.value);
+        }, 500);
+        
+        // Auto-load clusters for the selected batch
         loadClustersForBatch();
+    }
+    } catch (error) {
+        console.error('Error in populateBatchSelector:', error);
+        console.error('Error stack:', error.stack);
     }
 }
 
 // Load clusters for a specific batch
 async function loadClustersForBatch() {
-    const batchNumber = document.getElementById('evolution-batch').value;
+    console.log('=== loadClustersForBatch START ===');
+    const selector = document.getElementById('evolution-batch');
+    const batchNumber = selector.value;
+    console.log('loadClustersForBatch called with batchNumber:', batchNumber, 'currentRunId:', currentRunId);
+    console.log('Selector element:', selector);
+    console.log('Selector value:', selector.value);
+    console.log('All available options:', Array.from(selector.options).map(opt => opt.value));
+    
     if (!batchNumber) {
+        console.log('No batch selected, returning early');
+        // Clear the cluster selector and evolution results when no batch is selected
+        document.getElementById('evolution-cluster').innerHTML = '<option value="">Select a cluster first</option>';
+        document.getElementById('evolution-results-grid').innerHTML = '';
+        selectedClusterId = null;
         return; // No batch selected, nothing to do
     }
     
     try {
-        const response = await fetch(`/api/clusters?batch_number=${batchNumber}&run_id=${currentRunId}`);
+        const url = `/api/clusters?batch_number=${batchNumber}&run_id=${currentRunId}`;
+        console.log('Making API call to:', url);
+        console.log('Requesting clusters for batch:', batchNumber, 'run_id:', currentRunId);
+        
+        const response = await fetch(url);
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
         
         currentClusters = await response.json();
+        console.log('Received clusters:', currentClusters.length, 'clusters for batch', batchNumber);
+        
         populateClusterSelector();
+        
+        // Update the main display to show the new batch's data
+        updateMainDisplay();
         
         // Auto-run analysis (populateClusterSelector sets selectedClusterId to largest cluster)
         if (selectedClusterId) {
+            console.log('Auto-running evolution analysis for cluster:', selectedClusterId);
             runEvolutionAnalysis();
+        } else {
+            console.log('No selectedClusterId, not running evolution analysis');
         }
         
     } catch (error) {
@@ -506,21 +578,25 @@ async function loadClustersForBatch() {
 
 // Populate the cluster selector dropdown
 function populateClusterSelector() {
+    console.log('populateClusterSelector called with', currentClusters.length, 'clusters');
     const selector = document.getElementById('evolution-cluster');
     selector.innerHTML = '<option value="">Select a cluster</option>';
     
     if (currentClusters.length === 0) {
+        console.log('No clusters found, showing message');
         selector.innerHTML = '<option value="">No clusters found in this batch</option>';
+        selectedClusterId = null;
         return;
     }
     
     // Sort clusters by size (largest first)
     const sortedClusters = [...currentClusters].sort((a, b) => b.size - a.size);
+    console.log('Sorted clusters:', sortedClusters.map(c => ({id: c.cluster_id, size: c.size})));
     
     sortedClusters.forEach(cluster => {
         const option = document.createElement('option');
         option.value = cluster.cluster_id;
-        option.textContent = `${cluster.cluster_id}, ${cluster.size}, ${cluster.history_depth || 0}, ${cluster.busy_words.join(', ')}`;
+        option.textContent = `${cluster.cluster_id}, ${cluster.size}, ${cluster.history_depth || 0}, ${cluster.busy_words && cluster.busy_words.length > 0 ? cluster.busy_words.join(', ') : ''}`;
         selector.appendChild(option);
     });
     
@@ -528,6 +604,7 @@ function populateClusterSelector() {
     if (sortedClusters.length > 0) {
         selector.value = sortedClusters[0].cluster_id;
         selectedClusterId = sortedClusters[0].cluster_id;
+        console.log('Auto-selected cluster:', selectedClusterId);
     }
 }
 
@@ -541,11 +618,105 @@ function selectStartingCluster() {
 function previousBatchEvolution() {
     const selector = document.getElementById('evolution-batch');
     const currentIndex = selector.selectedIndex;
+    console.log('previousBatchEvolution called - currentIndex:', currentIndex);
     if (currentIndex > 0) {
         selector.selectedIndex = currentIndex - 1;
-        // Manually trigger the change event since programmatic changes don't fire onchange
-        selector.dispatchEvent(new Event('change'));
+        console.log('Changed to index:', selector.selectedIndex, 'New value:', selector.value);
+        // Call loadClustersForBatch directly since programmatic changes don't fire onchange
+        loadClustersForBatch();
+    } else {
+        console.log('Already at first batch');
     }
+}
+
+// Update the main display with current batch and cluster information
+function updateMainDisplay() {
+    console.log('updateMainDisplay called');
+    const batchSelector = document.getElementById('evolution-batch');
+    const clusterSelector = document.getElementById('evolution-cluster');
+    
+    if (!batchSelector || !clusterSelector) {
+        console.error('Selectors not found');
+        return;
+    }
+    
+    const currentBatch = batchSelector.value;
+    const currentCluster = clusterSelector.value;
+    
+    console.log('Updating display for batch:', currentBatch, 'cluster:', currentCluster);
+    
+    // Update the panel title to show current batch and cluster
+    const panelTitle = document.getElementById('panel-title');
+    if (panelTitle) {
+        if (currentBatch && currentCluster) {
+            panelTitle.textContent = `AI Analysis Results - Batch ${currentBatch}, Cluster ${currentCluster}`;
+        } else if (currentBatch) {
+            panelTitle.textContent = `AI Analysis Results - Batch ${currentBatch}`;
+        } else {
+            panelTitle.textContent = 'AI Analysis Results';
+        }
+    }
+    
+    // Don't clear results here - let the evolution analysis handle display
+}
+
+// Navigation functions for cluster evolution
+function nextClusterEvolution() {
+    console.log('nextClusterEvolution called');
+    const selector = document.getElementById('evolution-cluster');
+    if (!selector) {
+        console.error('Cluster selector not found');
+        return;
+    }
+    
+    const currentIndex = selector.selectedIndex;
+    const maxIndex = selector.options.length - 1;
+    
+    console.log('Next cluster: currentIndex =', currentIndex, 'maxIndex =', maxIndex);
+    
+    if (maxIndex <= 1) return; // No clusters to navigate (only "Select a cluster" option)
+    
+    let newIndex;
+    if (currentIndex >= maxIndex) {
+        // Wrap around to the first cluster (skip the "Select a cluster" option)
+        newIndex = 1;
+    } else {
+        newIndex = currentIndex + 1;
+    }
+    
+    console.log('Next cluster: setting selectedIndex to', newIndex);
+    selector.selectedIndex = newIndex;
+    // Update the selectedClusterId only
+    selectedClusterId = selector.value;
+}
+
+function previousClusterEvolution() {
+    console.log('previousClusterEvolution called');
+    const selector = document.getElementById('evolution-cluster');
+    if (!selector) {
+        console.error('Cluster selector not found');
+        return;
+    }
+    
+    const currentIndex = selector.selectedIndex;
+    const maxIndex = selector.options.length - 1;
+    
+    console.log('Previous cluster: currentIndex =', currentIndex, 'maxIndex =', maxIndex);
+    
+    if (maxIndex <= 1) return; // No clusters to navigate (only "Select a cluster" option)
+    
+    let newIndex;
+    if (currentIndex <= 1) {
+        // Wrap around to the last cluster
+        newIndex = maxIndex;
+    } else {
+        newIndex = currentIndex - 1;
+    }
+    
+    console.log('Previous cluster: setting selectedIndex to', newIndex);
+    selector.selectedIndex = newIndex;
+    // Update the selectedClusterId only
+    selectedClusterId = selector.value;
 }
 
 function nextBatchEvolution() {
@@ -553,14 +724,25 @@ function nextBatchEvolution() {
     const selector = document.getElementById('evolution-batch');
     console.log('Batch selector found:', selector);
     const currentIndex = selector.selectedIndex;
-    console.log('Current index:', currentIndex, 'Total options:', selector.options.length);
-    if (currentIndex < selector.options.length - 1) {
+    const totalOptions = selector.options.length;
+    const currentValue = selector.value;
+    console.log('Current index:', currentIndex, 'Total options:', totalOptions, 'Current value:', currentValue);
+    
+    if (currentIndex < totalOptions - 1) {
         selector.selectedIndex = currentIndex + 1;
-        console.log('Changed to index:', selector.selectedIndex);
-        // Manually trigger the change event since programmatic changes don't fire onchange
-        selector.dispatchEvent(new Event('change'));
+        console.log('Changed to index:', selector.selectedIndex, 'New value:', selector.value);
+        // Call loadClustersForBatch directly since programmatic changes don't fire onchange
+        console.log('About to call loadClustersForBatch()');
+        console.log('loadClustersForBatch function exists:', typeof loadClustersForBatch);
+        if (typeof loadClustersForBatch === 'function') {
+            console.log('Calling loadClustersForBatch with batchNumber:', selector.value);
+            loadClustersForBatch();
+            console.log('Returned from loadClustersForBatch()');
+        } else {
+            console.error('loadClustersForBatch is not a function!');
+        }
     } else {
-        console.log('Already at last batch');
+        console.log('Already at last batch - currentIndex:', currentIndex, 'totalOptions:', totalOptions);
     }
 }
 
@@ -612,7 +794,10 @@ function nextClusterEvolution() {
 
 // Run cluster evolution analysis
 async function runEvolutionAnalysis() {
+    console.log('runEvolutionAnalysis called with selectedClusterId:', selectedClusterId);
+    
     if (!selectedClusterId) {
+        console.log('No cluster selected, showing error');
         showError('Please select a starting cluster first.');
         return;
     }
@@ -620,38 +805,78 @@ async function runEvolutionAnalysis() {
     const batchesBack = document.getElementById('batches-back').value;
     const minMatchingWords = document.getElementById('min-matching-words').value;
     
-    // Show loading
-    document.getElementById('evolution-loading').style.display = 'block';
-    document.getElementById('evolution-results-grid').innerHTML = '';
+    console.log('Running evolution analysis with params:', {
+        clusterId: selectedClusterId,
+        batchesBack: batchesBack,
+        minMatchingWords: minMatchingWords
+    });
+    
+    // Show loading and clear previous results
+    const loadingElement = document.getElementById('evolution-loading');
+    const resultsGridElement = document.getElementById('evolution-results-grid');
+    
+    console.log('Loading element:', loadingElement);
+    console.log('Results grid element:', resultsGridElement);
+    
+    if (loadingElement) {
+        loadingElement.style.display = 'block';
+    }
+    if (resultsGridElement) {
+        resultsGridElement.innerHTML = '';
+    }
     
     try {
-        const response = await fetch(`/api/cluster-evolution?cluster_id=${selectedClusterId}&batches_back=${batchesBack}&min_matching_words=${minMatchingWords}`);
+        const url = `/api/cluster-evolution?cluster_id=${selectedClusterId}&batches_back=${batchesBack}&min_matching_words=${minMatchingWords}`;
+        console.log('Making API call to:', url);
+        
+        const response = await fetch(url);
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
         
         const results = await response.json();
+        console.log('Received evolution results:', results.length, 'items');
+        console.log('Results data:', results);
         displayEvolutionResults(results);
         
     } catch (error) {
         console.error('Error running evolution analysis:', error);
         showError('Error running cluster evolution analysis. Please try again.');
     } finally {
-        document.getElementById('evolution-loading').style.display = 'none';
+        if (loadingElement) {
+            loadingElement.style.display = 'none';
+        }
     }
 }
 
 // Display evolution analysis results
 function displayEvolutionResults(results) {
+    console.log('displayEvolutionResults called with', results.length, 'results');
     const container = document.getElementById('evolution-results-grid');
+    
+    if (!container) {
+        console.error('evolution-results-grid container not found!');
+        return;
+    }
+    
+    // Check if evolution display is visible
+    const evolutionDisplay = document.getElementById('evolution-display');
+    console.log('Evolution display element:', evolutionDisplay);
+    console.log('Evolution display style display:', evolutionDisplay ? evolutionDisplay.style.display : 'not found');
+    console.log('Evolution display computed display:', evolutionDisplay ? window.getComputedStyle(evolutionDisplay).display : 'not found');
+    
+    console.log('Container found, clearing content');
     container.innerHTML = '';
     
     if (results.length === 0) {
+        console.log('No results found, showing message');
         container.innerHTML = '<p>No results found for the given parameters.</p>';
         return;
     }
     
-    results.forEach(result => {
+    console.log('Processing', results.length, 'results');
+    results.forEach((result, index) => {
+        console.log(`Processing result ${index}:`, result);
         const resultDiv = document.createElement('div');
         resultDiv.className = 'evolution-result';
         resultDiv.classList.add(result.type.toLowerCase().replace(' ', '-'));
@@ -674,7 +899,7 @@ function displayEvolutionResults(results) {
                     <div class="tweet-text">${escapeHtml(result.medoid_tweet)}</div>
                 </div>
                 <div class="busy-words">
-                    <strong>Busy Words:</strong> ${result.busy_words.join(', ')}
+                    <strong>Busy Words:</strong> ${result.busy_words && result.busy_words.length > 0 ? result.busy_words.join(', ') : ''}
                 </div>
                 <div class="ai-summary">
                     <strong>AI Analysis:</strong>
@@ -683,11 +908,25 @@ function displayEvolutionResults(results) {
             </div>
         `;
         
+        console.log('Appending result div to container');
         container.appendChild(resultDiv);
+        console.log('Result div appended, container now has', container.children.length, 'children');
     });
     
+    console.log('All results processed, updating results count');
+    console.log('Final container children count:', container.children.length);
+    console.log('Container innerHTML length:', container.innerHTML.length);
+    console.log('Container computed style display:', window.getComputedStyle(container).display);
+    console.log('Container computed style visibility:', window.getComputedStyle(container).visibility);
+    console.log('Container parent computed style display:', window.getComputedStyle(container.parentElement).display);
+    
     // Update results count
-    document.getElementById('results-count').textContent = `Results: ${results.length}`;
+    const resultsCountElement = document.getElementById('results-count');
+    if (resultsCountElement) {
+        resultsCountElement.textContent = `Results: ${results.length}`;
+    }
+    
+    console.log('displayEvolutionResults completed');
 }
 
 // Clear evolution results

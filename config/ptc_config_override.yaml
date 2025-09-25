@@ -20,5 +20,7 @@ analysis:
   use_levenshtein_deduplication: true
   filter_repetitive_patterns: true 
   deduplicate_by_user: false
+  max_tweets_displayed: 5 
 
 log_level: INFO
+

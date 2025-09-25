@@ -40,6 +40,9 @@ There are two different bases for scaling the bubbles.  The following aspects ne
 
 ## Bubble scaling choice should be displayed on the page
 
+## Find out what the divergence value in the bubble display means exactly
+It always seems to be 
+
 
 ## Instructions
 - The JSON is correctly parsed into a struct that is batch with a set of clusters and some metadata fields.  The cluster is composed of a set of tweets, some metadata fields, and a set of busyword objects which each has five fields.

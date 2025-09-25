@@ -504,27 +504,6 @@ func (s *Server) getExperimentRuns() ([]map[string]interface{}, error) {
 // getClustersForBatch gets all clusters for a specific batch
 func (s *Server) getClustersForBatch(batchNumber, runID int) ([]ClusterInfo, error) {
 	query := `
-		WITH cluster_busy_words AS (
-			SELECT c.cluster_id, ARRAY_AGG(bw.word ORDER BY bw.word_order) as busy_words
-			FROM new_clusters c
-			JOIN new_batches b ON c.batch_id = b.id
-			LEFT JOIN new_busy_words bw ON c.cluster_id = bw.cluster_id
-			WHERE b.batch_number = $1 AND b.run_id = $2
-			GROUP BY c.cluster_id
-		),
-		similar_clusters AS (
-			SELECT 
-				cbw.cluster_id,
-				COUNT(DISTINCT c2.cluster_id) as history_depth
-			FROM cluster_busy_words cbw
-			LEFT JOIN new_clusters c2 ON c2.id != cbw.cluster_id
-			LEFT JOIN new_batches b2 ON c2.batch_id = b2.id
-			LEFT JOIN new_busy_words bw2 ON c2.id = bw2.cluster_id
-			WHERE b2.run_id = $2 
-			  AND b2.batch_number < $1
-			  AND bw2.word = ANY(cbw.busy_words)
-			GROUP BY cbw.cluster_id
-		)
 		SELECT 
 			c.cluster_id,
 			c.batch_id,
@@ -532,16 +511,15 @@ func (s *Server) getClustersForBatch(batchNumber, runID int) ([]ClusterInfo, err
 			b.batch_time,
 			c.cluster_id as cluster_number,
 			c.size,
-			ARRAY_AGG(bw.word ORDER BY bw.word_order) as busy_words,
+			COALESCE(ARRAY_AGG(bw.word ORDER BY bw.word_order) FILTER (WHERE bw.word IS NOT NULL), ARRAY[]::text[]) as busy_words,
 			COALESCE(ar.response_text, 'No AI analysis available') as ai_summary,
-			COALESCE(sc.history_depth, 0) as history_depth
+			0 as history_depth
 		FROM new_clusters c
 		JOIN new_batches b ON c.batch_id = b.id
-		LEFT JOIN new_busy_words bw ON c.cluster_id = bw.cluster_id
+		LEFT JOIN new_busy_words bw ON c.id = bw.cluster_id
 		LEFT JOIN ai_analysis_results ar ON c.id = ar.cluster_id
-		LEFT JOIN similar_clusters sc ON c.cluster_id = sc.cluster_id
 		WHERE b.batch_number = $1 AND b.run_id = $2
-		GROUP BY c.cluster_id, c.batch_id, b.batch_number, b.batch_time, c.size, ar.response_text, sc.history_depth
+		GROUP BY c.cluster_id, c.batch_id, b.batch_number, b.batch_time, c.size, ar.response_text
 		ORDER BY c.cluster_id
 	`
 
@@ -596,7 +574,7 @@ func (s *Server) getBatchesWithClusters(runID int) ([]map[string]interface{}, er
 		WHERE b.run_id = $1
 		GROUP BY b.batch_number, b.batch_time
 		HAVING COUNT(c.cluster_id) > 0
-		ORDER BY b.batch_number DESC
+		ORDER BY b.batch_number ASC
 	`
 
 	rows, err := s.db.Query(query, runID)
@@ -762,6 +740,8 @@ func (s *Server) batchHasPersistentClusters(runID, batchNumber int) (bool, error
 
 // getClusterEvolution performs cluster evolution analysis
 func (s *Server) getClusterEvolution(clusterID, batchesBack, minMatchingWords int) ([]ClusterEvolutionResult, error) {
+	fmt.Printf("DEBUG: getClusterEvolution called with clusterID=%d, batchesBack=%d, minMatchingWords=%d\n", clusterID, batchesBack, minMatchingWords)
+
 	query := `
 		WITH target_cluster AS (
 			SELECT 
@@ -774,31 +754,36 @@ func (s *Server) getClusterEvolution(clusterID, batchesBack, minMatchingWords in
 				b.batch_time 
 			FROM new_clusters c 
 			JOIN new_batches b ON c.batch_id = b.id 
-			WHERE c.id = $1
+			WHERE c.cluster_id = $1
 		),
 		target_busy_words AS (
 			SELECT word, frequency_class, word_order 
 			FROM new_busy_words 
-			WHERE cluster_id = $1
+			WHERE cluster_id = (SELECT id FROM target_cluster LIMIT 1)
 			ORDER BY word_order
 		),
 		batch_matches AS (
 			SELECT 
+				c.id as cluster_internal_id,
 				c.batch_id, 
 				c.cluster_id, 
 				c.cluster_id as cluster_number, 
 				c.size, 
 				COUNT(bw.word) as matching_words,
 				ARRAY_AGG(bw.word ORDER BY bw.word_order) as matching_words_list,
-				(SELECT batch_id FROM target_cluster LIMIT 1) - c.batch_id as batches_back
+				(SELECT tc.batch_number - b.batch_number FROM target_cluster tc LIMIT 1) as batches_back
 			FROM new_clusters c 
-			JOIN new_busy_words bw ON c.cluster_id = bw.cluster_id 
+			JOIN new_batches b ON c.batch_id = b.id
+			JOIN new_busy_words bw ON c.id = bw.cluster_id 
+			JOIN ai_analysis_results ar ON c.id = ar.cluster_id
 			WHERE bw.word IN (SELECT word FROM target_busy_words) 
-				AND c.batch_id < (SELECT batch_id FROM target_cluster LIMIT 1)
-				AND c.batch_id >= (SELECT batch_id FROM target_cluster LIMIT 1) - $2
-			GROUP BY c.batch_id, c.cluster_id, c.size 
+				AND b.batch_number < (SELECT batch_number FROM target_cluster LIMIT 1)
+				AND b.batch_number >= (SELECT batch_number FROM target_cluster LIMIT 1) - $2
+				AND b.run_id = (SELECT b2.run_id FROM target_cluster tc2 JOIN new_batches b2 ON tc2.batch_id = b2.id LIMIT 1)
+			GROUP BY c.id, c.batch_id, c.cluster_id, c.size, b.batch_number
 			HAVING COUNT(bw.word) >= $3
-			ORDER BY c.batch_id DESC, matching_words DESC
+			ORDER BY matching_words DESC, b.batch_number DESC
+			LIMIT 50
 		),
 		all_clusters_with_ai AS (
 			SELECT 
@@ -812,9 +797,9 @@ func (s *Server) getClusterEvolution(clusterID, batchesBack, minMatchingWords in
 				ARRAY(SELECT word FROM target_busy_words ORDER BY word_order) as busy_words,
 				0 as batches_back,
 				COALESCE(ar.response_text, 'No AI analysis available') as ai_summary,
-				COALESCE((SELECT t.tweet_text FROM new_tweets t WHERE t.cluster_id = tc.cluster_id AND t.is_medoid = true LIMIT 1), 'No medoid tweet available') as medoid_tweet
+				COALESCE((SELECT t.tweet_text FROM new_tweets t WHERE t.cluster_id = tc.id AND t.is_medoid = true LIMIT 1), 'No medoid tweet available') as medoid_tweet
 			FROM target_cluster tc
-			LEFT JOIN ai_analysis_results ar ON tc.cluster_id = ar.cluster_id
+			LEFT JOIN ai_analysis_results ar ON tc.id = ar.cluster_id
 
 			UNION ALL
 
@@ -829,10 +814,10 @@ func (s *Server) getClusterEvolution(clusterID, batchesBack, minMatchingWords in
 				bm.matching_words_list as busy_words,
 				bm.batches_back,
 				COALESCE(ar.response_text, 'No AI analysis available') as ai_summary,
-				COALESCE((SELECT t.tweet_text FROM new_tweets t WHERE t.cluster_id = bm.cluster_id AND t.is_medoid = true LIMIT 1), 'No medoid tweet available') as medoid_tweet
+				COALESCE((SELECT t.tweet_text FROM new_tweets t WHERE t.cluster_id = bm.cluster_internal_id AND t.is_medoid = true LIMIT 1), 'No medoid tweet available') as medoid_tweet
 			FROM batch_matches bm 
 			JOIN new_batches b ON bm.batch_id = b.id 
-			LEFT JOIN ai_analysis_results ar ON bm.cluster_id = ar.cluster_id
+			LEFT JOIN ai_analysis_results ar ON bm.cluster_internal_id = ar.cluster_id
 		)
 		SELECT 
 			type,
@@ -852,11 +837,13 @@ func (s *Server) getClusterEvolution(clusterID, batchesBack, minMatchingWords in
 
 	rows, err := s.db.Query(query, clusterID, batchesBack, minMatchingWords)
 	if err != nil {
+		fmt.Printf("DEBUG: Query error: %v\n", err)
 		return nil, err
 	}
 	defer rows.Close()
 
 	var results []ClusterEvolutionResult
+	fmt.Printf("DEBUG: Query executed successfully\n")
 	for rows.Next() {
 		var result ClusterEvolutionResult
 		var busyWordsStr string
@@ -882,9 +869,13 @@ func (s *Server) getClusterEvolution(clusterID, batchesBack, minMatchingWords in
 			result.BusyWords = parsePostgreSQLArray(busyWordsStr)
 		}
 
+		// Initialize SimilarClustersCount to 0 since it's not in the query
+		result.SimilarClustersCount = 0
+
 		results = append(results, result)
 	}
 
+	fmt.Printf("DEBUG: Found %d evolution results\n", len(results))
 	return results, nil
 }
 
