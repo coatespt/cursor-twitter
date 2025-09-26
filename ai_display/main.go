@@ -183,6 +183,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // handleGetBatches handles API request to get batches
 func (s *Server) handleGetBatches(w http.ResponseWriter, r *http.Request) {
 	startBatchStr := r.URL.Query().Get("start_batch")
+	startTimeStr := r.URL.Query().Get("start_time")
 	limitStr := r.URL.Query().Get("limit")
 	runIDStr := r.URL.Query().Get("run_id")
 
@@ -207,7 +208,15 @@ func (s *Server) handleGetBatches(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	results, err := s.getAnalysisResults(startBatch, limit, runID)
+	var results []AnalysisResult
+	var err error
+
+	// If start_time is provided, use time-based query, otherwise use batch-based query
+	if startTimeStr != "" {
+		results, err = s.getAnalysisResultsFromTime(startTimeStr, limit, runID)
+	} else {
+		results, err = s.getAnalysisResults(startBatch, limit, runID)
+	}
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get analysis results: %v", err), http.StatusInternalServerError)
 		return
@@ -427,6 +436,68 @@ func (s *Server) getAnalysisResults(startBatch, limit, runID int) ([]AnalysisRes
 	`
 
 	rows, err := s.db.Query(query, startBatch, limit*10, runID) // Estimate 10 clusters per batch
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []AnalysisResult
+	for rows.Next() {
+		var result AnalysisResult
+		err := rows.Scan(
+			&result.ResultID,
+			&result.SessionID,
+			&result.ClusterID,
+			&result.PromptText,
+			&result.ResponseText,
+			&result.ResponseMetadata,
+			&result.AnalysisMetadata,
+			&result.CreatedAt,
+			&result.ProcessingTimeMs,
+			&result.BatchNumber,
+			&result.BatchTime,
+			&result.ClusterNumber,
+		)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+
+	return results, nil
+}
+
+// getAnalysisResultsFromTime gets analysis results starting from a specific time
+func (s *Server) getAnalysisResultsFromTime(startTimeStr string, limit, runID int) ([]AnalysisResult, error) {
+	// Parse the datetime-local input (format: "2006-01-02T15:04")
+	startTime, err := time.Parse("2006-01-02T15:04", startTimeStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid time format: %v", err)
+	}
+
+	query := `
+		SELECT 
+			COALESCE(aar.result_id, 0) as result_id,
+			COALESCE(aar.session_id, 0) as session_id,
+			c.id as cluster_id,
+			COALESCE(aar.prompt_text, '') as prompt_text,
+			COALESCE(aar.response_text, '') as response_text,
+			COALESCE(aar.response_metadata::text, '') as response_metadata,
+			COALESCE(aar.analysis_metadata::text, '') as analysis_metadata,
+			COALESCE(aar.created_at, NOW()) as created_at,
+			COALESCE(aar.processing_time_ms, 0) as processing_time_ms,
+			b.batch_number,
+			b.batch_time,
+			c.cluster_id as cluster_number
+		FROM new_batches b
+		JOIN new_clusters c ON b.id = c.batch_id
+		LEFT JOIN ai_analysis_results aar ON c.id = aar.cluster_id
+		WHERE b.batch_time >= $1 AND b.run_id = $3
+		ORDER BY b.batch_time, c.cluster_id
+		LIMIT $2
+	`
+
+	rows, err := s.db.Query(query, startTime, limit*10, runID) // Estimate 10 clusters per batch
 	if err != nil {
 		return nil, err
 	}

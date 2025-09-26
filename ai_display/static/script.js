@@ -39,8 +39,10 @@ function setupEventListeners() {
     
     // Start time input
     document.getElementById('start-time').addEventListener('change', function(e) {
-        // TODO: Implement time-based navigation
         console.log('Start time changed:', e.target.value);
+        if (e.target.value) {
+            loadBatchesFromTime(e.target.value);
+        }
     });
     
     // Window slider
@@ -57,6 +59,53 @@ function setupEventListeners() {
             runEvolutionAnalysis();
         }
     });
+}
+
+// Load batches from a specific time
+async function loadBatchesFromTime(startTime) {
+    try {
+        const runSelect = document.getElementById('experiment-run');
+        if (!runSelect) {
+            console.error('Experiment run dropdown not found');
+            return;
+        }
+        
+        const runID = runSelect.value;
+        if (!runID) {
+            console.error('No experiment run selected');
+            return;
+        }
+        
+        console.log('Loading batches from time:', startTime, 'for run_id:', runID);
+        
+        // Convert the datetime-local input to a format the API can understand
+        const timeParam = encodeURIComponent(startTime);
+        const response = await fetch(`/api/batches?start_time=${timeParam}&limit=10&run_id=${runID}`);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const results = await response.json();
+        console.log('Received results from time:', results.length, 'items');
+        
+        if (results.length > 0) {
+            // Replace current window with results from the specified time
+            currentBatchWindow = results;
+            
+            // Update display
+            updateDisplay();
+            updateStatus();
+            
+            // Update window slider
+            updateWindowSlider();
+        } else {
+            console.log('No batches found for the specified time');
+            showError('No batches found for the specified time');
+        }
+    } catch (error) {
+        console.error('Error loading batches from time:', error);
+        showError('Failed to load batches from specified time');
+    }
 }
 
 // Load the next batch of data
