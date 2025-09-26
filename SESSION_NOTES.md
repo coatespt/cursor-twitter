@@ -47,36 +47,25 @@ If any changes seem to involve multiple threads in any way, or includes anything
 
 Apparently you are under the impression that I want happy sunny output. No! Be as critical of what I say as possible.
 
-# TTD 
-## Fixin the Display
-Plan.
-- We will not immediately create displayable data.
-- We will first write code that 
-  - reads in JSON one batch at a time
-  - Creates a list of batch objects
-  - Each batch object is isomorphic with the JSON.it will contain:
-    - Fields for the metadata
-    - A list of clusters
-  - each Cluster will contain
-    - Fielsds for cluster metadata
-    - a list of tweets
-    - a list of busyword objects
-  - each tweet will contain all the tweet data
-  - each busyword will contain the five fields.
-- There is only one JSON. We have no ideas of backwards compatibility
-- We will read in some number of batches on startup and then continue to read batches as needed.
-- We will go not further
-- Until we get this right reading in JSON is all it does.
-- Don't destroy what is in the main loop now--we will need to adapt it to the structs.
 
-## Fix the tables and the sql_loader to handle new JSON format
+# Parameter Tune-Ups
+I am trying to find the combinations of parameters that give the best results.
 
-## Verify that the sequential screen of the AI display is doing the right stuff.
+Initially trying to adjust Z minima.  Another promising area is the size of the batches.
 
-## There are somethign like eighty functions that are unused or duplicated. 
-As of september 21 there are 12,697 lines of Go in the pipeline compilation.  We'll see how many can be removed.
+## Concentrating on Z Minima
+### sept_25 
+Gave a lot of busywords and clusters that don't seem all that coherent.  It mostly had 5.0 for the Z scores.  The batch is 50k.
 
-jaccard() is an example. 
+### sept_26 
+Adjusting most of the Z score minima to 8.0 with some of the low-number classes being 8.5.  The batch is 50k.
+
+## Concentrating on Batch Size and Window Size
+
+
+
+
+# Practical TTD 
 
 ## Do we want these log lines gone?
 *** FCT REBUILD STARTED at 18:26:01 ***
@@ -87,15 +76,21 @@ This has supposedly been fixed and any value can go in the override file. We sha
 
 ## Rabbit Not Tested With Refactored Code
 
-## Refactor the insanely large main into a reasonable structure.
-
-This is ongoing. It has been shrunk by about 1/3 already.
-
-## Global configs on the graphical output. 
+## Add Global To The Graphical Displays. 
 It would be nice to see global parameters on the output screen so you could see things like:
-- How big a batch is.
+- Batch size
 - How much clock time is represented by each batch
-- Some values we aren't yet computing or displaying like, the quality of a cluster.
+- Z Minima.
+- Window size and f-class recompute interval
+
+## Ongoing Items
+
+- Comments Key areas need to be commented to keep out, don't touch, etc.
+
+- Testing has been neglected. Make tests around everything.
+
+
+# Possible Fundamental Design Changes
 
 ## Clustering Improvement By Weighting Frequency Classes
 Would clustering be improved by weighting the frequency classes?
@@ -138,12 +133,6 @@ This should be almost impossible (it says so right in the warning message.) 'Sup
 Suspect this is a phenomenon of startup from token counts on disks.
 This needs to be confirmed.
  
-## Ongoing Items
-
-- Comments Key areas need to be commented to keep out, don't touch, etc.
-
-- Testing has been neglected. Make tests around everything.
-
 ## Major: Improving Busy Word Detection Quality by Computing Redundantly
 
 This would be a significant effort.  Interesting idea, but it's not 100% clear that it's worth doing. We need some investigation.
@@ -170,9 +159,7 @@ Jacquard similarity for the clustering seems to be applied to all the tokens in 
   - Maybe it should be only on the busywords. 
   - Jacquard similarity might not be important. Maybe just the raw occurrences?
 
-## Consider Stripping K-Means Out Entirely
-It doesn't do any harm, but we're never going to use it and it could be confusing.
-   
+
 # Input and Output
 
 The input available for development purposes is two weeks of the decahose (about 500 Tweets/second.) It consists of JSON-formatted Tweets in files that have the file order encoded in the filenames as Unix start and end times. The files are about five minutes of Tweets at about 500 Tweets/second. The original files are unpacked into uncompressed CSV files.  

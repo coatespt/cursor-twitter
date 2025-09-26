@@ -966,9 +966,40 @@ Cleans up old build artifacts and temporary files.
 - Cleans temporary files
 - Frees disk space
 
-### 4. JSON Output Analysis (`util_shell/analyze_json_stats.go`)
+### 4. JSON Output Analysis Scripts
 
-Comprehensive Go-based analysis tool for Twitter pipeline JSON output files. Provides detailed statistics about batches, clusters, tweets, and file structure with high performance.
+The project includes several JSON analysis tools for examining pipeline output files. Each tool is optimized for different use cases.
+
+#### 4A. Standard Analysis Tool (`util_shell/analyze_json_go.go`)
+
+Uses the integrated `json_parser` package for maximum performance and integration with the project's data structures.
+
+> **⚠️ NOTE: This script requires specific module setup and is currently problematic. Use `analyze_json_simple.go` or `analyze_json_stats.go` for most analysis needs.**
+
+**Usage:**
+```bash
+# WARNING: Currently has dependency issues
+go run util_shell/analyze_json_go.go <json_file>
+```
+
+**Features:**
+- **Integrated Parser**: Uses project's `json_parser` package for optimized parsing
+- **File Statistics**: File size, total batches, time range analysis  
+- **Cluster Analysis**: Min/max/average clusters per batch with standard deviation
+- **Tweet Analysis**: Min/max/average tweets per batch with standard deviation
+- **Performance Metrics**: Total tweets processed, clusters created, processing rates
+- **High Performance**: Optimized for large files with embedded parser
+
+**Issues:**
+- **Module Import Issues**: The `cursor-twitter/src/json_parser` import path causes module resolution problems
+- **Workspace Dependencies**: Requires specific go module setup that may not work from util_shell directory
+
+**Recommended Alternative:**
+Use `analyze_json_simple.go` or `analyze_json_stats.go` for reliable analysis that doesn't depend on internal parsers.
+
+#### 4B. Comprehensive Statistics Tool (`util_shell/analyze_json_stats.go`)
+
+Full-featured analysis tool with extensive metrics and busy words analysis.
 
 **Usage:**
 ```bash
@@ -981,13 +1012,12 @@ go run util_shell/analyze_json_stats.go september_18.json
 ```
 
 **Features:**
-- **File Statistics**: File size, total batches, time range analysis
-- **Cluster Analysis**: Min/max/average clusters per batch with standard deviation
-- **Tweet Analysis**: Min/max/average tweets per batch with standard deviation
-- **Performance Metrics**: Total tweets processed, clusters created, processing rates
+- **Complete Statistics**: Comprehensive file, cluster, tweet, and busy word analysis
+- **Busy Words Analysis**: Min/max/average busy words per cluster with standard deviation
 - **Data Validation**: File structure validation, error detection
 - **Summary Statistics**: Clusters above minimum size, batch time ranges
-- **High Performance**: Go-based implementation for fast processing of large files
+- **Time Analysis**: First/last batch timestamps, time range
+- **Quality Metrics**: Assessment of busy word and cluster quality
 
 **Output Example:**
 ```
@@ -1005,6 +1035,11 @@ go run util_shell/analyze_json_stats.go september_18.json
    Max tweets: 25000
    Average tweets: 25000
    Standard deviation: 0
+📝 Busy words per cluster statistics:
+   Min busy words per cluster: 3
+   Max busy words per cluster: 12
+   Average busy words per cluster: 7.2
+   Standard deviation: 2.1
 📊 Summary statistics:
    Total tweets processed: 1125000
    Total clusters created: 375
@@ -1020,16 +1055,54 @@ go run util_shell/analyze_json_stats.go september_18.json
    ✅ No error entries found
 ```
 
-**Use Cases:**
-- **Performance Analysis**: Understand processing efficiency and throughput
-- **Data Quality Assessment**: Verify cluster generation and tweet processing
-- **Experiment Comparison**: Compare results across different parameter sets
-- **Debugging**: Identify anomalies in output files
-- **Reporting**: Generate statistics for research or documentation
-
 **Dependencies:**
 - Go 1.21+ (no external dependencies)
 - Built-in JSON processing and mathematical functions
+
+#### 4C. Parameter Comparison Tool (`util_shell/analyze_json_simple.go`)
+
+Lightweight analysis tool optimized for comparing parameter configurations and detecting quality issues.
+
+**Usage:**
+```bash
+go run util_shell/analyze_json_simple.go <json_file>
+```
+
+**Example:**
+```bash
+# Compare different parameter sets for clustering effectiveness
+go run util_shell/analyze_json_simple.go clusters_param1.json > param1_analysis.txt
+go run util_shell/analyze_json_simple.go clusters_param2.json > param2_analysis.txt
+go run util_shell/analyze_json_simple.go clusters_param3.json > param3_analysis.txt
+```
+
+**Features:**
+- **Streamlined Output**: Focus on key metrics for parameter comparison
+- **Busy Words Focus**: Detailed statistics on busy words per cluster
+- **Quality Indicators**: Metrics to identify whether parameters produce too many low-quality busy words
+- **Performance Optimized**: Fast processing for parameter experiments
+
+**Perfect for Parameter Tuning:**
+- **Z-Score Analysis**: Compare how different threshold values affect busy word quality
+- **Clustering Parameters**: Analyze impact on busy word distribution
+- **Quality Detection**: Identify parameter sets that create excessive low-quality busy words
+- **Quick Comparison**: Fast analysis across multiple experimental runs
+
+**Key Metrics for Analysis:**
+- **`Min/Max/Average busy words per cluster`**: Range and typical values
+- **`Standard deviation`**: Consistency of busy word distribution across clusters
+- **Quality indicators**: Helps detect parameters creating too many irrelevant busy words
+
+**When to Use Which Tool:**
+
+| Use Case | Recommended Tool |
+|----------|-----------------|
+| **Parameter comparison** | `analyze_json_simple.go` |
+| **Quality assessment** | `analyze_json_stats.go` |
+| **Comprehensive reporting** | `analyze_json_stats.go` |
+| **Integrated parsing** | `analyze_json_go.go` |
+| **Large file processing** | `analyze_json_go.go` |
+| **Busy words quality analysis** | `analyze_json_simple.go` |
 
 ---
 
@@ -1052,7 +1125,7 @@ freq_classes: 24            # Number of frequency classes
 #### Analysis Settings
 ```yaml
 analysis:
-  clustering_method: graph   # "graph" or "kmeans"
+  clustering_method: graph   # Graph-based clustering
   min_cluster_size: 9        # Minimum cluster size
   min_jaccard_similarity: 0.4 # Similarity threshold
   deduplicate_by_user: true  # Enable deduplication
@@ -1381,27 +1454,8 @@ go build -o test_rabbitmq util_test/test_rabbitmq.go
 - Test message queue configuration
 - Debug connection issues
 
-### 2. K-Means Test (`util_test/test_kmeans.go`)
 
-Tests the K-means clustering algorithm.
-K-means is in there for subject clustering but is of dubious value. Stick with graph clustering unless you have a good reason to use K-Means.
-
-**Build:**
-```bash
-go build -o test_kmeans util_test/test_kmeans.go
-```
-
-**Usage:**
-```bash
-./test_kmeans
-```
-
-**Features:**
-- Tests K-means clustering implementation
-- Validates clustering algorithms
-- Performance testing
-
-### 3. Debug Timestamps (`util_test/debug_timestamps.go`)
+### 2. Debug Timestamps (`util_test/debug_timestamps.go`)
 
 Debugging tool for timestamp parsing and conversion.
 

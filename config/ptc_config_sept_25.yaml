@@ -1,0 +1,28 @@
+
+# Overrride file for smaller batches and bigger window 9/25/2025
+#  sept_25 
+
+
+window: 5000000
+token_persist_files: 70
+rebuild_every_files: 20
+
+# Smaller batch than we'd been using
+# 20,000 is 40 seconds of the decahose (wall clock time) but only four seconds 
+# of the firehose.
+batch: 50000 
+#
+z_scores: [6.0, 6.0, 7.0, 6.5, 6.5, 5.5, 5.5, 5.5, 5.5, 5.5, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0,5.0,5.0,5.0,5.0] 
+# Analysis settings
+analysis:
+  min_cluster_size: 5
+  min_busy_words_per_tweet: 3
+  jaccard_use_busy_words_only: true
+  min_jaccard_similarity: 0.1
+  use_levenshtein_deduplication: true
+  filter_repetitive_patterns: true 
+  deduplicate_by_user: false
+  max_tweets_displayed: 5 
+
+log_level: INFO
+

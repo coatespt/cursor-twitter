@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,14 +8,30 @@ import (
 	"os"
 )
 
+type BusyWord struct {
+	Word   string  `json:"word"`
+	Class  int     `json:"class"`
+	ZScore float64 `json:"z_score"`
+	Count  int     `json:"count"`
+	Mean   float64 `json:"mean"`
+}
+
+type Cluster struct {
+	ClusterID int        `json:"cluster_id"`
+	BatchID   int        `json:"batch_id"`
+	Size      int        `json:"size"`
+	BusyWords []BusyWord `json:"busy_words"`
+}
+
 type Batch struct {
 	Type string `json:"type"`
 	Data struct {
-		BatchNumber          int `json:"batch_number"`
-		BatchTime            string `json:"batch_time"`
-		TotalTweets          int `json:"total_tweets"`
-		TotalClusters        int `json:"total_clusters"`
-		ClustersAboveMinSize int `json:"clusters_above_min_size"`
+		BatchNumber          int       `json:"batch_number"`
+		BatchTime            string    `json:"batch_time"`
+		TotalTweets          int       `json:"total_tweets"`
+		TotalClusters        int       `json:"total_clusters"`
+		ClustersAboveMinSize int       `json:"clusters_above_min_size"`
+		Clusters             []Cluster `json:"clusters"`
 	} `json:"data"`
 }
 
@@ -50,18 +65,20 @@ func main() {
 	var clusterCounts []int
 	var tweetCounts []int
 	var clustersAboveMin []int
+	var busyWordsPerCluster []int
 	var firstBatchTime, lastBatchTime string
 
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			continue
-		}
+	decoder := json.NewDecoder(file)
 
+	// Read JSON objects one at a time
+	for {
 		var batch Batch
-		if err := json.Unmarshal([]byte(line), &batch); err != nil {
-			continue // Skip malformed lines
+		err := decoder.Decode(&batch)
+		if err != nil {
+			if err.Error() == "EOF" {
+				break // End of file
+			}
+			continue // Skip malformed JSON and keep looping
 		}
 
 		if batch.Type == "batch" {
@@ -70,15 +87,16 @@ func main() {
 			tweetCounts = append(tweetCounts, batch.Data.TotalTweets)
 			clustersAboveMin = append(clustersAboveMin, batch.Data.ClustersAboveMinSize)
 
+			// Track busy words per cluster for this batch
+			for _, cluster := range batch.Data.Clusters {
+				busyWordsPerCluster = append(busyWordsPerCluster, len(cluster.BusyWords))
+			}
+
 			if firstBatchTime == "" {
 				firstBatchTime = batch.Data.BatchTime
 			}
 			lastBatchTime = batch.Data.BatchTime
 		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		log.Fatalf("Error reading file: %v", err)
 	}
 
 	batchCount := len(allBatches)
@@ -113,6 +131,20 @@ func main() {
 	fmt.Printf("   Average tweets: %.0f\n", tweetAvg)
 	fmt.Printf("   Standard deviation: %.0f\n", tweetStdev)
 	fmt.Println()
+
+	// Calculate busy words statistics
+	if len(busyWordsPerCluster) > 0 {
+		busyWordsMin, busyWordsMax := minMax(busyWordsPerCluster)
+		busyWordsAvg := average(busyWordsPerCluster)
+		busyWordsStdev := standardDeviation(busyWordsPerCluster)
+
+		fmt.Println("📝 Busy words per cluster statistics:")
+		fmt.Printf("   Min busy words per cluster: %d\n", busyWordsMin)
+		fmt.Printf("   Max busy words per cluster: %d\n", busyWordsMax)
+		fmt.Printf("   Average busy words per cluster: %.2f\n", busyWordsAvg)
+		fmt.Printf("   Standard deviation: %.2f\n", busyWordsStdev)
+		fmt.Println()
+	}
 
 	// Summary statistics
 	totalTweets := sum(tweetCounts)

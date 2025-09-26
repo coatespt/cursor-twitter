@@ -38,6 +38,8 @@ There are two different bases for scaling the bubbles.  The following aspects ne
 
 ### Bubble scaling choice and params should be on the screen 
 
+### When you get to the end of the input file, the bubble view can't back up.
+
 ### Find out what the divergence value in the bubble display means exactly.
 It seems to be in proportion to the size of the bubble.
 

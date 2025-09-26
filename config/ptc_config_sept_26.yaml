@@ -1,5 +1,8 @@
 
 # Overrride file for smaller batches and bigger window 9/6/2025
+#  sept_26   version will have hight z-score requirements to reduce number
+#    of lower value busywords. They were mostly 5.0 with a few higher in the 
+#    lower number f-classes. Now they are all 8.0 and 8.5.
 
 window: 5000000
 token_persist_files: 70
@@ -10,17 +13,17 @@ rebuild_every_files: 20
 # of the firehose.
 batch: 50000 
 #
-z_scores: [6.0, 6.0, 7.0, 6.5, 6.5, 5.5, 5.5, 5.5, 5.5, 5.5, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0,5.0,5.0,5.0,5.0] 
+z_scores: [8.0, 8.0, 8.0, 8.5, 8.5, 8.5, 8.5, 8.5, 8.5, 8.5, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0] 
 # Analysis settings
 analysis:
-  min_cluster_size: 5
+  min_cluster_size: 7
   min_busy_words_per_tweet: 3
   jaccard_use_busy_words_only: true
   min_jaccard_similarity: 0.1
   use_levenshtein_deduplication: true
   filter_repetitive_patterns: true 
   deduplicate_by_user: false
-  max_tweets_displayed: 5 
+  max_tweets_displayed: 7 
 
 log_level: INFO
 
