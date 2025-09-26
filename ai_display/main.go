@@ -836,7 +836,7 @@ func (s *Server) getClusterEvolution(clusterID, batchNumber, runID, batchesBack,
 			COALESCE((SELECT t.tweet_text FROM new_tweets t WHERE t.cluster_id = sc.cluster_internal_id AND t.is_medoid = true LIMIT 1), 'No medoid tweet available') as medoid_tweet
 		FROM similar_clusters sc 
 		LEFT JOIN ai_analysis_results ar ON sc.cluster_internal_id = ar.cluster_id
-		ORDER BY batch_id ASC, type DESC
+		ORDER BY batch_id DESC, type DESC
 	`
 
 	rows, err := s.db.Query(query, clusterID, batchNumber, runID, batchesBack, minMatchingWords)

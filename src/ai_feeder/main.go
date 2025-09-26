@@ -241,6 +241,29 @@ func (af *AIFeeder) CreateAnalysisSession(runName string) (int, int, error) {
 			}
 		}
 
+		// Check if there are more clusters in the run than originally counted
+		var currentTotalClusters int
+		err = af.db.QueryRow(`
+			SELECT COUNT(*) FROM new_clusters c
+			JOIN new_batches b ON c.batch_id = b.id
+			WHERE b.run_id = $1
+		`, runID).Scan(&currentTotalClusters)
+		if err != nil {
+			af.logger.Printf("Warning: failed to count current total clusters: %v", err)
+		} else {
+			// Update total_clusters if it has increased
+			_, err = af.db.Exec(`
+				UPDATE ai_analysis_sessions 
+				SET total_clusters = $1
+				WHERE session_id = $2 AND total_clusters < $1
+			`, currentTotalClusters, existingSessionID)
+			if err != nil {
+				af.logger.Printf("Warning: failed to update total clusters count: %v", err)
+			} else {
+				af.logger.Printf("Updated session total clusters to %d (was previously lower)", currentTotalClusters)
+			}
+		}
+
 		return existingSessionID, runID, nil
 	}
 
@@ -312,7 +335,7 @@ func (af *AIFeeder) GetClustersForAnalysis(sessionID int, runID int) ([]ClusterD
 	err = af.db.QueryRow(`
 		SELECT COUNT(*) FROM new_clusters c
 		JOIN new_batches b ON c.batch_id = b.id
-		WHERE b.run_id = $1 AND c.cluster_id >= $2
+		WHERE b.run_id = $1 AND c.id >= $2
 	`, runID, startFromCluster).Scan(&totalClusters)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count remaining clusters: %v", err)
@@ -335,7 +358,7 @@ func (af *AIFeeder) GetClustersForAnalysis(sessionID int, runID int) ([]ClusterD
 		FROM new_clusters c
 		JOIN new_batches b ON c.batch_id = b.id
 		WHERE b.run_id = $1
-		AND c.cluster_id >= $2
+		AND c.id >= $2
 		AND c.id NOT IN (
 			SELECT cluster_id FROM ai_analysis_results WHERE session_id = $3
 		)

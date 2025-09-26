@@ -22,56 +22,37 @@ If any changes seem to involve multiple threads, be sure to get my agreement bef
 
 # TTD
 
-## Medoid Tweets in JSON display.
-We fixed the medoid value in the JSON. Investigate whether we are using it to choose the tweet to display.
-
-## Medoid Tweets in the AI display
-- is_medoid is now in the postgres data. Are we using it in the AI display?
-
 ## The AI cluster history display seems to work now.
-- Test it
-- Add the parameters for 
-   - How far back to look 
-   - How many busy word to consider a match to the UI
-   - They need to be in the ai_display.yaml and as controls on the screen.
-
-- Look at the other view of AI data to be sure it's working right
+- It works, but the history seems really weak. The clusters seem pretty unrelated.  This is probably a matter of parameterizing the run differently.
+- I think there are too many busy words. Try raising all the minimum Z values.
+- We may need a utility to compute stats on this
 
 
-## Cursor has duplicated definitions of structs everywhere.
+## Bubble View
 
-- We have removed all structs from display and put them in types.
-
-- We have modified the SQL Loader and the parser to use the versions in types.
-
-- The main pipeline however, uses some very similar data structures and might possibly be modified to use the ones in types. It's not clear
-
-## The bubbles scaling needs testing 
-
+### Testing What is There
 There are two different bases for scaling the bubbles.  The following aspects need testing
 - The choice is in config 
 - The parameters for each that tune the display. 
 - The ability to override the values int he override file needs to be tested
 
-## Bubble scaling choice should be displayed on the page
+### Bubble scaling choice and params should be on the screen 
 
-## Find out what the divergence value in the bubble display means exactly
-It always seems to be 
+### Find out what the divergence value in the bubble display means exactly.
+It seems to be in proportion to the size of the bubble.
 
-## Instructions
-- The JSON is correctly parsed into a struct that is batch with a set of clusters and some metadata fields.  The cluster is composed of a set of tweets, some metadata fields, and a set of busyword objects which each has five fields.
-- The bubble handler uses these structs and we have verifed that they are corrrect.
+### The bubbles are too big and they size range is to narrow.
 
+## Barrier Issues 
 
-## Remove barrier time logs.
-Should I remove the barrier timing logs since they're not revealing a real problem?
+###Should I remove the barrier timing logs since they're not revealing a real problem?
 
-## Examine this log line. 
+### Examine this log line. 
 time=2025-09-10T08:57:11.370-04:00 level=WARN msg="Large time span in cluster" cluster_id=1 time_span_seconds=384 earliest="2012-01-30 08:23:53 UTC" latest="2012-01-30 08:30:17 UTC" cluster_size=98
 
 Six minutes seems like a very long time.
 
-## Look at this log line
+## Is This Log Line Obsolte?
 time=2025-09-10T08:57:10.201-04:00 level=INFO msg="BusyWordProcessor released from barrier" class_index=15 batch=376 barrier_wait_time_ms=848
 
 The barrier_wait_time seems very long. 848ms. They all seem to be the same, so that must be cluster processing time.
@@ -79,32 +60,12 @@ The barrier_wait_time seems very long. 848ms. They all seem to be the same, so t
 ## Override File
 Need a test for every single value in the override file.
 
-
-## Empty Batches
+## Empty Batches--Is this still an issue?
 We have lots of batches that have tweets but no clusters.  If a batch had no clusters but it had not tweets, that would be find--nothing says there have to be any busy words.  But if it has tweets it should have at least one cluster.
 
 If the clustering algorithm produces no clusters, and there are tweets, we need to put in a cluster with all those tweets.
 
 The clustering algorithm seems to sometimes find no clusters even though there are tweets. Can you look at the docs and the API and see if this is a thin? And maybe there's a flag to require that it always produce at least one cluster if there are tweets.
-
-##  Fixing the database.
-
-### The basic insertion of zfilters data
-We don't have to use these exact names
-- runs have a name like "DB_CLEAR_TEST" or "PTC_window_size_test" 
-   - This is just a name, but it should refer to a set of key parameters for the run. This could even be one of the config override files. Detail to be decided
-   - A run has a run_id that is a globally unique key
-- batches have a meaningless key primary key. 
-   - They also have a run_id foreign key that must exist to link to a run.
-- A cluster has a globally unique primary key cluster_id 
-   - It also must have a FK of the cluster_id it is part of 
-- A tweet has a globally unique meaningless tweet_id.
-   - A tweet in threory could be part of multiple clusters.
-   - This means it should be linked to a cluster by a linkage table something like {}
-
-When we start putting AI tables in for the Ollama output the rows should also have globally unique meaningless keys, but they must have FK's that are the cluster they are associated with.
-
-Do we need busy words? I think not.
 
 ## A Metric for Subjects
 This metric now exists and is displayed, but it is a first cut. Various enhancements are possible. Details to be decided.
@@ -141,8 +102,3 @@ Quality Score = (0.35 × Persistence) + (0.25 × Recurrence Strength) + (0.15 ×
 
 
 # Some Lessons Learned
-
-## The Barrier
-There was no proper barrier construct holding the busyword processors and the analytics thread in lock step. 
-
-Both are quite fast. The BWP's usually run in under a millisecond, occasionally as long as two or three.  The clustering is slower 
