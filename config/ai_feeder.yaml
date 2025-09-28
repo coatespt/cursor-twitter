@@ -25,7 +25,7 @@ processing:
   retry_delay: 5                          # Seconds between retries
   prompt_template: "prompts/cluster_analysis.txt"  # Path to prompt template file
   analysis_type: "cluster_summary"        # Type of analysis to perform
-  session_name: "sept_21_new"             # Name for this analysis session
+  session_name: "sept_26"             # Name for this analysis session
   run_id: 1                               # Experiment run ID to analyze
   max_clusters: 0                         # Max clusters to process (0 = all) - process all clusters
   start_from_cluster: 1                   # Start from specific cluster ID

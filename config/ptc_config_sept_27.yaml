@@ -1,0 +1,29 @@
+
+# Z-MINIMA 10.0
+# MIN BUSYWORDS 3
+# 50K batch
+
+
+window: 5000000
+token_persist_files: 70
+rebuild_every_files: 20
+
+# Smaller batch than we'd been using
+# 20,000 is 40 seconds of the decahose (wall clock time) but only four seconds 
+# of the firehose.
+batch: 50000 
+#
+z_scores: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0] 
+# Analysis settings
+analysis:
+  min_cluster_size: 7
+  min_busy_words_per_tweet: 3
+  jaccard_use_busy_words_only: true
+  min_jaccard_similarity: 0.1
+  use_levenshtein_deduplication: true
+  filter_repetitive_patterns: true 
+  deduplicate_by_user: false
+  max_tweets_displayed: 7 
+
+log_level: INFO
+

@@ -1,8 +1,11 @@
 I installed olama on the linux machine.
 
-Don't know what this stuff is about when I run systemctl status ollama
 
+Running:
 (base) petercoates@pop-os:~/cursor-twitter$ systemctl status ollama
+
+Will show some status information about Ollama
+
 ● ollama.service - Ollama Service
      Loaded: loaded (/etc/systemd/system/ollama.service; enabled; vendor preset: enabled)
      Active: active (running) since Sun 2025-08-31 15:12:28 EDT; 9min ago
@@ -12,17 +15,6 @@ Don't know what this stuff is about when I run systemctl status ollama
         CPU: 340ms
      CGroup: /system.slice/ollama.service
              └─1694474 /usr/local/bin/ollama serve
-
-Aug 31 15:12:28 pop-os ollama[1694474]: Couldn't find '/usr/share/ollama/.ollama/id_ed25519'. Generating new private key.
-Aug 31 15:12:28 pop-os ollama[1694474]: Your new public key is:
-Aug 31 15:12:28 pop-os ollama[1694474]: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBv6eGrI077SuBBp53RCuMCWSL549B83coV7GDvDuYGs
-Aug 31 15:12:28 pop-os ollama[1694474]: time=2025-08-31T15:12:28.621-04:00 level=INFO source=routes.go:1331 msg="server config" env="map[CUDA_VISIBLE_DEVICES: GPU_DEVICE>
-Aug 31 15:12:28 pop-os ollama[1694474]: time=2025-08-31T15:12:28.621-04:00 level=INFO source=images.go:477 msg="total blobs: 0"
-Aug 31 15:12:28 pop-os ollama[1694474]: time=2025-08-31T15:12:28.621-04:00 level=INFO source=images.go:484 msg="total unused blobs removed: 0"
-Aug 31 15:12:28 pop-os ollama[1694474]: time=2025-08-31T15:12:28.622-04:00 level=INFO source=routes.go:1384 msg="Listening on 127.0.0.1:11434 (version 0.11.8)"
-Aug 31 15:12:28 pop-os ollama[1694474]: time=2025-08-31T15:12:28.622-04:00 level=INFO source=gpu.go:217 msg="looking for compatible GPUs"
-Aug 31 15:12:28 pop-os ollama[1694474]: time=2025-08-31T15:12:28.937-04:00 level=INFO source=types.go:130 msg="inference compute" id=GPU-9e904080-26ec-0b12-6464-c8c80077>
-Aug 31 15:12:28 pop-os ollama[1694474]: time=2025-08-31T15:12:28.937-04:00 level=INFO source=routes.go:1425 msg="entering low vram mode" "total vram"="3.6 GiB" threshold>
 
 (base) petercoates@pop-os:~/cursor-twitter$  ollama run llama3
 pulling manifest 
@@ -189,85 +181,3 @@ sudo docker run -d -p 3000:8080 --gpus=all -v ollama:/root/.ollama -v open-webui
 Use code with caution.
 This command downloads both Ollama and Open WebUI and runs them in a way that handles the internal networking for you.
 Finally, access the web UI from your iMac via http://<your_ubuntu_ip>:3000 as before. 
-
-AI responses may include mistakes. Learn more
-B
-B
-B
-B
-B
-B
-B
-B
-B
-B
-B
-B
-B
-B
-B
-B
-B
-B
-B
-B
-B
-B
-B
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-AI responses may include mistakes. Learn more

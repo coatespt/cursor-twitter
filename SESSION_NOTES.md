@@ -67,12 +67,44 @@ Adjusting most of the Z score minima to 8.0 with some of the low-number classes 
 
 # Practical TTD 
 
+## Restarting AI_loader
+What a fuckin' mess that was. I think it's straightened out, modulo egregious hack to get sessions out of it.
+
+Re-loading with sept_26.  Stop/start to be sure it works.
+
+Start load of sept_27  Stop/start to be sure it works
+
+Go back to sept_26 and make sure it all starts at the right places.
+
+Verify that the config value for the run is correctly overriden on the command line. It was wrong, not sure it actually got fixed.
+
 ## Do we want these log lines gone?
 *** FCT REBUILD STARTED at 18:26:01 ***
 *** FCT REBUILD COMPLETED at 18:26:02 (duration: 857.015865ms, token files written: 473430) ***
 
-## The Config Override System is a mess.
+## The Config Override System 
 This has supposedly been fixed and any value can go in the override file. We shall see.
+- Needs testing.
+- Review code. It should be a matter of reading the main config, merging in the specified override file.
+
+## Bubble View Problems
+
+### When Bubble View Get To The End it Freezes
+- Thinks it's at the end really early. I think it's just loadign one batch of data.
+- If you run off the end, you have to restart the server. Backing up doesn't work.
+
+### There is now way to choose where in the file you want to be other than the next button.
+
+### Divergence
+- How is it computed?
+- The Busywords should be ordered on that basis.
+
+### Bubble Size Range Is Still A Mess
+- The smallest bubbles are way too big.
+- When computed in proportion to Z, the smallest Z should be sought out, perhaps in config?  The bubbles should be in proportion to that baseline.  As it is, if the smallest Z is ten, the smallest bubbble will be twice the size of the smallest bubble in a run where the smallest Z is 5.
+
+
+
 
 ## Rabbit Not Tested With Refactored Code
 

@@ -205,149 +205,48 @@ func (af *AIFeeder) Close() error {
 	return af.db.Close()
 }
 
-// CreateAnalysisSession creates a new AI analysis session or resumes an existing one
-func (af *AIFeeder) CreateAnalysisSession(runName string) (int, int, error) {
-	// Look up run_id from run_name
+// GetRunID gets the run_id for the given run name
+func (af *AIFeeder) GetRunID(runName string) (int, error) {
 	var runID int
 	err := af.db.QueryRow(`
 		SELECT run_id FROM new_experiment_runs WHERE run_name = $1
 	`, runName).Scan(&runID)
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to find experiment run '%s': %v", runName, err)
+		return 0, fmt.Errorf("failed to find run '%s': %v", runName, err)
 	}
-
-	// Check if session already exists
-	var existingSessionID int
-	var status string
-	err = af.db.QueryRow(`
-		SELECT session_id, status FROM ai_analysis_sessions 
-		WHERE run_id = $1 AND session_name = $2
-	`, runID, af.config.Processing.SessionName).Scan(&existingSessionID, &status)
-
-	if err == nil {
-		// Session exists - always resume it, regardless of status
-		af.logger.Printf("Resuming existing AI analysis session %d for run '%s' (status: %s)",
-			existingSessionID, runName, status)
-
-		// Update session status to running if it was completed/failed
-		if status != "running" {
-			_, err = af.db.Exec(`
-				UPDATE ai_analysis_sessions 
-				SET status = 'running', completed_at = NULL
-				WHERE session_id = $1
-			`, existingSessionID)
-			if err != nil {
-				af.logger.Printf("Warning: failed to update session status to running: %v", err)
-			}
-		}
-
-		// Check if there are more clusters in the run than originally counted
-		var currentTotalClusters int
-		err = af.db.QueryRow(`
-			SELECT COUNT(*) FROM new_clusters c
-			JOIN new_batches b ON c.batch_id = b.id
-			WHERE b.run_id = $1
-		`, runID).Scan(&currentTotalClusters)
-		if err != nil {
-			af.logger.Printf("Warning: failed to count current total clusters: %v", err)
-		} else {
-			// Update total_clusters if it has increased
-			_, err = af.db.Exec(`
-				UPDATE ai_analysis_sessions 
-				SET total_clusters = $1
-				WHERE session_id = $2 AND total_clusters < $1
-			`, currentTotalClusters, existingSessionID)
-			if err != nil {
-				af.logger.Printf("Warning: failed to update total clusters count: %v", err)
-			} else {
-				af.logger.Printf("Updated session total clusters to %d (was previously lower)", currentTotalClusters)
-			}
-		}
-
-		return existingSessionID, runID, nil
-	}
-
-	// No existing session, create new one
-	af.logger.Printf("No existing session found for '%s', creating new session", af.config.Processing.SessionName)
-	return af.createNewSession(runID, af.config.Processing.SessionName)
+	return runID, nil
 }
 
-// createNewSession creates a new analysis session
-func (af *AIFeeder) createNewSession(runID int, sessionName string) (int, int, error) {
-	// Read prompt template
-	promptTemplate, err := os.ReadFile(af.config.Processing.PromptTemplate)
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to read prompt template: %v", err)
-	}
-
-	// Count total clusters for this run
-	var totalClusters int
-	err = af.db.QueryRow(`
-		SELECT COUNT(*) FROM new_clusters c
-		JOIN new_batches b ON c.batch_id = b.id
-		WHERE b.run_id = $1
-	`, runID).Scan(&totalClusters)
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to count clusters: %v", err)
-	}
-
-	// Insert session
+// GetOrCreateDummySession creates a dummy session for storing results
+func (af *AIFeeder) GetOrCreateDummySession(runID int) (int, error) {
+	// Try to find existing dummy session
 	var sessionID int
+	err := af.db.QueryRow(`
+		SELECT session_id FROM ai_analysis_sessions 
+		WHERE run_id = $1 AND session_name = 'dummy'
+	`, runID).Scan(&sessionID)
+
+	if err == nil {
+		return sessionID, nil
+	}
+
+	// Create dummy session
 	err = af.db.QueryRow(`
 		INSERT INTO ai_analysis_sessions (
-			run_id, session_name, ai_model, ai_endpoint, prompt_template,
-			analysis_type, total_clusters
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+			run_id, session_name, ai_model, ai_endpoint, prompt_template, analysis_type
+		) VALUES ($1, 'dummy', 'dummy', 'dummy', 'dummy', 'dummy')
 		RETURNING session_id
-	`, runID, sessionName,
-		af.config.AI.Model, af.config.AI.Endpoint, string(promptTemplate),
-		af.config.Processing.AnalysisType, totalClusters).Scan(&sessionID)
+	`, runID).Scan(&sessionID)
 
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to create analysis session: %v", err)
+		return 0, fmt.Errorf("failed to create dummy session: %v", err)
 	}
 
-	af.logger.Printf("Created new AI analysis session %d for run_id %d (session: '%s', %d clusters)",
-		sessionID, runID, sessionName, totalClusters)
-
-	return sessionID, runID, nil
+	return sessionID, nil
 }
 
 // GetClustersForAnalysis retrieves clusters to analyze
-func (af *AIFeeder) GetClustersForAnalysis(sessionID int, runID int) ([]ClusterData, error) {
-	// Find the last processed cluster for this session
-	var startFromCluster int
-	var lastProcessedCluster int
-	err := af.db.QueryRow(`
-		SELECT COALESCE(MAX(cluster_id), 0) 
-		FROM ai_analysis_results 
-		WHERE session_id = $1
-	`, sessionID).Scan(&lastProcessedCluster)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find last processed cluster: %v", err)
-	}
-
-	// Start from the next cluster after the last processed one
-	startFromCluster = lastProcessedCluster + 1
-
-	// Count how many clusters are remaining to process
-	var totalClusters int
-	err = af.db.QueryRow(`
-		SELECT COUNT(*) FROM new_clusters c
-		JOIN new_batches b ON c.batch_id = b.id
-		WHERE b.run_id = $1 AND c.id >= $2
-	`, runID, startFromCluster).Scan(&totalClusters)
-	if err != nil {
-		return nil, fmt.Errorf("failed to count remaining clusters: %v", err)
-	}
-
-	if lastProcessedCluster == 0 {
-		af.logger.Printf("Starting fresh analysis from cluster %d (%d clusters total)", startFromCluster, totalClusters)
-	} else {
-		af.logger.Printf("Resuming analysis from cluster %d (last processed: %d, %d clusters remaining)",
-			startFromCluster, lastProcessedCluster, totalClusters)
-	}
-
+func (af *AIFeeder) GetClustersForAnalysis(runID int, runName string, sessionID int) ([]ClusterData, error) {
 	query := `
 		SELECT 
 			c.id, c.cluster_id, b.batch_number, b.batch_time, c.size, c.quality_score,
@@ -357,10 +256,10 @@ func (af *AIFeeder) GetClustersForAnalysis(sessionID int, runID int) ([]ClusterD
 			(SELECT frequency_class FROM new_busy_words WHERE cluster_id = c.id LIMIT 1) as frequency_class
 		FROM new_clusters c
 		JOIN new_batches b ON c.batch_id = b.id
+		JOIN new_experiment_runs ner ON b.run_id = ner.run_id
 		WHERE b.run_id = $1
-		AND c.id >= $2
 		AND c.id NOT IN (
-			SELECT cluster_id FROM ai_analysis_results WHERE session_id = $3
+			SELECT cluster_id FROM ai_analysis_results WHERE session_id = $2
 		)
 		ORDER BY b.batch_number, c.cluster_id
 	`
@@ -370,7 +269,7 @@ func (af *AIFeeder) GetClustersForAnalysis(sessionID int, runID int) ([]ClusterD
 		query += fmt.Sprintf(" LIMIT %d", af.config.Processing.MaxClusters)
 	}
 
-	rows, err := af.db.Query(query, runID, startFromCluster, sessionID)
+	rows, err := af.db.Query(query, runID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query clusters: %v", err)
 	}
@@ -395,9 +294,6 @@ func (af *AIFeeder) GetClustersForAnalysis(sessionID int, runID int) ([]ClusterD
 			cluster.FrequencyClass = int(frequencyClass.Int32)
 		} else {
 			cluster.FrequencyClass = 0 // Default value for NULL
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan cluster: %v", err)
 		}
 
 		// Parse arrays from strings
@@ -583,26 +479,6 @@ func (af *AIFeeder) StoreAnalysisResult(sessionID int, clusterID int, prompt str
 	return nil
 }
 
-// UpdateSessionProgress updates the session progress
-func (af *AIFeeder) UpdateSessionProgress(sessionID int, processed, failed int) error {
-	_, err := af.db.Exec(`
-		UPDATE ai_analysis_sessions 
-		SET processed_clusters = $2, failed_clusters = $3
-		WHERE session_id = $1
-	`, sessionID, processed, failed)
-	return err
-}
-
-// CompleteSession marks the session as completed
-func (af *AIFeeder) CompleteSession(sessionID int) error {
-	_, err := af.db.Exec(`
-		UPDATE ai_analysis_sessions 
-		SET status = 'completed', completed_at = NOW()
-		WHERE session_id = $1
-	`, sessionID)
-	return err
-}
-
 // ProcessCluster analyzes a single cluster
 func (af *AIFeeder) ProcessCluster(sessionID int, cluster ClusterData, promptTemplate *template.Template) error {
 	// Limit tweets to max_tweets_per_cluster
@@ -668,10 +544,18 @@ func main() {
 	}
 	defer feeder.Close()
 
-	// Create analysis session
-	sessionID, runID, err := feeder.CreateAnalysisSession(runName)
+	// Get run ID
+	runID, err := feeder.GetRunID(runName)
 	if err != nil {
-		log.Fatalf("Failed to create analysis session: %v", err)
+		log.Fatalf("Failed to get run ID: %v", err)
+	}
+
+	fmt.Printf("Using run_id %d for run_name '%s'\n", runID, runName)
+
+	// Get or create dummy session
+	sessionID, err := feeder.GetOrCreateDummySession(runID)
+	if err != nil {
+		log.Fatalf("Failed to get dummy session: %v", err)
 	}
 
 	// Load prompt template
@@ -686,7 +570,7 @@ func main() {
 	}
 
 	// Get clusters to analyze
-	clusters, err := feeder.GetClustersForAnalysis(sessionID, runID)
+	clusters, err := feeder.GetClustersForAnalysis(runID, runName, sessionID)
 	if err != nil {
 		log.Fatalf("Failed to get clusters: %v", err)
 	}
@@ -768,7 +652,6 @@ func main() {
 					estimatedTotal := avgTime * time.Duration(len(clusters))
 					estimatedRemaining := estimatedTotal - elapsed
 
-					feeder.UpdateSessionProgress(sessionID, currentProcessed, currentFailed)
 					fmt.Printf("=== PERFORMANCE TIMING STATS ===\n")
 					fmt.Printf("Progress: %d/%d processed, %d failed (%.1f%%)\n",
 						currentProcessed, len(clusters), currentFailed, float64(currentProcessed)/float64(len(clusters))*100)
@@ -789,11 +672,6 @@ func main() {
 
 	// Wait for all workers to complete
 	wg.Wait()
-
-	// Complete session
-	if err := feeder.CompleteSession(sessionID); err != nil {
-		log.Printf("Failed to complete session: %v", err)
-	}
 
 	fmt.Printf("Analysis completed: %d processed, %d failed\n", processed, failed)
 }

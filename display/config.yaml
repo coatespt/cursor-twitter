@@ -1,18 +1,23 @@
-input_file: "../sept_25.json"
+input_file: "../sept_27_b.json"
 batch_size: 100
 historical_batches: 15 
 min_cluster_size: 3
 recurrence_threshold: 0.8
 recurrence_strategy: "all_tweets"  # Options: "medoid_only" or "all_tweets"
-bubble_batches: 10  # Number of batches to show in bubble graph
+
+bubble_batches: 15  # Number of batches to show in bubble graph
 bubble_color: "blue"  # Base color for bubbles (blue, green, purple, etc.)
-bubble_size_method: "zscore"  # Options: "zscore" or "count_ratio"
+# bubble_size_method: "zscore"  # Options: "zscore" or "count_ratio"
+bubble_size_method: "count_ratio"  # Options: "zscore" or "count_ratio"
+
 # Bubble size scaling parameters (used when bubble_size_method is "zscore")
-smallest_z: 4.0  # Z-score that maps to smallest bubble
-largest_z: 20.0  # Z-score that maps to largest bubble  
-bubble_size_multiple: 2.0  # Multiple: largest bubble is k times bigger than smallest
+smallest_z: 10.0  # Z-score that maps to smallest bubble
+largest_z: 30.0  # Z-score that maps to largest bubble  
+bubble_size_multiple: 5.0  # Multiple: largest bubble is k times bigger than smallest
+
 # Bubble size scaling parameters (used when bubble_size_method is "count_ratio")
 smallest_ratio: 0.01  # Ratio (actual/mean) that maps to smallest bubble
 largest_ratio: 5.0  # Ratio (actual/mean) that maps to largest bubble
 bubble_ratio_multiple: 16.0  # Multiple: largest bubble is k times bigger than smallest
+
 freq_classes: 24  # Number of frequency classes (must match main config)
