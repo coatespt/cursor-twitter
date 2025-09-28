@@ -4,7 +4,7 @@
 # 50K batch
 
 
-window: 5000000
+window_size: 5000000
 token_persist_files: 70
 rebuild_every_files: 20
 

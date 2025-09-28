@@ -5,10 +5,10 @@ The document is about nitty gritty practicalities in development.
 Specifically, it contains:
 
 - Loud warnings to Cursor not to mess with any code without asking
-- Notes on how it works
 - Notes on things learned, enhancements, improvements, bugs fixed, etc.
 - TTD for fixes, enhancements, analysis, etc.
 - Some miscellaneous details on functionality 
+- Notes on how it works
 - Some details on data volume and issues
 
 Other documentation:
@@ -49,16 +49,47 @@ Apparently you are under the impression that I want happy sunny output. No! Be a
 
 
 # Parameter Tune-Ups
-I am trying to find the combinations of parameters that give the best results.
 
-Initially trying to adjust Z minima.  Another promising area is the size of the batches.
+I am trying to find the combinations of parameters that give the best results.
+There are config files with names like ptc_config_sept_27.yaml  that correspond to Z-Filters output JSON files with names like sept_27.JSON  and to SQL data in runs with names like sept_27.
+
+You can get a good look at the data quality wihout the AI. Just generate the JSON and look at it using the display program.
+
+Meanwhile, I am running the AI on all of the runs. It's less than a quarter gigabyte of disk in Postgres but it takes about 15 to 20 hours to run the AI, v about an hour or so to run Z-Filters.  You can actually run as many ai_loaders as you want, but even one fully occupies the machine, so the total throughput is the same.
 
 ## Concentrating on Z Minima
 ### sept_25 
-Gave a lot of busywords and clusters that don't seem all that coherent.  It mostly had 5.0 for the Z scores.  The batch is 50k.
+Gave a lot of busywords and clusters that don't seem all that coherent.  
+- It mostly had 5.0 for the Z scores.  
+- The batch is 50k.
+- min_cluster_size: 5
+- min_busy_words_per_tweet: 3
 
 ### sept_26 
-Adjusting most of the Z score minima to 8.0 with some of the low-number classes being 8.5.  The batch is 50k.
+- Z score minima to 8.0 with some of the low-number classes being 8.5.  
+- The batch is 50k.
+- min_cluster_size: 7
+- min_busy_words_per_tweet: 3
+
+### sept_27
+- Z-scores all set to 10.0
+- batch size 50K
+- min_cluster_size: 7
+- min_busy_words_per_tweet: 3
+
+### sept_27_b
+- Z-scores all set to 10.0, 
+- batch size 25K
+- min_cluster_size: 7
+- min_busy_words_per_tweet: 3
+
+### sept_27_c
+- Z-scores all set to 10.0
+- batch size 25K
+- min_cluster_size: 7
+- min_busy_words_per_tweet: 5
+
+
 
 ## Concentrating on Batch Size and Window Size
 
@@ -70,11 +101,11 @@ Adjusting most of the Z score minima to 8.0 with some of the low-number classes 
 ## Restarting AI_loader
 What a fuckin' mess that was. I think it's straightened out, modulo egregious hack to get sessions out of it.
 
-Re-loading with sept_26.  Stop/start to be sure it works.
+Re-loading with sept_26.  Stop/start to be sure it works.  YES
 
-Start load of sept_27  Stop/start to be sure it works
+Start load of sept_27  Stop/start to be sure it works  YES
 
-Go back to sept_26 and make sure it all starts at the right places.
+Go back to sept_26 and make sure it all starts at the right places. YES
 
 Verify that the config value for the run is correctly overriden on the command line. It was wrong, not sure it actually got fixed.
 
@@ -100,7 +131,7 @@ This has supposedly been fixed and any value can go in the override file. We sha
 - The Busywords should be ordered on that basis.
 
 ### Bubble Size Range Is Still A Mess
-- The smallest bubbles are way too big.
+- The smallest bubbles are still way too big.
 - When computed in proportion to Z, the smallest Z should be sought out, perhaps in config?  The bubbles should be in proportion to that baseline.  As it is, if the smallest Z is ten, the smallest bubbble will be twice the size of the smallest bubble in a run where the smallest Z is 5.
 
 

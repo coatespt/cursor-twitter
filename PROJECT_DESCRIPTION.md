@@ -92,6 +92,8 @@ Instruction for running them can be found in the USER_MANUAL.md
 There is a link to a diagram at the top of this file.
 
 ## Z-Fiilters: The subjects
+This is the key piece that finds new subjects in the firehose.
+
 ### JSON Tweet to CSV Tweet Parser
 This component parses the original compressed JSON files into a more compact and easily parsed CSV representation.
 
@@ -105,12 +107,14 @@ The resulting Tweet CSV files are just like the originals, except for the langua
 The config.yaml has a parameter for whether you want to use all languages, or just en, es, et.
 
 ### RabbitMQ/MQ Feeder
+
 The main Z-filters processor can take its input Tweets either directly from disk files or from RabbitMQ. The choice is stated in the config.yaml file. Instructions for starting RabbitMQ are in the USER_MANUAL.md
 Use of the Feeder is optional.
 
 The RabbitMQ Feeder reads the files (there are about 5700 of them) in time-order, and puts the CSV on RabbitMQ.  It keeps a notation on disk of the last file it processed, so if it is interrupted, it will pick up more or less where it left off.
 
 ### Main Processing
+
 The main processor works the same way regardless of whether it reads the Tweet CSV from disk or picks it up line by line from RabbitMQ. It takes the input in batches of several thousand Tweets (config.yaml) figures out the unusually busy words, and finds the recent Tweets that use at least M of them, (this is a very small percentage of all Tweets). It then runs a clustering algorithm on those Tweets to identify the clusters of usage, and writes the resulting clusters of Tweets, as well as metadata about the clusters and the bathces, to standard out as JSON.
 
 This is the heart of the system because it identifies the subjects. It is very fast, operating on up to 50,000 Tweets/second even on a laptop.
@@ -135,13 +139,26 @@ The optional AI portion uses the Ollama LLM running locally to describe the mean
 The AI portion is currently set to use a utility to feed the output of the Z-Filters portion to Postgres.  This can easily be switched to feed as the batches are processed.
 Unless true real-time analysis is required, it isn't really necessary.
 
-### JSON Main Output to Postgres
+### JSON Main Output Into Postgres
 
 A free-standing utility reads the JSON output from main and inserts it into several tables on Postgress. One of the tables contains the name of the particular run, as well as the values of key parameters that it extracts from the config file.  
 
-This allows the output of any number of runs to exist side by side in Postgres and identified by name, e.g., "Bob's small batch test 9/30/2025".
+This allows the output of any number of runs to exist side by side in Postgres. 
+My conventions are:
+- Have an override config file with whatever makes the run distinctive and give it a name like ptc_config_sept_7.yaml
 
-The runs can also be dropped from the database with a query.
+- Name output something like sept_7.json
+
+- Call the run something like "sept_7" in Postgres 
+
+This way you have documentation for the run and a way to pull up the corresponding views in the ai_display and the regular display.
+
+The runs don't produce all that much data. A typical JSON output for the two weeks of the decahose is about 25 to 100 MB depending on settins. It could be more.
+
+The amount of Postrgess data space is similar.
+
+So you're probably going to get about four full analysis runs per GB of storage.
+
 
 ### AI/Ollama Service
 A second utility program reads the batch/cluster/tweet information from Postgres cluster-by-cluster, formualtes it into prompts, and sends it to Ollama via HTTP POST. Ollama runs locally on its own machine.

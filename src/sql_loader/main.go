@@ -333,8 +333,8 @@ func (sl *SQLLoader) CreateExperimentRun(runName, pipelineConfigPath, overrideCo
 		if err != nil {
 			return 0, fmt.Errorf("failed to load override config: %v", err)
 		}
-		// Apply overrides (this is a simple merge - in practice you might want more sophisticated merging)
-		pipelineConfig = overrideConfig
+		// Merge overrides into base config (proper merge, not replacement)
+		mergeConfigOverrides(pipelineConfig, overrideConfig)
 	}
 
 	// Convert arrays to strings
