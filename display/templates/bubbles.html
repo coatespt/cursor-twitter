@@ -39,6 +39,7 @@
         .navigation {
             display: flex;
             gap: 10px;
+            align-items: center;
         }
 
         .nav-button {
@@ -50,6 +51,35 @@
             cursor: pointer;
             font-size: 14px;
             transition: background-color 0.3s;
+        }
+
+        .batch-input {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            margin-left: 20px;
+        }
+
+        .batch-input input {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            width: 80px;
+            text-align: center;
+        }
+
+        .batch-input button {
+            padding: 8px 12px;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .batch-input button:hover {
+            background-color: #218838;
         }
 
         .nav-button:hover {
@@ -255,6 +285,10 @@
                 <button class="nav-button" onclick="nextBatch()" id="nextBtn">Next</button>
                 <button class="nav-button" onclick="advanceMultiple(5)">+5</button>
                 <button class="nav-button" onclick="advanceMultiple(10)">+10</button>
+                <div class="batch-input">
+                    <input type="number" id="batchInput" placeholder="Batch #" min="0" value="{{.CurrentBatch}}">
+                    <button onclick="jumpToBatch()">Go</button>
+                </div>
                 <div class="view-toggle">
                     <a href="/grid/{{.CurrentBatch}}">Grid View</a>
                     <a href="/medoid/{{.CurrentBatch}}">Medoid View</a>
@@ -279,7 +313,17 @@
     </div>
 
     <script>
-        let currentBatch = {{.CurrentBatch}};
+        // Get batch number from URL path
+        function getBatchFromUrl() {
+            const path = window.location.pathname;
+            const match = path.match(/\/bubbles\/(\d+)/);
+            if (match) {
+                return parseInt(match[1]);
+            }
+            return {{.CurrentBatch}}; // Fallback to template value
+        }
+        
+        let currentBatch = getBatchFromUrl();
         let canvas, ctx;
         let bubbleData = null;
         let tooltip = null;
@@ -305,7 +349,8 @@
                 batchInfo.textContent = 'Loading bubble data...';
                 sidePanel.innerHTML = '<div class="loading">Loading cluster data...</div>';
 
-                const response = await fetch('/api/bubble-data/');
+                console.log(`Loading bubble data for batch: ${currentBatch}`);
+                const response = await fetch(`/api/bubble-data/?batch=${currentBatch}`);
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
@@ -531,6 +576,25 @@
             loadBubbleData();
         }
 
+        // Jump to a specific batch number
+        async function jumpToBatch() {
+            const batchInput = document.getElementById('batchInput');
+            const targetBatch = parseInt(batchInput.value);
+            
+            if (isNaN(targetBatch) || targetBatch < 0) {
+                alert('Please enter a valid batch number (0 or greater)');
+                return;
+            }
+            
+            try {
+                // Navigate to the specific batch
+                window.location.href = `/bubbles/${targetBatch}`;
+            } catch (error) {
+                console.error('Error jumping to batch:', error);
+                alert('Error jumping to batch. Please try again.');
+            }
+        }
+
         // Handle browser back/forward buttons - now using navigation API
         window.addEventListener('popstate', function() {
             // Refresh data when browser navigation occurs
@@ -705,23 +769,25 @@
         document.addEventListener('DOMContentLoaded', async function() {
             initCanvas();
             
-            // Get current batch info from API
-            try {
-                const response = await fetch('/api/current');
-                if (response.ok) {
-                    const data = await response.json();
-                    currentBatch = data.batch_number;
-                }
-            } catch (error) {
-                console.error('Error getting current batch:', error);
-            }
-            
+            // currentBatch is already set from URL in getBatchFromUrl()
             loadBubbleData();
             
             // Add mouse event listeners for tooltips
             canvas.addEventListener('mousemove', handleMouseMove);
             canvas.addEventListener('mouseleave', hideTooltip);
         });
+
+        // Watch for URL changes and reload data when batch changes
+        let lastBatch = currentBatch;
+        setInterval(() => {
+            const newBatch = getBatchFromUrl();
+            if (newBatch !== lastBatch) {
+                console.log(`Batch changed from ${lastBatch} to ${newBatch}, reloading data...`);
+                currentBatch = newBatch;
+                lastBatch = newBatch;
+                loadBubbleData();
+            }
+        }, 100); // Check every 100ms
     </script>
 
     <!-- Frequency Class Legend -->

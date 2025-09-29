@@ -547,6 +547,18 @@ go build -o sql_loader .
 ./sql_loader "Run Name" ../../config/database.yaml ../../config/config.yaml
 ```
 
+**Command Line Format:**
+```bash
+./sql_loader <run_name> <database-config.yaml> <pipeline-config.yaml> [override-config.yaml] [json-file]
+```
+
+**Arguments:**
+- `run_name`: Name for this experiment run (e.g., "sept_4_ptc", "Test Run")
+- `database-config.yaml`: Database connection settings
+- `pipeline-config.yaml`: Base pipeline configuration  
+- `override-config.yaml`: Optional config overrides (only specify parameters you want to change)
+- `json-file`: Optional specific JSON file to load (defaults to pipeline output)
+
 **Real-time Processing (Recommended):**
 
 The SQL loader can run simultaneously with the main Z-filters pipeline, reading data directly from the JSON file as it's being written. This enables real-time database population without waiting for the main pipeline to complete.
@@ -591,6 +603,31 @@ go build -o sql_loader .
 ```bash
 ./sql_loader "High Freq Test" ../../config/database.yaml ../../config/config.yaml ../../config/experiments/high_freq.yaml ../../data/august_12_clusters.json
 ```
+
+**Config Override System:**
+The SQL loader supports config overrides for easy experimentation. The system:
+1. **Loads base config** - gets all default values from `pipeline-config.yaml`
+2. **Loads override config** - gets only the specified values from `override-config.yaml` 
+3. **Merges them** - override values replace base values, unspecified values stay as defaults
+4. **Stores in database** - complete parameter set is saved with the experiment run
+
+**Override File Format:**
+Override files should only contain the parameters you want to change:
+```yaml
+# config/experiments/high_freq.yaml
+window_size: 5000000
+batch: 50000
+z_scores: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+analysis:
+  min_busy_words_per_tweet: 3
+  min_jaccard_similarity: 0.1
+```
+
+**Benefits:**
+- **Minimal files**: Only specify what you're changing
+- **No duplication**: Don't repeat all the common settings  
+- **Clear intent**: Obvious what each experiment is testing
+- **Easy tracking**: Each override file focuses on specific parameters
 
 **Key Features:**
 - **Experiment Tracking**: Each run creates a record with all configuration parameters

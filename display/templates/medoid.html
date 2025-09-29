@@ -43,6 +43,7 @@
         .navigation {
             display: flex;
             gap: 10px;
+            align-items: center;
         }
 
         .nav-button {
@@ -54,6 +55,35 @@
             cursor: pointer;
             font-size: 14px;
             transition: background-color 0.3s;
+        }
+
+        .batch-input {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            margin-left: 20px;
+        }
+
+        .batch-input input {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            width: 80px;
+            text-align: center;
+        }
+
+        .batch-input button {
+            padding: 8px 12px;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .batch-input button:hover {
+            background-color: #218838;
         }
 
         .nav-button:hover {
@@ -251,6 +281,10 @@
                 <button class="nav-button" onclick="previousBatch()" id="prevBtn">Previous</button>
                 <button class="nav-button" onclick="toggleAutoPlay()" id="playBtn">Play</button>
                 <button class="nav-button" onclick="nextBatch()" id="nextBtn">Next</button>
+                <div class="batch-input">
+                    <input type="number" id="batchInput" placeholder="Batch #" min="0" value="{{.CurrentBatch}}">
+                    <button onclick="jumpToBatch()">Go</button>
+                </div>
                 <div class="view-toggle">
                     <a href="/grid/{{.CurrentBatch}}">Grid View</a>
                     <a href="/bubbles/{{.CurrentBatch}}">Bubble View</a>
@@ -279,7 +313,17 @@
     </div>
 
     <script>
-        let currentBatch = {{.CurrentBatch}};
+        // Get batch number from URL path
+        function getBatchFromUrl() {
+            const path = window.location.pathname;
+            const match = path.match(/\/medoid\/(\d+)/);
+            if (match) {
+                return parseInt(match[1]);
+            }
+            return {{.CurrentBatch}}; // Fallback to template value
+        }
+        
+        let currentBatch = getBatchFromUrl();
         let autoPlayInterval = null;
         let isPlaying = false;
 
@@ -301,7 +345,7 @@
                     const batchToLoad = currentBatch - i;
                     if (batchToLoad < 0) break;
                     
-                    const response = await fetch('/api/medoid-data');
+                    const response = await fetch(`/api/medoid-data?batch=${currentBatch}`);
                     if (!response.ok) {
                         if (response.status === 404 || batchToLoad < 0) {
                             break; // Stop if we've reached the beginning
@@ -343,7 +387,7 @@
                 
                 // Get historical batches for the header (from the first batch we loaded)
                 let historicalBatches = [];
-                const firstBatchResponse = await fetch('/api/medoid-data');
+                const firstBatchResponse = await fetch(`/api/medoid-data?batch=${currentBatch}`);
                 if (firstBatchResponse.ok) {
                     const firstBatchData = await firstBatchResponse.json();
                     historicalBatches = firstBatchData.historical_batches || [];
@@ -456,6 +500,25 @@
             }
         }
 
+        // Jump to a specific batch number
+        async function jumpToBatch() {
+            const batchInput = document.getElementById('batchInput');
+            const targetBatch = parseInt(batchInput.value);
+            
+            if (isNaN(targetBatch) || targetBatch < 0) {
+                alert('Please enter a valid batch number (0 or greater)');
+                return;
+            }
+            
+            try {
+                // Navigate to the specific batch
+                window.location.href = `/medoid/${targetBatch}`;
+            } catch (error) {
+                console.error('Error jumping to batch:', error);
+                alert('Error jumping to batch. Please try again.');
+            }
+        }
+
         // Handle browser back/forward buttons
         window.addEventListener('popstate', function() {
             const path = window.location.pathname;
@@ -554,19 +617,21 @@
 
         // Load initial data
         document.addEventListener('DOMContentLoaded', async function() {
-            // Get current batch info from API
-            try {
-                const response = await fetch('/api/current');
-                if (response.ok) {
-                    const data = await response.json();
-                    currentBatch = data.batch_number;
-                }
-            } catch (error) {
-                console.error('Error getting current batch:', error);
-            }
-            
+            // currentBatch is already set from URL in getBatchFromUrl()
             loadMedoidData();
         });
+
+        // Watch for URL changes and reload data when batch changes
+        let lastBatch = currentBatch;
+        setInterval(() => {
+            const newBatch = getBatchFromUrl();
+            if (newBatch !== lastBatch) {
+                console.log(`Batch changed from ${lastBatch} to ${newBatch}, reloading data...`);
+                currentBatch = newBatch;
+                lastBatch = newBatch;
+                loadMedoidData();
+            }
+        }, 100); // Check every 100ms
     </script>
 </body>
 </html>

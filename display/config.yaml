@@ -1,4 +1,4 @@
-input_file: "../sept_27_b.json"
+input_file: "../sept_27.json"
 batch_size: 100
 historical_batches: 15 
 min_cluster_size: 3

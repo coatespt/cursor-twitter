@@ -143,11 +143,23 @@ var (
 	fileHandle  *os.File
 	fileOffset  int64
 	partialJSON string // Store partial JSON data between chunks
+	fileSize    int64  // Cache file size to avoid repeated stat calls
+	eofCount    int    // Track consecutive EOF attempts to prevent infinite loops
 )
 
 // Global variables for batch navigation
 var currentBatchIndex int = 0
 var maxBatchesInMemory = 200 // Keep only last 200 batches in memory
+
+// getFileSize returns the cached file size
+func getFileSize() int64 {
+	if fileSize == 0 && fileHandle != nil {
+		if stat, err := fileHandle.Stat(); err == nil {
+			fileSize = stat.Size()
+		}
+	}
+	return fileSize
+}
 
 // getNextBatch returns the next batch in the sequence, loading more if needed
 func getNextBatch() *types.Batch {
@@ -161,7 +173,11 @@ func getNextBatch() *types.Batch {
 	// Try to load more batches from file
 	fmt.Printf("Loading more batches from file...\n")
 	if err := loadMoreBatches(); err != nil {
-		fmt.Printf("Failed to load more batches: %v\n", err)
+		if err == io.EOF {
+			fmt.Printf("Reached end of file, no more batches available\n")
+		} else {
+			fmt.Printf("Failed to load more batches: %v\n", err)
+		}
 		return nil
 	}
 
@@ -192,12 +208,21 @@ func loadMoreBatches() error {
 	fmt.Printf("Loaded %d more batches, total: %d\n", loadedCount, len(allBatches))
 
 	// Implement sliding window: discard old batches if we exceed limit
-	if len(allBatches) > maxBatchesInMemory {
+	// But only if we're not at the beginning (to preserve backward navigation)
+	if len(allBatches) > maxBatchesInMemory && currentBatchIndex > 50 {
+		// Only discard if we have enough batches ahead to maintain navigation
 		discardCount := len(allBatches) - maxBatchesInMemory
-		allBatches = allBatches[discardCount:]
-		currentBatchIndex -= discardCount
-		fmt.Printf("Discarded %d old batches, kept %d, current index: %d\n",
-			discardCount, len(allBatches), currentBatchIndex)
+		// Keep at least 50 batches behind current position for backward nav
+		maxDiscard := currentBatchIndex - 50
+		if discardCount > maxDiscard {
+			discardCount = maxDiscard
+		}
+		if discardCount > 0 {
+			allBatches = allBatches[discardCount:]
+			currentBatchIndex -= discardCount
+			fmt.Printf("Discarded %d old batches, kept %d, current index: %d\n",
+				discardCount, len(allBatches), currentBatchIndex)
+		}
 	}
 
 	return nil
@@ -388,9 +413,22 @@ func loadNextChunk() error {
 		return fmt.Errorf("file not open")
 	}
 
+	// Check if we've already reached EOF multiple times
+	if eofCount > 3 {
+		fmt.Printf("loadNextChunk: too many consecutive EOF attempts, stopping\n")
+		return io.EOF
+	}
+
+	// Check if we're already at or beyond the file size
+	if fileOffset >= getFileSize() {
+		fmt.Printf("loadNextChunk: already at end of file (offset %d >= size %d)\n", fileOffset, getFileSize())
+		eofCount++
+		return io.EOF
+	}
+
 	fmt.Printf("loadNextChunk: reading chunk at offset %d\n", fileOffset)
-	// Read 50MB chunk to get more batches
-	chunk := make([]byte, 50*1024*1024) // 50MB
+	// Read smaller chunks to avoid parsing too much data at once
+	chunk := make([]byte, 5*1024*1024) // 5MB
 	n, err := fileHandle.ReadAt(chunk, fileOffset)
 	if err != nil && err != io.EOF {
 		return fmt.Errorf("failed to read chunk: %v", err)
@@ -399,36 +437,61 @@ func loadNextChunk() error {
 	fmt.Printf("loadNextChunk: read %d bytes\n", n)
 	if n == 0 {
 		// End of file
-		fmt.Printf("loadNextChunk: end of file reached\n")
-		return nil
+		eofCount++
+		fmt.Printf("loadNextChunk: end of file reached (attempt %d)\n", eofCount)
+		return io.EOF
 	}
+
+	// Reset EOF counter on successful read
+	eofCount = 0
 
 	// Parse complete JSON objects in this chunk
 	contentStr := partialJSON + string(chunk[:n])
-	pos := 0
 	batchesInChunk := 0
 
+	// Parse complete JSON objects in this chunk
+	pos := 0
 	for pos < len(contentStr) {
 		// Find the start of a JSON object
 		start := strings.Index(contentStr[pos:], "{")
 		if start == -1 {
-			fmt.Printf("No more JSON objects found, pos: %d, contentStr length: %d\n", pos, len(contentStr))
 			break
 		}
 		start += pos
-		fmt.Printf("Found JSON object at position %d\n", start)
 
-		// Find the matching closing brace
+		// Find the matching closing brace using proper brace counting
 		braceCount := 0
 		end := start
+		inString := false
+		escapeNext := false
+
 		for i := start; i < len(contentStr); i++ {
-			if contentStr[i] == '{' {
-				braceCount++
-			} else if contentStr[i] == '}' {
-				braceCount--
-				if braceCount == 0 {
-					end = i + 1
-					break
+			char := contentStr[i]
+
+			if escapeNext {
+				escapeNext = false
+				continue
+			}
+
+			if char == '\\' {
+				escapeNext = true
+				continue
+			}
+
+			if char == '"' && !escapeNext {
+				inString = !inString
+				continue
+			}
+
+			if !inString {
+				if char == '{' {
+					braceCount++
+				} else if char == '}' {
+					braceCount--
+					if braceCount == 0 {
+						end = i + 1
+						break
+					}
 				}
 			}
 		}
@@ -442,12 +505,15 @@ func loadNextChunk() error {
 				batchesInChunk++
 				fmt.Printf("Successfully parsed batch %d\n", len(allBatches))
 			} else {
-				fmt.Printf("Failed to parse JSON object: %v\n", err)
-				previewLen := 200
-				if len(jsonStr) < previewLen {
-					previewLen = len(jsonStr)
+				fmt.Printf("Failed to parse JSON object at position %d-%d: %v\n", start, end, err)
+				// Skip this malformed JSON object and continue
+				// Find the next opening brace to continue parsing
+				nextStart := strings.Index(contentStr[end:], "{")
+				if nextStart == -1 {
+					break
 				}
-				fmt.Printf("JSON length: %d, first %d chars: %s\n", len(jsonStr), previewLen, jsonStr[:previewLen])
+				pos = end + nextStart
+				continue
 			}
 			pos = end
 		} else {
@@ -460,11 +526,18 @@ func loadNextChunk() error {
 	// Update file offset for next chunk
 	fileOffset += int64(n)
 
+	// Clear partialJSON if we successfully parsed all lines
+	if batchesInChunk > 0 {
+		partialJSON = ""
+	}
+
 	fmt.Printf("Loaded %d batches from chunk (total: %d)\n", batchesInChunk, len(allBatches))
 
-	// If we read some data but didn't parse any batches, and we're at EOF, return an error
+	// If we read some data but didn't parse any batches, and we're at EOF,
+	// this might be the end, but don't return error yet - let the caller decide
 	if batchesInChunk == 0 && err == io.EOF {
-		return fmt.Errorf("end of file reached, no more batches")
+		fmt.Printf("loadNextChunk: no batches parsed from chunk, might be end of file\n")
+		return nil // Don't return error, let caller handle EOF detection
 	}
 
 	return nil
@@ -489,15 +562,24 @@ func loadMoreChunks(requiredBatch int) error {
 			fmt.Printf("loadMoreChunks: error loading chunk: %v\n", err)
 			return err
 		}
-		// If no new batches were loaded, we've reached the end
+		// If no new batches were loaded, don't give up immediately
 		if len(allBatches) == previousBatchCount {
-			fmt.Printf("loadMoreChunks: no more batches available, reached end of file (total batches: %d)\n", len(allBatches))
-			return fmt.Errorf("no more batches available")
+			fmt.Printf("loadMoreChunks: no new batches loaded from chunk %d (total batches: %d)\n", i+1, len(allBatches))
+			// Only check for EOF if we've tried multiple chunks
+			if i >= 2 && fileOffset >= getFileSize() {
+				fmt.Printf("loadMoreChunks: confirmed end of file reached after %d chunks (total batches: %d)\n", i+1, len(allBatches))
+				return fmt.Errorf("no more batches available")
+			}
+			// Continue trying to load more chunks
 		}
 		fmt.Printf("loadMoreChunks: now have %d batches\n", len(allBatches))
 	}
 
 	// If we still need more chunks, load them in smaller increments
+	// Be more persistent - try multiple chunks before giving up
+	chunksWithoutProgress := 0
+	maxChunksWithoutProgress := 5 // Try up to 5 chunks without progress before giving up
+
 	for len(allBatches) <= requiredBatch {
 		fmt.Printf("loadMoreChunks: loading additional chunk...\n")
 		previousBatchCount := len(allBatches)
@@ -505,10 +587,24 @@ func loadMoreChunks(requiredBatch int) error {
 			fmt.Printf("loadMoreChunks: error loading chunk: %v\n", err)
 			return err
 		}
-		// If no new batches were loaded, we've reached the end
+
+		// Check if we made progress
 		if len(allBatches) == previousBatchCount {
-			fmt.Printf("loadMoreChunks: no more batches available, reached end of file (total batches: %d)\n", len(allBatches))
-			return fmt.Errorf("no more batches available")
+			chunksWithoutProgress++
+			fmt.Printf("loadMoreChunks: no new batches from chunk %d (total batches: %d)\n", chunksWithoutProgress, len(allBatches))
+
+			// Only give up if we've tried multiple chunks without progress AND we're at EOF
+			if chunksWithoutProgress >= maxChunksWithoutProgress {
+				if fileOffset >= getFileSize() {
+					fmt.Printf("loadMoreChunks: confirmed end of file after %d chunks without progress (total batches: %d)\n", chunksWithoutProgress, len(allBatches))
+					return fmt.Errorf("no more batches available")
+				} else {
+					fmt.Printf("loadMoreChunks: still have %d bytes to read, continuing...\n", getFileSize()-fileOffset)
+					chunksWithoutProgress = 0 // Reset counter if we're not at EOF
+				}
+			}
+		} else {
+			chunksWithoutProgress = 0 // Reset counter on progress
 		}
 		fmt.Printf("loadMoreChunks: now have %d batches\n", len(allBatches))
 	}
@@ -1258,14 +1354,29 @@ func buildEndOfFileResponse(w http.ResponseWriter) {
 }
 
 func handleGridDataAPI(w http.ResponseWriter, r *http.Request) {
-	// Use current batch from navigation instead of URL parameter
-	currentBatch := getCurrentBatch()
-	if currentBatch == nil {
-		http.Error(w, "No current batch available", http.StatusNotFound)
-		return
-	}
+	// Get batch number from URL parameter
+	batchNumStr := r.URL.Query().Get("batch")
+	fmt.Printf("handleGridDataAPI: requested batch parameter: '%s'\n", batchNumStr)
+	var batchNum int
+	var err error
 
-	batchNum := currentBatch.Data.BatchNumber
+	if batchNumStr == "" {
+		// Fall back to current batch if no parameter provided
+		currentBatch := getCurrentBatch()
+		if currentBatch == nil {
+			http.Error(w, "No current batch available", http.StatusNotFound)
+			return
+		}
+		batchNum = currentBatch.Data.BatchNumber
+		fmt.Printf("handleGridDataAPI: using current batch: %d\n", batchNum)
+	} else {
+		batchNum, err = strconv.Atoi(batchNumStr)
+		if err != nil {
+			http.Error(w, "Invalid batch number", http.StatusBadRequest)
+			return
+		}
+		fmt.Printf("handleGridDataAPI: using requested batch: %d\n", batchNum)
+	}
 
 	// Validate and load batch if needed
 	validBatchNum, err := validateAndLoadBatch(batchNum)
@@ -1430,14 +1541,26 @@ func buildMedoidEndOfFileResponse(w http.ResponseWriter) {
 }
 
 func handleMedoidDataAPI(w http.ResponseWriter, r *http.Request) {
-	// Use current batch from navigation instead of URL parameter
-	currentBatch := getCurrentBatch()
-	if currentBatch == nil {
-		http.Error(w, "No current batch available", http.StatusNotFound)
-		return
-	}
+	// Get batch number from URL parameter
+	batchNumStr := r.URL.Query().Get("batch")
+	var batchNum int
+	var err error
 
-	batchNum := currentBatch.Data.BatchNumber
+	if batchNumStr == "" {
+		// Fall back to current batch if no parameter provided
+		currentBatch := getCurrentBatch()
+		if currentBatch == nil {
+			http.Error(w, "No current batch available", http.StatusNotFound)
+			return
+		}
+		batchNum = currentBatch.Data.BatchNumber
+	} else {
+		batchNum, err = strconv.Atoi(batchNumStr)
+		if err != nil {
+			http.Error(w, "Invalid batch number", http.StatusBadRequest)
+			return
+		}
+	}
 
 	// Validate and load batch if needed
 	validBatchNum, err := validateAndLoadMedoidBatch(batchNum)
@@ -1718,14 +1841,29 @@ func buildBubbleEndOfFileResponse(w http.ResponseWriter) {
 }
 
 func handleBubbleDataAPI(w http.ResponseWriter, r *http.Request) {
-	// Use current batch from navigation instead of URL parameter
-	currentBatch := getCurrentBatch()
-	if currentBatch == nil {
-		http.Error(w, "No current batch available", http.StatusNotFound)
-		return
-	}
+	// Get batch number from URL parameter
+	batchNumStr := r.URL.Query().Get("batch")
+	fmt.Printf("handleBubbleDataAPI: requested batch parameter: '%s'\n", batchNumStr)
+	var batchNum int
+	var err error
 
-	batchNum := currentBatch.Data.BatchNumber
+	if batchNumStr == "" {
+		// Fall back to current batch if no parameter provided
+		currentBatch := getCurrentBatch()
+		if currentBatch == nil {
+			http.Error(w, "No current batch available", http.StatusNotFound)
+			return
+		}
+		batchNum = currentBatch.Data.BatchNumber
+		fmt.Printf("handleBubbleDataAPI: using current batch: %d\n", batchNum)
+	} else {
+		batchNum, err = strconv.Atoi(batchNumStr)
+		if err != nil {
+			http.Error(w, "Invalid batch number", http.StatusBadRequest)
+			return
+		}
+		fmt.Printf("handleBubbleDataAPI: using requested batch: %d\n", batchNum)
+	}
 
 	// Validate and load batch if needed
 	validBatchNum, err := validateAndLoadBubbleBatch(batchNum)
